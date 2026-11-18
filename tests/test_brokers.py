@@ -402,6 +402,8 @@ def test_settings_keep_broker_secrets_masked(tmp_path):
 
 
 def test_app_connects_the_chosen_broker_and_rejects_forged_callbacks(tmp_path, monkeypatch):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("mcp")
     from fastapi.testclient import TestClient
 
     from desk.server import create_app
