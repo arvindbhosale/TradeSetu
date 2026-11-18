@@ -125,6 +125,7 @@ class Sectors:
         self._lock = threading.RLock()
         self._sectors: dict[str, dict] = {}
         self._bars: dict[str, pd.DataFrame] = {}   # symbol -> daily OHLC, last WINDOW+60 days
+        self._volume: dict[str, pd.Series] = {}    # symbol -> daily traded shares, same days
         self._loaded: dict[str, float] = {}
         self._missing: dict[str, str] = {}
         self._live: dict[str, dict] = {}
@@ -234,9 +235,12 @@ class Sectors:
             if self._stop.is_set():
                 break
             try:
-                bars = data.history(symbol, fetch=self.fetch)[OHLC].iloc[-(WINDOW + 60):]
+                frame = data.history(symbol, fetch=self.fetch).iloc[-(WINDOW + 60):]
+                bars = frame[OHLC]
                 with self._lock:
                     self._bars[symbol] = bars
+                    if "Volume" in frame:
+                        self._volume[symbol] = frame["Volume"].astype(float)
                     self._missing.pop(symbol, None)
             except data.NoData as exc:
                 with self._lock:
@@ -293,6 +297,18 @@ class Sectors:
         if market.is_trading_day(now) and now.time() >= market.OPEN and str(live.get("date", "")) == today.strftime("%Y-%m-%d"):
             return pd.concat([frame, row])
         return frame
+
+    def volume(self, symbol: str) -> tuple[pd.Series | None, float | None]:
+        """A stock's daily volume history (completed days) and today's volume so far from its live quote."""
+        series = self._volume.get(symbol)
+        live = self._live.get(symbol) or {}
+        today = self._now().strftime("%Y-%m-%d")
+        now_volume = float(live["volume"]) if live.get("volume") and str(live.get("date", "")) == today else None
+        if series is not None and len(series) and series.index[-1] == pd.Timestamp(today):
+            if now_volume is None:
+                now_volume = float(series.iloc[-1])
+            series = series.iloc[:-1]
+        return series, now_volume
 
     # -- the index -----------------------------------------------------------
 

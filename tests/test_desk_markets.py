@@ -138,7 +138,7 @@ def test_constituent_lists_parse_and_the_catalogue_is_sound():
     assert all(c[3].startswith("ind_") and c[4] for c in CATALOG if c[2] != "BSE")
     bse = [c for c in CATALOG if c[2] == "BSE"]
     assert {c[0] for c in bse} == {"bsesensex", "bsesensex50", "bsebankex"}
-    assert all(c[3] is None and all(n.startswith("BSE:") for n in c[4]) for c in bse)
+    assert all(c[3] == "bse" and all(n.startswith("BSE:") for n in c[4]) for c in bse)
 
 
 def test_bse_rows_from_kite_become_board_entries():
@@ -146,7 +146,7 @@ def test_bse_rows_from_kite_become_board_entries():
 
     assert kite_key("NIFTY 50") == "NSE:NIFTY 50" and kite_key("BSE:SENSEX") == "BSE:SENSEX"
     assert bse_entry({"exchange": "BSE", "segment": "INDICES", "tradingsymbol": "BSE IT", "name": "BSE IT"}) == (
-        "bse_bseit", "BSE IT", "BSE", None, ["BSE:BSE IT"], None)
+        "bse_bseit", "BSE IT", "BSE", "bse", ["BSE:BSE IT"], None)
     assert bse_entry({"exchange": "BSE", "segment": "INDICES", "tradingsymbol": "AUTO", "name": "AUTO"})[1] == "BSE AUTO"
     assert bse_entry({"exchange": "BSE", "segment": "BSE", "tradingsymbol": "RELIANCE"}) is None       # a stock
     assert bse_entry({"exchange": "NSE", "segment": "INDICES", "tradingsymbol": "NIFTY 50"}) is None   # an NSE index
@@ -168,7 +168,8 @@ def make_indices(tmp_path, kite=None, caps=None):
     sectors = Sectors(path=tmp_path / "s.json", fetch=fetch, quotes=lambda symbols: {
         s: {"last": 110.0, "prev_close": 100.0, "open": 101.0, "high": 111.0, "low": 99.0} for s in symbols})
     funds = Fundamentals(tmp_path / "f.json", fetch=lambda symbol: {"marketCap": (caps or {}).get(symbol)} if caps else {})
-    board = Indices(sectors, funds, kite, path=tmp_path / "i.json", download=download, fetch=fetch)
+    board = Indices(sectors, funds, kite, path=tmp_path / "i.json", download=download, fetch=fetch,
+                    get_json=lambda url, params: (_ for _ in ()).throw(OSError("not in this test")))
     return board, funds, fetched
 
 
@@ -239,9 +240,9 @@ def test_index_levels_come_from_kite_once_signed_in(tmp_path):
         board.refresh_levels(force=True)
         cards = {c["id"]: c for c in board.cards(trend.DEFAULT)["indices"]}
         assert cards["bse_bse500"]["source"] == "Kite" and cards["bse_bse500"]["value"] == pytest.approx(36000.0, rel=0.01)
-        assert cards["bsesensex"]["has_list"] is False and cards["nifty50"]["has_list"] is True
+        assert cards["bsesensex"]["has_list"] is True and cards["nifty50"]["has_list"] is True
         detail = board.detail("bse_bse500", trend.DEFAULT)
-        assert detail["has_list"] is False and detail["stocks"] == [] and detail["kite_name"] == "BSE:BSE500"
+        assert detail["stocks"] == [] and detail["kite_name"] == "BSE:BSE500"            # BSE's lists not read here
         # Kept on disk, and an empty answer (instrument list still loading) does not wipe it.
         again, _, _ = make_indices(tmp_path, kite=kite)
         assert again.entry("bse_bse500") is not None
@@ -608,3 +609,14 @@ def test_api_fno_algo_runs_a_paper_condor_on_kite_prices(client):
     phrase = client.get(f"/api/fno-algos/{live['id']}/phrase").json()["phrase"]
     assert phrase == "ARM LIVE FNO LIVE STRADDLE"
     assert "switched off" in client.post(f"/api/fno-algos/{live['id']}/start", json={"phrase": phrase}).json()["error"]
+
+
+def test_api_market_tools(client):
+    pulse = client.get("/api/tools/pulse").json()
+    assert {"score", "zone", "parts", "history", "sectors", "stocks"} <= set(pulse) and "error" not in pulse
+    deals = client.get("/api/tools/deals?days=5").json()
+    assert deals["deals"] == [] and deals["spikes"] == [] and deals["threshold"] == 3.0
+    assert client.get("/api/tools/drift?min_move=4").json()["rows"] == []
+    assert "rows" in client.get("/api/tools/rotation?period=weekly").json()
+    radar = client.get("/api/tools/radar").json()
+    assert isinstance(radar["rows"], list) and "universe" in radar

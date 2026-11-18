@@ -124,7 +124,8 @@
     $$("section.tab").forEach((s) => { s.hidden = s.id !== "tab-" + name; });
     const active = $(`.tabs button[data-tab="${name}"] span`);
     if (active) $("#page-title").textContent = active.textContent;
-    if (name === "markets") refreshSectors();
+    if (name === "markets") { refreshSectors(); refreshPulse(); }
+    if (name === "tools") showTool(toolState.tool);
     if (name === "mcx") { loadMcx(true); refreshMcxPositions(); }
     if (name === "fno") { refreshFno(); if (!oc.underlyings.length) loadUnderlyings(); refreshOptionPositions(); loadFutures(true); }
     if (name === "pnl") refreshPnl();
@@ -1665,6 +1666,205 @@
       ready ? h("div", { class: "foot" }, h("span", {}, "1 week", signed(c.change_1w)), h("span", {}, "1 month", signed(c.change_1m)), h("span", {}, c.change_3m != null ? "3 months" : "1 year", signed(c.change_3m != null ? c.change_3m : c.change_1y))) : null);
   }
 
+  // -- Market Pulse and the market tools ---------------------------------------------------------
+
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const sv = (tag, attrs = {}) => { const el = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el; };
+  const PULSE_ZONES = [[0, 20, "Extreme fear", "--bad"], [20, 40, "Fear", "--s2"], [40, 60, "Neutral", "--s4"], [60, 80, "Greed", "--s3"], [80, 100, "Extreme greed", "--good"]];
+  const pulseState = { data: null, period: "change_1d", what: "sectors" };
+
+  function heatColour(v) {
+    if (v == null) return "var(--surface-2)";
+    const strength = Math.min(Math.abs(v) / 3, 1), mix = Math.round(18 + strength * 62);
+    return `color-mix(in srgb, var(${v >= 0 ? "--good" : "--bad"}) ${mix}%, var(--surface))`;
+  }
+
+  function drawGauge(score) {
+    const svg = $("#pulse-gauge"); svg.replaceChildren();
+    const cx = 120, cy = 125, r = 95, at = (v) => Math.PI * (1 - v / 100);
+    const point = (v, rad) => [cx + rad * Math.cos(at(v)), cy - rad * Math.sin(at(v))];
+    for (const [from, to, label, colour] of PULSE_ZONES) {
+      const [x1, y1] = point(from, r), [x2, y2] = point(to, r);
+      svg.append(sv("path", { d: `M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`, stroke: cssVar(colour), "stroke-width": 18, fill: "none" }));
+      const t = sv("title"); t.textContent = `${label}: ${from} to ${to}`; svg.lastChild.append(t);
+    }
+    for (const v of [0, 20, 40, 60, 80, 100]) {
+      const [x, y] = point(v, r + 17); const t = sv("text", { x, y: y + 4, "text-anchor": "middle", class: "gauge-tick" }); t.textContent = v; svg.append(t);
+    }
+    if (score != null) {
+      const [nx, ny] = point(score, r - 14);
+      svg.append(sv("line", { x1: cx, y1: cy, x2: nx, y2: ny, stroke: cssVar("--text"), "stroke-width": 3, "stroke-linecap": "round" }));
+    }
+    svg.append(sv("circle", { cx, cy, r: 6, fill: cssVar("--text") }));
+    const value = sv("text", { x: cx, y: cy + 38, "text-anchor": "middle", class: "gauge-value" }); value.textContent = score == null ? "–" : Math.round(score); svg.append(value);
+    const zoneName = sv("text", { x: cx, y: cy + 58, "text-anchor": "middle", class: "gauge-zone" }); zoneName.textContent = pulseState.data ? pulseState.data.zone : ""; svg.append(zoneName);
+  }
+
+  function renderHeat() {
+    const d = pulseState.data; if (!d) return;
+    const key = pulseState.period;
+    const items = pulseState.what === "sectors" ? d.sectors.map((s) => ({ label: s.name.replace(/^Nifty /, ""), v: s[key], size: 1 }))
+      : d.stocks.map((s) => ({ label: s.symbol.replace(/\.(NS|BO)$/, ""), v: s[key], size: s.market_cap ? Math.max(1, Math.min(4, Math.round(Math.log10(s.market_cap / 1e11) * 2) + 1)) : 1, symbol: s.symbol }));
+    items.sort((a, b) => (b.size - a.size) || ((b.v ?? -99) - (a.v ?? -99)));
+    $("#pulse-heat").replaceChildren(...(items.length ? items.map((it) => h("button", { type: "button", class: "heat-cell", style: `background:${heatColour(it.v)};grid-column:span ${it.size}`,
+      title: `${it.label}: ${pct(it.v)}`, onclick: it.symbol ? () => openStock(it.symbol) : null },
+      h("span", { class: "heat-name", text: it.label }), h("span", { class: "heat-move", text: pct(it.v) })))
+      : [h("p", { class: "hint", text: pulseState.what === "sectors" ? "Sector levels are still loading." : "Nifty 50 prices are still loading." })]));
+  }
+
+  async function refreshPulse() {
+    let d;
+    try { d = await api("/tools/pulse"); } catch (err) { showError("#pulse-error", err); return; }
+    showError("#pulse-error", null);
+    pulseState.data = d;
+    drawGauge(d.score);
+    const then = (label, v) => h("span", {}, label, " ", h("b", { text: v == null ? "–" : Math.round(v) }));
+    $("#pulse-then").replaceChildren(then("1 week ago", d.week_ago), then("1 month ago", d.month_ago));
+    $("#pulse-parts").replaceChildren(...(d.parts.length ? d.parts.map((p) => h("div", { class: "pulse-part" },
+      h("div", { class: "pulse-part-head" }, h("span", { text: p.name }), h("b", { text: Math.round(p.score) })),
+      h("div", { class: "bar" }, h("span", { style: `width:${p.score}%;background:${heatColour((p.score - 50) / 8)}` })),
+      h("div", { class: "hint", text: p.detail }))) : [h("p", { class: "hint", text: "The readings need the Nifty's history and stock prices; they are still loading." })]));
+    $("#pulse-updated").textContent = `${d.universe} stocks · as of ${d.updated_ist} IST`;
+    renderHeat();
+  }
+
+  function sortableTable(box, columns, rows, sortState) {
+    const sorted = rows.slice();
+    if (sortState.key) {
+      const col = columns.find((c) => c.key === sortState.key);
+      const val = col && col.sort ? col.sort : (r) => r[sortState.key];
+      sorted.sort((a, b) => { const x = val(a), y = val(b); if (x == null) return 1; if (y == null) return -1; return (x < y ? -1 : x > y ? 1 : 0) * sortState.dir; });
+    }
+    const head = h("tr", {}, columns.map((c) => h("th", { class: c.num ? "num" : null, style: "cursor:pointer", text: c.label + (sortState.key === c.key ? (sortState.dir > 0 ? " ▲" : " ▼") : ""),
+      onclick: () => { sortState.dir = sortState.key === c.key ? -sortState.dir : -1; sortState.key = c.key; sortableTable(box, columns, rows, sortState); } })));
+    box.replaceChildren(rows.length ? h("table", {}, h("thead", {}, head), h("tbody", {}, sorted.map((r) => h("tr", {}, columns.map((c) => {
+      const content = c.cell ? c.cell(r) : r[c.key];
+      const td = h("td", { class: (c.num ? "num " : "") + (c.tone ? tone(c.tone(r)) : "") });
+      if (content != null && content.nodeType) td.append(content); else td.textContent = content == null ? "–" : content;
+      return td;
+    }))))) : h("p", { class: "hint", text: "Nothing to show yet." }));
+  }
+  const stockLink = (symbol) => h("button", { type: "button", class: "linkish", text: symbol.replace(/\.(NS|BO)$/, ""), onclick: () => openStock(symbol) });
+  const toolState = { tool: "deals", deals: null, drift: null, compass: null, radar: null, compassPeriod: "weekly",
+    sorts: { deals: { key: "value_cr", dir: -1 }, spikes: { key: "times", dir: -1 }, drift: { key: "", dir: -1 }, radar: { key: "score", dir: -1 }, compass: { key: "", dir: -1 } } };
+
+  function renderDeals() {
+    const d = toolState.deals; if (!d) return;
+    const form = $("#form-deals"), q = form.q.value.trim().toUpperCase();
+    const rows = d.deals.filter((r) => !q || r.ticker.includes(q) || r.client.toUpperCase().includes(q) || r.security.toUpperCase().includes(q));
+    sortableTable($("#deals-table"), [
+      { key: "date", label: "Date" }, { key: "kind", label: "Type" }, { key: "ticker", label: "Stock", cell: (r) => stockLink(r.symbol) },
+      { key: "client", label: "Client" }, { key: "side", label: "Buy or sell", tone: (r) => (r.side === "Buy" ? 1 : -1) },
+      { key: "quantity", label: "Shares", num: true, cell: (r) => inr.format(r.quantity) }, { key: "price", label: "Price ₹", num: true, cell: (r) => inr2.format(r.price) },
+      { key: "value_cr", label: "Value ₹ Cr", num: true, cell: (r) => num(r.value_cr, 2) }], rows, toolState.sorts.deals);
+    $("#spikes-note").textContent = `Stocks trading at least ${d.threshold}× their 20-day average volume today, out of ${d.universe} the desk tracks. Volume comes from Kite when it is logged in.`;
+    sortableTable($("#spikes-table"), [
+      { key: "symbol", label: "Stock", cell: (r) => stockLink(r.symbol) }, { key: "times", label: "× average", num: true, cell: (r) => num(r.times, 1) + "×" },
+      { key: "volume", label: "Volume", num: true, cell: (r) => inr.format(r.volume) }, { key: "average", label: "20-day average", num: true, cell: (r) => inr.format(r.average) },
+      { key: "change_1d", label: "Today", num: true, cell: (r) => pct(r.change_1d), tone: (r) => r.change_1d },
+      { key: "value_cr", label: "Traded ₹ Cr", num: true, cell: (r) => num(r.value_cr, 1) }], d.spikes, toolState.sorts.spikes);
+    $("#tool-updated").textContent = d.note || (d.fetched ? `NSE deals read ${new Date(d.fetched * 1000).toLocaleString("en-IN")}` : "NSE deals have not been read yet.");
+  }
+
+  function renderDrift() {
+    const d = toolState.drift; if (!d) return;
+    const only = $("#form-drift").only.value;
+    const rows = d.rows.filter((r) => only === "all" || r.signal !== "No edge");
+    sortableTable($("#drift-table"), [
+      { key: "symbol", label: "Stock", cell: (r) => stockLink(r.symbol) }, { key: "company", label: "Company" },
+      { key: "result_date", label: "Results" }, { key: "reaction", label: "Reaction", num: true, cell: (r) => pct(r.reaction), tone: (r) => r.reaction },
+      { key: "volume_times", label: "Volume ×", num: true, cell: (r) => (r.volume_times == null ? "–" : r.volume_times + "×") },
+      { key: "since", label: "Since reaction", num: true, cell: (r) => pct(r.since), tone: (r) => r.since },
+      { key: "sessions", label: "Sessions", num: true }, { key: "price", label: "Price ₹", num: true, cell: (r) => inr2.format(r.price) },
+      { key: "signal", label: "Signal", cell: (r) => h("span", { class: "trend " + (r.signal.endsWith("up") ? "up" : r.signal.endsWith("down") ? "down" : "side"), text: r.signal }) }], rows, toolState.sorts.drift);
+    $("#tool-updated").textContent = d.note || `${d.calendar} results in BSE's calendar (last 60 days), ${d.priced} priced by the desk.`;
+  }
+
+  function drawCompass() {
+    const d = toolState.compass; if (!d) return;
+    const svg = $("#compass-chart"); svg.replaceChildren();
+    const W = 520, pad = 40, rows = d.rows;
+    const xs = rows.flatMap((r) => r.tail.map((t) => t.ratio)), ys = rows.flatMap((r) => r.tail.map((t) => t.momentum));
+    const span = Math.max(2, ...xs.map((x) => Math.abs(x - 100)), ...ys.map((y) => Math.abs(y - 100))) * 1.1;
+    const X = (v) => pad + ((v - 100 + span) / (2 * span)) * (W - 2 * pad), Y = (v) => W - pad - ((v - 100 + span) / (2 * span)) * (W - 2 * pad);
+    const quads = [["Improving", pad, pad, "--s1"], ["Leading", W / 2, pad, "--good"], ["Lagging", pad, W / 2, "--bad"], ["Weakening", W / 2, W / 2, "--s4"]];
+    for (const [label, x, y, colour] of quads) {
+      svg.append(sv("rect", { x, y, width: W / 2 - pad, height: W / 2 - pad, fill: `color-mix(in srgb, ${cssVar(colour)} 9%, transparent)` }));
+      const t = sv("text", { x: x + 8, y: y + 18, class: "compass-quad" }); t.textContent = label; svg.append(t);
+    }
+    svg.append(sv("line", { x1: W / 2, y1: pad, x2: W / 2, y2: W - pad, stroke: cssVar("--line-strong") }));
+    svg.append(sv("line", { x1: pad, y1: W / 2, x2: W - pad, y2: W / 2, stroke: cssVar("--line-strong") }));
+    const axis = (text, x, y, rotate) => { const t = sv("text", { x, y, "text-anchor": "middle", class: "compass-axis", ...(rotate ? { transform: `rotate(-90 ${x} ${y})` } : {}) }); t.textContent = text; svg.append(t); };
+    axis("Relative strength →", W / 2, W - 10); axis("Strength momentum →", 14, W / 2, true);
+    const colours = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6"];
+    rows.forEach((r, i) => {
+      const colour = cssVar(colours[i % colours.length]);
+      const pts = r.tail.map((t) => `${X(t.ratio)},${Y(t.momentum)}`).join(" ");
+      svg.append(sv("polyline", { points: pts, fill: "none", stroke: colour, "stroke-width": 1.6, opacity: 0.8 }));
+      r.tail.forEach((t, j) => svg.append(sv("circle", { cx: X(t.ratio), cy: Y(t.momentum), r: j === r.tail.length - 1 ? 5 : 2, fill: colour })));
+      const last = r.tail[r.tail.length - 1];
+      const t = sv("text", { x: X(last.ratio) + 7, y: Y(last.momentum) - 6, class: "compass-label", fill: colour }); t.textContent = r.name.replace(/^Nifty /, ""); svg.append(t);
+    });
+    sortableTable($("#compass-table"), [
+      { key: "name", label: "Sector" }, { key: "quadrant", label: "Quadrant" },
+      { key: "ratio", label: "Strength", num: true, cell: (r) => num(r.ratio, 2), tone: (r) => r.ratio - 100 },
+      { key: "momentum", label: "Momentum", num: true, cell: (r) => num(r.momentum, 2), tone: (r) => r.momentum - 100 }], rows, toolState.sorts.compass);
+    $("#tool-updated").textContent = d.note || `${rows.length} sector indices against the Nifty 50.`;
+  }
+
+  function renderRadar() {
+    const d = toolState.radar; if (!d) return;
+    const form = $("#form-radar"), q = form.q.value.trim().toUpperCase(), only = form.only.value;
+    const rows = d.rows.filter((r) => (!q || r.symbol.includes(q) || (r.name || "").toUpperCase().includes(q) || (r.sector || "").toUpperCase().includes(q))
+      && (only === "all" || (only === "flags" && r.flags.length) || (only === "above" && r.above_50 && r.above_200) || (only === "near" && r.from_high >= -5)));
+    const yes = (v) => h("span", { class: v ? "pos" : "neg", text: v ? "Yes" : "No" });
+    sortableTable($("#radar-table"), [
+      { key: "symbol", label: "Stock", cell: (r) => stockLink(r.symbol) }, { key: "name", label: "Company" }, { key: "sector", label: "Sector" },
+      { key: "score", label: "Score", num: true, cell: (r) => num(r.score, 0) }, { key: "price", label: "Price ₹", num: true, cell: (r) => inr2.format(r.price) },
+      ...[["change_1d", "Today"], ["change_1w", "1 week"], ["change_1m", "1 month"], ["change_3m", "3 months"], ["change_1y", "1 year"]].map(([key, label]) => ({ key, label, num: true, cell: (r) => pct(r[key]), tone: (r) => r[key] })),
+      { key: "from_high", label: "From 52w high", num: true, cell: (r) => pct(r.from_high) },
+      { key: "rs_3m", label: "vs Nifty 3m", num: true, cell: (r) => pct(r.rs_3m), tone: (r) => r.rs_3m },
+      { key: "above_50", label: "> 50-day", cell: (r) => yes(r.above_50), sort: (r) => (r.above_50 ? 1 : 0) },
+      { key: "above_200", label: "> 200-day", cell: (r) => yes(r.above_200), sort: (r) => (r.above_200 ? 1 : 0) },
+      { key: "volume_x", label: "Volume ×", num: true, cell: (r) => (r.volume_x == null ? "–" : num(r.volume_x, 1) + "×") },
+      { key: "trend", label: "Trend", cell: (r) => trendBadge(r.trend) },
+      { key: "pe", label: "P/E", num: true, cell: (r) => num(r.pe, 1) }, { key: "roe", label: "ROE %", num: true, cell: (r) => num(r.roe, 1) },
+      { key: "flags", label: "Signals", cell: (r) => r.flags.join(", "), sort: (r) => r.flags.length }], rows, toolState.sorts.radar);
+    $("#tool-updated").textContent = `${rows.length} of ${d.universe} stocks · as of ${d.updated_ist} IST`;
+  }
+
+  async function loadTool(name) {
+    const paths = { deals: () => { const f = $("#form-deals"); return `/tools/deals?days=${f.days.value}&min_value=${Number(f.min_value.value) || 0}`; },
+      drift: () => `/tools/drift?min_move=${Number($("#form-drift").min_move.value) || 4}`, compass: () => `/tools/rotation?period=${toolState.compassPeriod}`, radar: () => "/tools/radar" };
+    try { toolState[name] = await api(paths[name]()); } catch (err) { showError("#tool-error", err); return; }
+    showError("#tool-error", null);
+    ({ deals: renderDeals, drift: renderDrift, compass: drawCompass, radar: renderRadar })[name]();
+  }
+
+  function showTool(name) {
+    toolState.tool = name;
+    $$("#tool-pick button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.tool === name)));
+    $$("#tab-tools .tool").forEach((s) => { s.hidden = s.id !== "tool-" + name; });
+    loadTool(name);
+  }
+
+  function startMarketTools() {
+    $$("#heat-period button").forEach((b) => b.addEventListener("click", () => { pulseState.period = b.dataset.period; $$("#heat-period button").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); renderHeat(); }));
+    $$("#heat-what button").forEach((b) => b.addEventListener("click", () => { pulseState.what = b.dataset.what; $$("#heat-what button").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); renderHeat(); }));
+    $$("#tool-pick button").forEach((b) => b.addEventListener("click", () => showTool(b.dataset.tool)));
+    $$("#compass-period button").forEach((b) => b.addEventListener("click", () => { toolState.compassPeriod = b.dataset.period; $$("#compass-period button").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); loadTool("compass"); }));
+    const deals = $("#form-deals"); deals.days.addEventListener("change", () => loadTool("deals")); deals.min_value.addEventListener("change", () => loadTool("deals")); deals.q.addEventListener("input", renderDeals);
+    deals.addEventListener("submit", (e) => e.preventDefault());
+    const drift = $("#form-drift"); drift.min_move.addEventListener("change", () => loadTool("drift")); drift.only.addEventListener("change", renderDrift); drift.addEventListener("submit", (e) => e.preventDefault());
+    const radarForm = $("#form-radar"); radarForm.q.addEventListener("input", renderRadar); radarForm.only.addEventListener("change", renderRadar); radarForm.addEventListener("submit", (e) => e.preventDefault());
+    if (!$("#tab-markets").hidden) refreshPulse();
+    setInterval(() => {
+      if (document.hidden || !state.app.session.open) return;
+      if (!$("#tab-markets").hidden) refreshPulse();
+      if (!$("#tab-tools").hidden && toolState.tool !== "compass") loadTool(toolState.tool);
+    }, 120000);
+  }
+
   // -- trend rule ------------------------------------------------------------------------------
 
   function trendRuleEditor(box) {
@@ -1748,8 +1948,8 @@
     const tile = (k, v) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v " + tone(v), text: v == null ? "–" : pct(v) }));
     $("#index-tiles").replaceChildren(h("div", { class: "tile" }, h("div", { class: "k", text: "Level" }), h("div", { class: "v", text: d.value ? inr2.format(d.value) : "–" })),
       tile("Today", d.change_1d), tile("1 week", d.change_1w), tile("1 month", d.change_1m), tile("1 year", d.change_1y));
-    $("#index-weights").textContent = d.has_list === false ? "BSE publishes no constituent file for its indices, so only the level, trend and chart are shown."
-      : `${d.stocks.length} stocks from NSE's list · weights: ${d.weights} · prices: ${d.quote_source || "loading"}. Click a stock for its details.`;
+    $("#index-weights").textContent = d.group === "BSE" && !d.stocks.length ? "BSE's stock list for this index has not loaded yet (it is read once a day from bseindia.com)."
+      : `${d.stocks.length} stocks from ${d.group === "BSE" ? "BSE's market data" : "NSE's list"} · weights: ${d.weights} · prices: ${d.quote_source || "loading"}. Click a stock for its details.`;
     renderIndexStocks(d);
     if (redraw) drawIndexChart();
   }
@@ -2914,7 +3114,7 @@
     const bta = $("#form-bta"), month = new Date(today); month.setDate(month.getDate() - 60);
     bta.start.value = iso(month); bta.end.value = today; bta.end.max = today;
     $("#form-order").product.value = state.app.settings.product;
-    fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); renderTheme();
+    fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); startMarketTools(); renderTheme();
     syncSharedDates(); showBacktestPane($("#bt-what").value);
     if (state.app.hosted) { $("#logout").hidden = false; $("#logout-2").hidden = false; $("#logout").title = "Signed in as " + state.app.user; }
     const wanted = location.hash.slice(1);        // an app shortcut or a reload opens the same section

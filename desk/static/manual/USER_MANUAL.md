@@ -12,7 +12,9 @@ The screenshots use sample data, not real prices.
    - [Markets: sector cards](#markets-sector-cards)
    - [How Uptrend and Downtrend are decided (and changing it)](#how-uptrend-and-downtrend-are-decided)
    - [Stock details: fundamentals and technicals](#stock-details-fundamentals-and-technicals)
+   - [Market Pulse](#market-pulse)
    - [Indices](#indices)
+   - [Market tools](#market-tools)
    - [F&O expiries](#fo-expiries)
    - [Option chain: track, paper and live trade](#option-chain-track-paper-and-live-trade)
    - [Index futures: prices and charts](#index-futures-prices-and-charts)
@@ -193,7 +195,7 @@ A board of NSE's indices, laid out like the sector cards: broad market (Nifty 50
 - **Levels** are Kite's official index values when Kite is logged in (live during market hours). Before you log in, they come from Yahoo where it has the index, or are rebuilt from the index's stocks (equal weight) for indices of up to 100 stocks. Each card names its source. The board switches to Kite within seconds of your login.
 - Each card shows the level, today's move, 1 week / 1 month / 3 months / 1 year, the trend (your rule) and 45 daily candles.
 - **Constituent lists** come from NSE's published files and are re-read once a day, so additions and removals appear on their own.
-- BSE publishes no constituent file, so a BSE card shows the level, trend and chart but no stock list.
+- BSE publishes no constituent file. The desk reads BSE's daily market-movers data, which names every index each traded stock belongs to, and builds each BSE index's stock list from it once a day. A stock that closed exactly unchanged is missing from that day's data, so a member is kept until it has been absent for 10 days.
 
 Click a card to open the index:
 
@@ -202,6 +204,34 @@ Click a card to open the index:
 - A Kite candle chart of the index: **5m, 15m, 1h** or **1D** (intraday needs Kite logged in).
 - **Constituents**: every stock in the index with company, industry, price, today's move, day range, volume, market cap, P/E, ROE, **weight** and **contribution** (points it adds to or takes from the index today). Click a stock for its details.
 - **Weights are approximate.** NSE weights by free-float market cap and does not publish the daily weights; the desk uses full market cap once it has every stock's, and equal weights until then (the line above the table says which). Contributions are therefore close, not exact.
+
+### Market Pulse
+
+At the top of **Markets**: one reading from **0 (extreme fear) to 100 (extreme greed)** on a speedometer, with what it read a week and a month ago. It is the plain average of six readings, each 0 to 100:
+
+| Reading | 0 means | 100 means |
+|---|---|---|
+| Nifty against its 200-day average | 10% or more below | 10% or more above |
+| Nifty's one-month return | the weakest month of the past year | the strongest |
+| India VIX | the highest VIX of the past year | the lowest |
+| Stocks above their 50-day average | none | all |
+| Near 52-week highs against near lows (within 2%) | all near lows | all near highs |
+| Stocks up today | none | all |
+
+Bands: below 20 extreme fear, 20 to 40 fear, 40 to 60 neutral, 60 to 80 greed, above 80 extreme greed. The stock readings use every stock the desk prices (your sectors and the main Nifty indices' stocks). A reading of extreme fear is not a buy signal on its own; it says the crowd is scared.
+
+The **heat map** below it colours each Nifty sector index (or each Nifty 50 stock, bigger tiles for bigger companies) by its move today, this week or this month. Click a stock tile for its details.
+
+### Market tools
+
+A tab of its own with four tools.
+
+- **Whale Deals**: NSE's **bulk deals** (one client trading more than 0.5% of a company's shares in a day) and **block deals** (trades of ₹10 crore or more in the block window), with the client's name, side, shares, price and value. NSE publishes them after the close; the desk reads the file every two hours and keeps 30 days. Filter by days, minimum value or name. Below: **volume spikes**, stocks trading at least 3 times their 20-day average volume today.
+- **Results Drift** (post-earnings drift): stocks that announced results in the last 60 days (BSE's results calendar), the price **reaction** (close before the board meeting to the close of the next session), the volume on those days, and the move **since**. **Drifting up**: reacted up by at least your threshold (4% by default), still above the low of the reaction days, and higher since. **Holding up**: above that low but not higher since. The same downwards. Only stocks the desk prices are listed (the Nifty 500 and your sectors).
+- **Sector Compass**: a relative rotation chart of the Nifty sector indices against the Nifty 50. Across is relative strength (above 100 beats the Nifty), up is whether that strength is rising. Quadrants: **Leading**, **Weakening**, **Lagging**, **Improving**; sectors tend to move clockwise through them. Weekly (6-week tail) or daily (10-day tail).
+- **Stock Radar**: every stock the desk tracks in one sortable table: returns, distance from the 52-week high, strength against the Nifty over 3 months, above the 50 and 200-day averages, volume against average, trend, P/E, ROE and signals (deals, Results Drift, volume spike). The **score** (0 to 100) weights strength against the Nifty 30%, nearness to the 52-week high 20%, the two averages 20%, one-month return 15% and volume 15%; strength, return and volume are ranked within the list, so it compares stocks with each other.
+
+NSE's and BSE's files are read from the server the desk runs on. If either site refuses it, the tool says so and keeps the last data it read.
 
 ### F&O expiries
 
