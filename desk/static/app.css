@@ -48,7 +48,8 @@ svg { flex: none; }
 .side { background: var(--side); color: var(--side-ink); display: flex; flex-direction: column; padding: 18px 12px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; color: #fff; padding: 2px 8px 18px; }
 .brand small { display: block; font-weight: 500; font-size: 11px; color: var(--side-muted); letter-spacing: .08em; }
-.logo { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, #4c6fff, #18b6a4); color: #fff; font-weight: 800; font-size: 17px; }
+.logo { display: block; width: 34px; height: 34px; border-radius: 9px; flex: none; }
+.login-logo { display: block; width: 56px; height: 56px; border-radius: 14px; margin-bottom: 12px; }
 .tabs { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .tabs button, .navlink { display: flex; align-items: center; gap: 11px; width: 100%; border: 0; background: none; color: var(--side-ink); padding: 9px 10px; border-radius: 9px; font: inherit; font-weight: 500; cursor: pointer; text-align: left; text-decoration: none; }
 .tabs button svg, .navlink svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; opacity: .85; }
