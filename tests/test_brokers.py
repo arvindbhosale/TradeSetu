@@ -23,7 +23,10 @@ EXPECTED = {"NSE:RELIANCE", "NSE:NIFTY 50", "NSE:NIFTY BANK", "NFO:NIFTY25NOVFUT
 
 
 def ms(day: date) -> int:
-    return int(datetime(day.year, day.month, day.day, 15, 30).timestamp() * 1000)
+    """15:30 IST on ``day`` in epoch milliseconds, whatever the machine's time zone."""
+    from desk.brokers.instruments import _IST
+
+    return int(datetime(day.year, day.month, day.day, 15, 30, tzinfo=_IST).timestamp() * 1000)
 
 
 # -- symbols ------------------------------------------------------------------
