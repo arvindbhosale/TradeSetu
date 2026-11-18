@@ -19,7 +19,10 @@ READ_ONLY = "--read-only" in sys.argv
 server = MCPServer("fake-kite", log_level="CRITICAL")
 STATE = {"logged_in": False, "orders": [], "gtts": []}
 PRICES = {"NSE:RELIANCE": 1400.0, "NSE:TCS": 3500.0, "NSE:INFY": 1500.0, "BSE:RELIANCE": 1400.5,
-          "NSE:NIFTY 50": 24500.0, "NSE:NIFTY BANK": 52000.0, "NSE:NIFTY IT": 38000.0}
+          "NSE:NIFTY 50": 24500.0, "NSE:NIFTY BANK": 52000.0, "NSE:NIFTY IT": 38000.0,
+          "BSE:SENSEX": 81000.0, "BSE:BANKEX": 60000.0, "BSE:SENSEX50": 25800.0, "BSE:BSE500": 36000.0}
+# Kite files indices under the INDICES segment; these are the BSE ones the fake lists.
+BSE_INDEX_ROWS = [("SENSEX", "SENSEX"), ("BANKEX", "BANKEX"), ("SENSEX50", "SENSEX50"), ("BSE500", "BSE 500")]
 HOLDINGS = [{"tradingsymbol": "INFY", "exchange": "NSE", "quantity": 20, "average_price": 1450.0,
              "last_price": 1500.0, "pnl": 1000.0}]
 
@@ -231,7 +234,12 @@ def search_instruments(query: str, filter_on: str = "id") -> str:
     past = (anchor - timedelta(days=20)).isoformat()
     lots = {"NIFTY": 75, "BANKNIFTY": 35, "RELIANCE": 500, "TCS": 175, "INFY": 400, "SBIN": 750}
     rows = []
-    if filter_on == "tradingsymbol" and query == "FUT":
+    if filter_on == "id" and query == "BSE:":
+        rows = [{"exchange": "BSE", "segment": "INDICES", "tradingsymbol": symbol, "name": name, "instrument_type": "EQ",
+                 "lot_size": 0} for symbol, name in BSE_INDEX_ROWS]
+        rows.append({"exchange": "BSE", "segment": "BSE", "tradingsymbol": "RELIANCE", "name": "RELIANCE INDUSTRIES",
+                     "instrument_type": "EQ", "lot_size": 1})
+    elif filter_on == "tradingsymbol" and query == "FUT":
         for name, lot in lots.items():
             for expiry in monthly:
                 rows.append({"exchange": "NFO", "name": name, "tradingsymbol": f"{name}{expiry[2:4]}{expiry[5:7]}FUT",

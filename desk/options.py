@@ -21,13 +21,14 @@ import pandas as pd
 from . import market
 from .backtest import BacktestParams, _curve_stats, _metrics, _points
 from .charges import order_charges
+from .fno import exchange_of
 
 RATE = 0.065            # risk-free rate for option pricing, about the 91-day T-bill
 STRIKE_STEP = {"NIFTY": 50, "BANKNIFTY": 100, "FINNIFTY": 50, "MIDCPNIFTY": 25, "NIFTYNXT50": 100,
                "SENSEX": 100, "BANKEX": 100}
 SPOT = {"NIFTY": "NSE:NIFTY 50", "BANKNIFTY": "NSE:NIFTY BANK", "FINNIFTY": "NSE:NIFTY FIN SERVICE",
         "MIDCPNIFTY": "NSE:NIFTY MID SELECT", "NIFTYNXT50": "NSE:NIFTY NEXT 50", "SENSEX": "BSE:SENSEX",
-        "BANKEX": "BSE:BANKEX"}
+        "BANKEX": "BSE:BANKEX", "SENSEX50": "BSE:SENSEX50"}
 YAHOO_SPOT = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "FINNIFTY": "NIFTY_FIN_SERVICE.NS", "SENSEX": "^BSESN"}
 LOT_DEFAULT = {"NIFTY": 65, "BANKNIFTY": 30, "FINNIFTY": 60, "MIDCPNIFTY": 120, "NIFTYNXT50": 25, "SENSEX": 20, "BANKEX": 30}   # NSE lots from Jan 2026
 EXPIRY_CLOSE = clock_time(15, 30)
@@ -195,7 +196,7 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
         raise ValueError("stoploss must be 0-100% and target 0-1000% of the premium")
     if len(bars) < 30:
         raise ValueError("not enough candles")
-    exchange = "BFO" if underlying in ("SENSEX", "BANKEX") else "NFO"
+    exchange = exchange_of(underlying)
     step = STRIKE_STEP.get(underlying, 50)
     vol_by_day = (vix / 100).reindex(bars.index.normalize().unique()).ffill().bfill()
     if vol_by_day.isna().all():

@@ -45,7 +45,7 @@ from .auth import COOKIE, SESSION_SECONDS, Auth
 from .backtest import BacktestParams, run_strategy
 from .broker import Desk, OrderRejected
 from .custom import OPS as RULE_OPS, TIME_OPS as RULE_TIME_OPS, CustomStrategies
-from .fno import Derivatives
+from .fno import BSE_INDICES, Derivatives, exchange_of
 from .fnoalgo import FnoAlgoEngine, arm_phrase as fno_arm_phrase
 from .fundamentals import LABELS as FUNDAMENTAL_LABELS, Fundamentals
 from .indices import Indices
@@ -675,15 +675,15 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             raise ValueError(f"interval must be one of {', '.join(data.INTERVALS)}")
         if symbol.upper().startswith("IDX:"):
             index_id = symbol[4:].lower()
-            from .indices import BY_ID
-            if index_id not in BY_ID:
+            entry = indices.entry(index_id)
+            if entry is None:
                 raise ValueError("no such index")
             instrument = indices.kite_name(index_id) or ""
             if not instrument:
-                if BY_ID[index_id][5]:
-                    symbol = BY_ID[index_id][5]
+                if entry[5]:
+                    symbol = entry[5]
                 else:
-                    raise ValueError(f"Kite has not named {BY_ID[index_id][1]} yet. Connect and log in to Kite, then reopen it.")
+                    raise ValueError(f"Kite has not named {entry[1]} yet. Connect and log in to Kite, then reopen it.")
         if instrument:
             # An index or a futures and options contract, by its Kite name: Kite only.
             import re
@@ -1292,7 +1292,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             underlying, bars, positions, vix, capital=_number(payload, "capital", cfg["paper_capital"]),
             lots=int(_number(payload, "lots", 1)), lot_size=lot, side=str(payload.get("side", "calls")),
             moneyness=int(_number(payload, "moneyness", 0)), min_days=_number(payload, "min_days", 2),
-            expiry_weekday=int(_number(payload, "expiry_weekday", 3 if underlying in ("SENSEX", "BANKEX") else 1)),
+            expiry_weekday=int(_number(payload, "expiry_weekday", 3 if underlying in BSE_INDICES else 1)),
             stop_pct=_number(payload, "stop_pct", 0), target_pct=_number(payload, "target_pct", 0),
             iv_scale=_number(payload, "iv_scale", 1.0), slippage_pct=_number(payload, "slippage_pct", 1.0),
             intraday=interval != "1d", square_off=cfg["square_off"], strategy_name=strategy.name)
@@ -1317,7 +1317,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if interval not in data.INTERVALS:
             raise ValueError(f"interval must be one of {', '.join(data.INTERVALS)}")
         strategy = library.strategy(str(payload.get("strategy", "")))
-        exchange = "BFO" if underlying in ("SENSEX", "BANKEX") else "NFO"
+        exchange = exchange_of(underlying)
         front = next((c for c in derivatives.futures() if c["underlying"] == underlying), None)
         bars, source, continuous = None, "", False
         if kite.connected and front:
@@ -1496,22 +1496,24 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     @app.post("/api/screens/run")
     def run_screen(payload: dict):
         from . import screens as screens_module
-        from .indices import BY_ID
         payload = body_of(payload)
         key = str(payload.get("screen", ""))
         if key not in screens_module.SCREENS:
             raise ValueError(f"screen must be one of {', '.join(screens_module.SCREENS)}")
         universe = str(payload.get("universe") or screens_module.SCREENS[key]["universe"])
-        if universe not in BY_ID:
+        entry = indices.entry(universe)
+        if entry is None:
             raise ValueError("no such index")
+        if not entry[3]:
+            raise ValueError(f"{entry[1]} has no published stock list to screen. Pick a Nifty index.")
         rows = indices.constituents(universe)
         if not rows:
-            raise ValueError(f"The stock list of {BY_ID[universe][1]} has not loaded yet. Open Nifty indices, wait a moment and try again.")
+            raise ValueError(f"The stock list of {entry[1]} has not loaded yet. Open Indices, wait a moment and try again.")
         missing = [r["symbol"] for r in rows if not fundamentals.get(r["symbol"])]
         if missing:
             fundamentals.queue(missing)
         out = screens_module.run(key, rows, fundamentals.get)
-        out.update(universe=universe, universe_name=BY_ID[universe][1],
+        out.update(universe=universe, universe_name=entry[1],
                    note=(f"Figures for {out['missing']} of {out['total']} stocks are still loading (about 2 a second); run it "
                          "again in a minute for the full list." if out["missing"] else None))
         return out

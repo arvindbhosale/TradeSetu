@@ -135,7 +135,22 @@ def test_constituent_lists_parse_and_the_catalogue_is_sound():
     assert rows == [{"symbol": "TCS.NS", "name": "Tata Consultancy Services Ltd.", "industry": "Information Technology"},
                     {"symbol": "INFY.NS", "name": "Infosys Ltd.", "industry": "Information Technology"}]
     assert len(CATALOG) >= 50 and len({c[0] for c in CATALOG}) == len(CATALOG)
-    assert all(c[3].startswith("ind_") and c[4] for c in CATALOG)
+    assert all(c[3].startswith("ind_") and c[4] for c in CATALOG if c[2] != "BSE")
+    bse = [c for c in CATALOG if c[2] == "BSE"]
+    assert {c[0] for c in bse} == {"bsesensex", "bsesensex50", "bsebankex"}
+    assert all(c[3] is None and all(n.startswith("BSE:") for n in c[4]) for c in bse)
+
+
+def test_bse_rows_from_kite_become_board_entries():
+    from desk.indices import bse_entry, kite_key
+
+    assert kite_key("NIFTY 50") == "NSE:NIFTY 50" and kite_key("BSE:SENSEX") == "BSE:SENSEX"
+    assert bse_entry({"exchange": "BSE", "segment": "INDICES", "tradingsymbol": "BSE IT", "name": "BSE IT"}) == (
+        "bse_bseit", "BSE IT", "BSE", None, ["BSE:BSE IT"], None)
+    assert bse_entry({"exchange": "BSE", "segment": "INDICES", "tradingsymbol": "AUTO", "name": "AUTO"})[1] == "BSE AUTO"
+    assert bse_entry({"exchange": "BSE", "segment": "BSE", "tradingsymbol": "RELIANCE"}) is None       # a stock
+    assert bse_entry({"exchange": "NSE", "segment": "INDICES", "tradingsymbol": "NIFTY 50"}) is None   # an NSE index
+    assert bse_entry({"exchange": "BSE", "segment": "INDICES", "tradingsymbol": "BAD;NAME"}) is None
 
 
 def make_indices(tmp_path, kite=None, caps=None):
@@ -215,6 +230,24 @@ def test_index_levels_come_from_kite_once_signed_in(tmp_path):
             time.sleep(0.05)
         card = next(c for c in board.cards(trend.DEFAULT)["indices"] if c["id"] == "nifty50")
         assert card["source"] == "Kite" and card["value"] == pytest.approx(24500.0, rel=0.01)
+        # Every BSE index Kite lists joins the board under BSE; the catalogue's Sensex, Sensex 50, Bankex keep their names.
+        names = board.resolve_kite_names()
+        assert names["bsesensex"] == "BSE:SENSEX" and names["bsesensex50"] == "BSE:SENSEX50" and names["bsebankex"] == "BSE:BANKEX"
+        bse = [e for e in board.entries() if e[2] == "BSE"]
+        assert [e[0] for e in bse] == ["bsesensex", "bsesensex50", "bsebankex", "bse_bse500"]     # no duplicate, no stock
+        assert names["bse_bse500"] == "BSE:BSE500" and board.entry("bse_bse500")[1] == "BSE 500"
+        board.refresh_levels(force=True)
+        cards = {c["id"]: c for c in board.cards(trend.DEFAULT)["indices"]}
+        assert cards["bse_bse500"]["source"] == "Kite" and cards["bse_bse500"]["value"] == pytest.approx(36000.0, rel=0.01)
+        assert cards["bsesensex"]["has_list"] is False and cards["nifty50"]["has_list"] is True
+        detail = board.detail("bse_bse500", trend.DEFAULT)
+        assert detail["has_list"] is False and detail["stocks"] == [] and detail["kite_name"] == "BSE:BSE500"
+        # Kept on disk, and an empty answer (instrument list still loading) does not wipe it.
+        again, _, _ = make_indices(tmp_path, kite=kite)
+        assert again.entry("bse_bse500") is not None
+        again.kite.call = lambda *a, **k: []
+        again.discover_bse(force=True)
+        assert again.entry("bse_bse500") is not None
     finally:
         kite.disconnect()
 
