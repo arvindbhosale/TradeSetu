@@ -12,7 +12,7 @@ The screenshots use sample data, not real prices.
    - [Markets: sector cards](#markets-sector-cards)
    - [How Uptrend and Downtrend are decided (and changing it)](#how-uptrend-and-downtrend-are-decided)
    - [Stock details: fundamentals and technicals](#stock-details-fundamentals-and-technicals)
-   - [Nifty indices](#nifty-indices)
+   - [Indices](#indices)
    - [F&O expiries](#fo-expiries)
    - [Option chain: track, paper and live trade](#option-chain-track-paper-and-live-trade)
    - [Index futures: prices and charts](#index-futures-prices-and-charts)
@@ -160,7 +160,7 @@ The sectors are a starting set of liquid NSE stocks grouped by me, not the excha
 
 ### How Uptrend and Downtrend are decided
 
-One rule decides the trend badge everywhere: sector cards, Nifty index cards, each stock in a table and the stock details. It works on daily candles. **You choose it**: press **How a trend is decided** above the cards on Markets or Nifty indices.
+One rule decides the trend badge everywhere: sector cards, index cards, each stock in a table and the stock details. It works on daily candles. **You choose it**: press **How a trend is decided** above the cards on Markets or Indices.
 
 ![Trend rule editor](img/25-trend-rule.png)
 
@@ -184,15 +184,16 @@ Click any stock name (sector table, index table) to open its details.
 - **Fundamentals** (Yahoo Finance; Kite has none): market cap, P/E, forward P/E, P/B, EPS, book value, ROE, ROA, debt to equity, margins, revenue and earnings growth, dividend yield, beta, promoter/institution holdings, sector and industry. They update in the background; a stock seen for the first time can show "loading" for a minute.
 - **Chart** opens the stock in Charts (Kite candles, any interval); **Trade** opens the order form with the symbol filled in.
 
-### Nifty indices
+### Indices
 
-A board of NSE's indices, laid out like the sector cards: broad market (Nifty 50, Next 50, 100, 200, 500, Midcap, Smallcap…), sectoral (Bank, IT, Auto, Pharma, FMCG, Metal, Realty, PSU Bank…) and thematic (CPSE, Energy, Infra, Consumption, MNC…), 52 in all.
+A board of NSE's indices, laid out like the sector cards: broad market (Nifty 50, Next 50, 100, 200, 500, Midcap, Smallcap…), sectoral (Bank, IT, Auto, Pharma, FMCG, Metal, Realty, PSU Bank…) and thematic (CPSE, Energy, Infra, Consumption, MNC…), 52 in all. The **BSE** group holds every index Kite lists on BSE (Sensex, Sensex 50, Bankex, BSE 100, 200, 500, Midcap, Smallcap, the sectoral indices…), read from Kite's instrument list once a day after you log in. Before that only Sensex, Sensex 50 and Bankex are shown.
 
-![Nifty indices board](img/27-nifty-indices.png)
+![Indices board](img/27-nifty-indices.png)
 
 - **Levels** are Kite's official index values when Kite is logged in (live during market hours). Before you log in, they come from Yahoo where it has the index, or are rebuilt from the index's stocks (equal weight) for indices of up to 100 stocks. Each card names its source. The board switches to Kite within seconds of your login.
 - Each card shows the level, today's move, 1 week / 1 month / 3 months / 1 year, the trend (your rule) and 45 daily candles.
 - **Constituent lists** come from NSE's published files and are re-read once a day, so additions and removals appear on their own.
+- BSE publishes no constituent file, so a BSE card shows the level, trend and chart but no stock list.
 
 Click a card to open the index:
 
@@ -217,7 +218,7 @@ The desk does not trade futures. Index **options** are traded from the option ch
 
 ### Option chain: track, paper and live trade
 
-At the top of **F&O expiries**. Pick the index (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYNXT50, SENSEX, BANKEX), the expiry and how many strikes either side of the money, then **Load chain**. Needs Kite logged in. With **Live** ticked it refreshes from Kite every 5 seconds in market hours.
+At the top of **F&O expiries**. Pick the index (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYNXT50, SENSEX, BANKEX, SENSEX50), the expiry and how many strikes either side of the money, then **Load chain**. Needs Kite logged in. With **Live** ticked it refreshes from Kite every 5 seconds in market hours.
 
 ![Option chain, contract chart, order and positions](img/29-option-chain.png)
 
@@ -785,14 +786,14 @@ Settings: index, dates, candle, signal strategy, **Buy** (calls / puts / both), 
 #### Step by step
 
 1. **Strategy**: pick one. The list is grouped as *Neutral: sell premium*, *Big move either way: buy premium*, *Bullish* and *Bearish*. The line under it says what it does and shows the **Markets** badges.
-2. **Index**: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYNXT50, SENSEX or BANKEX.
+2. **Index**: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYNXT50, SENSEX, BANKEX or SENSEX50.
 3. **Expiry**: *Weekly* only for NIFTY (Tuesday) and SENSEX (Thursday). Every other index has had only monthly options since November 2024. Choose *Monthly* for them.
 4. **Strikes**. Every strike is counted in strikes from the at-the-money (ATM) strike, the strike nearest the index:
    - **Strikes away from ATM (sold legs) (k)**: how far the sold legs of a strangle, condor, guts, jade lizard, diagonal or collar sit from ATM.
    - **Hedge strikes further out (bought legs) (w)**: how far the hedge legs sit beyond them, or the gap between the legs of a spread, butterfly or ratio spread.
-   - One strike is 50 points on NIFTY and FINNIFTY, 25 on MIDCPNIFTY, and 100 on BANKNIFTY, NIFTYNXT50, SENSEX and BANKEX. So on NIFTY, k = 2 and w = 4 put the sold legs 100 points out and the wings 200 points beyond them.
+   - One strike is 50 points on NIFTY and FINNIFTY, 25 on MIDCPNIFTY, and 100 on BANKNIFTY, NIFTYNXT50, SENSEX and BANKEX. SENSEX50 uses the gap between the strikes in Kite's contract list. So on NIFTY, k = 2 and w = 4 put the sold legs 100 points out and the wings 200 points beyond them.
    - A box the strategy does not use is hidden.
-5. **Lots**: the quantity is lots × the exchange lot size (from Kite's contract list, or NIFTY 65, BANKNIFTY 30, FINNIFTY 60, MIDCPNIFTY 120, NIFTYNXT50 25, SENSEX 20, BANKEX 30). A "2×" leg trades twice the lots.
+5. **Lots**: the quantity is lots × the exchange lot size (from Kite's contract list, or NIFTY 65, BANKNIFTY 30, FINNIFTY 60, MIDCPNIFTY 120, NIFTYNXT50 25, SENSEX 20, BANKEX 30; SENSEX50 only from Kite's list). A "2×" leg trades twice the lots.
 6. Open **Payoff now (today's market)** to see it on today's market, or press **Run** to backtest it. Margin %, Volatility × VIX, put skew and slippage are under **Advanced settings**.
 
 #### Payoff now

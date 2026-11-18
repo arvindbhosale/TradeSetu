@@ -1,8 +1,14 @@
-"""The NSE index board: every major Nifty index with its own candles, trend and constituents.
+"""The index board: every major Nifty index and every BSE index, each with its own candles and trend.
 
 Index levels and candles come from Kite (the official index values) when Kite is
 signed in; otherwise from Yahoo for the indices it carries. Constituents come
-from NSE's published list for each index, downloaded once a day.
+from NSE's published list for each Nifty index, downloaded once a day. BSE
+publishes no such file, so BSE indices show their level and trend only.
+
+The BSE list is Kite's own: every instrument Kite files under the INDICES
+segment on BSE, read from its instrument list once a day. Sensex, Sensex 50 and
+Bankex are named here so they show (from Yahoo, for Sensex) before Kite is
+signed in; the rest appear once Kite has been asked.
 
 Weights: NSE weights its indices by free-float market cap and publishes the
 weights only in monthly factsheets. The desk approximates them by full market
@@ -36,8 +42,10 @@ NSE_FILE = "https://nsearchives.nseindia.com/content/indices/{file}.csv"
 NIFTY_FILE = "https://www.niftyindices.com/IndexConstituent/{file}.csv"
 LIST_SECONDS = 24 * 3600
 LEVEL_SECONDS = 6 * 3600
+BSE_GROUP = "BSE"
 
-# (id, name, group, constituent file, Kite names to try, Yahoo symbol). File names checked against NSE.
+# (id, name, group, constituent file, Kite names to try, Yahoo symbol). File names checked against NSE. A Kite
+# name without an exchange is on NSE. BSE indices have no constituent file (None).
 CATALOG = [
     ("nifty50", "Nifty 50", "Broad market", "ind_nifty50list", ["NIFTY 50"], "^NSEI"),
     ("niftynext50", "Nifty Next 50", "Broad market", "ind_niftynext50list", ["NIFTY NEXT 50"], "^NSMIDCP"),
@@ -91,8 +99,30 @@ CATALOG = [
     ("nifty200quality30", "Nifty 200 Quality 30", "Strategy", "ind_nifty200Quality30_list", ["NIFTY200 QUALTY30", "NIFTY200 QUALITY 30"], None),
     ("nifty100lowvol30", "Nifty 100 Low Volatility 30", "Strategy", "ind_nifty100LowVolatility30list", ["NIFTY100 LOWVOL30", "NIFTY100 LOW VOLATILITY 30"], None),
     ("niftymidcap150momentum50", "Nifty Midcap 150 Momentum 50", "Strategy", "ind_niftyMidcap150Momentum50_list", ["NIFTY M150 MOM 50", "NIFTY MIDCAP150 MOMENTUM 50"], None),
+    ("bsesensex", "BSE Sensex", BSE_GROUP, None, ["BSE:SENSEX"], "^BSESN"),
+    ("bsesensex50", "BSE Sensex 50", BSE_GROUP, None, ["BSE:SENSEX50"], None),
+    ("bsebankex", "BSE Bankex", BSE_GROUP, None, ["BSE:BANKEX"], None),
 ]
 BY_ID = {entry[0]: entry for entry in CATALOG}
+
+
+def kite_key(name: str) -> str:
+    """``EXCHANGE:NAME`` for a catalogue spelling; a bare name is an NSE index."""
+    return name if ":" in name else f"NSE:{name}"
+
+
+def bse_entry(row: dict) -> tuple | None:
+    """A board entry for one row of Kite's instrument list, if it is a BSE index."""
+    if not isinstance(row, dict) or str(row.get("exchange") or "").upper() != "BSE" \
+            or str(row.get("segment") or "").upper() != "INDICES":
+        return None
+    symbol = " ".join(str(row.get("tradingsymbol") or "").upper().split())
+    if not symbol or not re.fullmatch(r"[A-Z0-9 &\-]{1,40}", symbol):
+        return None
+    name = " ".join(str(row.get("name") or "").split()) or symbol
+    if not name.upper().startswith(("BSE", "S&P BSE")):
+        name = f"BSE {name}"
+    return ("bse_" + re.sub(r"[^a-z0-9]", "", symbol.lower()), name, BSE_GROUP, None, [f"BSE:{symbol}"], None)
 SYNTHETIC_MAX = 100        # an index this size or smaller can be rebuilt from its stocks when nothing else serves it
 
 
@@ -115,7 +145,7 @@ class Indices:
         self.path = path or home() / "indices.json"
         self._lock = threading.RLock()
         self._tick_lock = threading.Lock()
-        self._state = {"lists": {}, "listed_at": 0, "kite_names": {}}
+        self._state = {"lists": {}, "listed_at": 0, "kite_names": {}, "bse": [], "bse_at": 0}
         self._levels: dict[str, pd.DataFrame] = {}
         self._level_source: dict[str, str] = {}
         self._level_at = 0.0
@@ -130,6 +160,47 @@ class Indices:
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self._state), encoding="utf-8")
         tmp.replace(self.path)
+
+    # -- which indices -------------------------------------------------------
+
+    def entries(self) -> list[tuple]:
+        """The catalogue, then every other BSE index Kite lists (in Kite's order)."""
+        known = {kite_key(name) for entry in CATALOG for name in entry[4]}
+        ids = {entry[0] for entry in CATALOG}
+        out = list(CATALOG)
+        for raw in self._state.get("bse") or []:
+            entry = tuple(raw)
+            if len(entry) == 6 and entry[0] not in ids and entry[4][0] not in known:
+                ids.add(entry[0])
+                out.append(entry)
+        return out
+
+    def entry(self, index_id: str) -> tuple | None:
+        return next((e for e in self.entries() if e[0] == index_id), None)
+
+    def discover_bse(self, force: bool = False) -> None:
+        """Read every BSE index from Kite's instrument list (rows ``BSE:...`` in the INDICES segment), once a day."""
+        if not self._kite_ready() or "search_instruments" not in self.kite.tools:
+            return
+        if not force and time.time() - self._state.get("bse_at", 0) < LIST_SECONDS and self._state.get("bse"):
+            return
+        try:
+            answer = self.kite.call("search_instruments", {"query": "BSE:", "filter_on": "id"}, timeout=120.0)
+        except Exception:  # noqa: BLE001 - keep yesterday's list
+            return
+        if isinstance(answer, dict):
+            answer = answer.get("data") or []
+        found, seen = [], set()
+        for row in answer if isinstance(answer, list) else []:
+            entry = bse_entry(row)
+            if entry and entry[0] not in seen:
+                seen.add(entry[0])
+                found.append(list(entry))
+        if not found:
+            return                                          # an empty answer is a loading instrument list, not "no indices"
+        with self._lock:
+            self._state.update(bse=sorted(found, key=lambda e: e[1]), bse_at=time.time())
+            self._save()
 
     # -- constituents --------------------------------------------------------
 
@@ -147,6 +218,8 @@ class Indices:
             return
         lists = dict(self._state["lists"])
         for index_id, _, _, file, _, _ in CATALOG:
+            if not file:
+                continue
             for template in (NSE_FILE, NIFTY_FILE):
                 try:
                     rows = parse_constituents(self._get(template.format(file=file)))
@@ -179,16 +252,18 @@ class Indices:
         """Which spelling Kite uses for each index, found by asking for all candidates at once."""
         if not self._kite_ready():
             return self._state["kite_names"]
-        candidates = {f"NSE:{name}": index_id for index_id, _, _, _, names, _ in CATALOG for name in names}
+        self.discover_bse()
+        entries = self.entries()
+        candidates = {kite_key(name): index_id for index_id, _, _, _, names, _ in entries for name in names}
         try:
             found = self.kite.ltp(list(candidates))
         except Exception:  # noqa: BLE001 - keep what was resolved before
             return self._state["kite_names"]
         names = {}
-        for index_id, _, _, _, options, _ in CATALOG:
+        for index_id, _, _, _, options, _ in entries:
             for name in options:
-                if f"NSE:{name}" in found:
-                    names[index_id] = f"NSE:{name}"
+                if kite_key(name) in found:
+                    names[index_id] = kite_key(name)
                     break
         with self._lock:
             self._state["kite_names"] = names
@@ -203,7 +278,7 @@ class Indices:
             return
         names = self.resolve_kite_names()
         levels, sources = {}, {}
-        for index_id, _, _, _, _, yahoo in CATALOG:
+        for index_id, _, _, _, _, yahoo in self.entries():
             frame = None
             if index_id in names and self._kite_ready():
                 with contextlib.suppress(Exception):
@@ -258,9 +333,10 @@ class Indices:
 
     def cards(self, rule: dict) -> dict:
         out = []
-        for index_id, name, group, _, _, _ in CATALOG:
+        for index_id, name, group, file, _, _ in self.entries():
             frame, source = self.level(index_id)
             card = {"id": index_id, "name": name, "group": group, "stocks": len(self.constituents(index_id)),
+                    "has_list": bool(file),
                     "source": source, "kite": bool(self.kite_name(index_id))}
             if frame is not None and len(frame) > 1:
                 close = frame["Close"]
@@ -283,9 +359,10 @@ class Indices:
         return float(earlier.iloc[-1]) if len(earlier) else None
 
     def detail(self, index_id: str, rule: dict) -> dict:
-        if index_id not in BY_ID:
+        entry = self.entry(index_id)
+        if entry is None:
             raise ValueError("no such index")
-        _, name, group, _, _, _ = BY_ID[index_id]
+        _, name, group, file, _, _ = entry
         frame, source = self.level(index_id)
         rows = self.constituents(index_id)
         symbols = [r["symbol"] for r in rows]
@@ -311,7 +388,7 @@ class Indices:
                            "market_cap": facts.get("market_cap"), "pe": facts.get("pe"), "roe": facts.get("roe")})
         stocks.sort(key=lambda r: (r["contribution_1d"] is None, -(r["contribution_1d"] or 0)))
         out = {"id": index_id, "name": name, "group": group, "source": source, "kite_name": self.kite_name(index_id),
-               "stocks": stocks, "weights": "market cap (approximate)" if by_cap else "equal (market caps still loading)",
+               "stocks": stocks, "has_list": bool(file), "weights": "market cap (approximate)" if by_cap else "equal (market caps still loading)",
                "quote_source": quote_source, "candles": [], "trend": "Loading", "trend_text": trend.describe(rule)}
         if frame is not None and len(frame) > 1:
             close = frame["Close"]

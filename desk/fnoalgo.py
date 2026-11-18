@@ -451,7 +451,11 @@ class FnoAlgoEngine:
                 raise AlgoError(f"No live price for {name}. Log in to Kite: MCX algos take futures and option prices "
                                 f"from Kite, in paper mode too.")
         else:
-            step = STRIKE_STEP.get(u, 50)
+            step = STRIKE_STEP.get(u)
+            if not step:                                 # an index with no fixed step here: the gap Kite's strikes use
+                strikes = sorted({c["strike"] for c in self._options(algo) if c["expiry"] == near}) if near else []
+                gaps = [b - a for a, b in zip(strikes, strikes[1:], strict=False) if b > a]
+                step = min(gaps) if gaps else 50
         atm = round(spot / step) * step
         if metal and strikes:
             atm = min(strikes, key=lambda k: abs(k - spot))      # MCX strikes need not sit on multiples of the step

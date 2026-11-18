@@ -22,7 +22,7 @@
   <div class="brand"><span class="logo" aria-hidden="true">T</span><span>TradeSetu<small>NSE · BSE</small></span></div>
   <nav class="tabs" role="tablist" aria-label="Sections">
       <button role="tab" data-tab="markets" aria-selected="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg><span>Markets</span></button>
-      <button role="tab" data-tab="indices"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 18l2.5-2.5 2 2L21 15"/></svg><span>Nifty indices</span></button>
+      <button role="tab" data-tab="indices"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 18l2.5-2.5 2 2L21 15"/></svg><span>Indices</span></button>
       <button role="tab" data-tab="analyze"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><span>AI Analyze</span></button>
       <button role="tab" data-tab="charts" id="tabbtn-charts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5v14M7 9h0M12 3v18M17 7v10"/><rect x="5" y="8" width="4" height="7" rx="1"/><rect x="10" y="6" width="4" height="9" rx="1"/><rect x="15" y="10" width="4" height="5" rx="1"/></svg><span>Charts</span></button>
       <button role="tab" data-tab="strategies"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg><span>Strategies</span></button>
@@ -118,6 +118,7 @@
           <button data-group="Sectoral" aria-pressed="false">Sectoral</button>
           <button data-group="Thematic" aria-pressed="false">Thematic</button>
           <button data-group="Strategy" aria-pressed="false">Strategy</button>
+          <button data-group="BSE" aria-pressed="false">BSE</button>
         </div>
         <div class="seg" id="index-filter" role="group" aria-label="Trend">
           <button data-filter="all" aria-pressed="true">All</button>
@@ -125,14 +126,14 @@
           <button data-filter="Downtrend" aria-pressed="false">Down</button>
           <button data-filter="Sideways" aria-pressed="false">Sideways</button>
         </div>
-        <label class="inline">Sort <select id="index-sort"><option value="">NSE order</option><option value="change_1d">Today</option><option value="change_1m">1 month</option><option value="change_1y">1 year</option></select></label>
+        <label class="inline">Sort <select id="index-sort"><option value="">Board order</option><option value="change_1d">Today</option><option value="change_1m">1 month</option><option value="change_1y">1 year</option></select></label>
         <button type="button" class="trend-rule-btn">Trend rule</button>
       </div>
     </div>
     <div class="trend-rule" hidden></div>
     <div id="index-error" class="error" hidden></div>
     <div class="cards" id="index-cards"></div>
-    <p class="hint">Index levels and candles come from Kite when it is logged in (the official index values), otherwise from Yahoo where it carries the index. Constituents are NSE's published lists, refreshed daily.</p>
+    <p class="hint">Index levels and candles come from Kite when it is logged in (the official index values), otherwise from Yahoo where it carries the index. Constituents are NSE's published lists, refreshed daily. BSE indices are every index Kite lists on BSE; BSE publishes no constituent file, so they show level and trend only.</p>
   </div>
   <div id="index-detail" hidden>
     <div class="jobhead"><button type="button" id="index-back">← All indices</button><span class="hint" id="index-source"></span></div>
@@ -248,7 +249,7 @@
           <label>Trade <select name="kind"><option value="structure">An option strategy</option><option value="futures">Futures when a strategy says so</option></select></label>
           <label class="fno-structure">Option strategy <select name="structure"></select></label>
           <label class="fno-futures">Trade <select name="direction"><option value="long">Buy only</option><option value="short">Sell only</option><option value="both">Buy and sell</option></select></label>
-          <label>Index or MCX metal <select name="underlying"><optgroup label="Indices (NSE, BSE)"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option></optgroup><optgroup label="MCX gold and silver (₹)"><option value="GOLD">GOLD · 1 kg</option><option value="GOLDM">GOLDM · 100 g</option><option value="GOLDTEN">GOLDTEN · 10 g</option><option value="GOLDGUINEA">GOLDGUINEA · 8 g</option><option value="GOLDPETAL">GOLDPETAL · 1 g</option><option value="SILVER">SILVER · 30 kg</option><option value="SILVERM">SILVERM · 5 kg</option><option value="SILVERMIC">SILVERMIC · 1 kg</option></optgroup></select></label>
+          <label>Index or MCX metal <select name="underlying"><optgroup label="Indices (NSE, BSE)"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option><option>SENSEX50</option></optgroup><optgroup label="MCX gold and silver (₹)"><option value="GOLD">GOLD · 1 kg</option><option value="GOLDM">GOLDM · 100 g</option><option value="GOLDTEN">GOLDTEN · 10 g</option><option value="GOLDGUINEA">GOLDGUINEA · 8 g</option><option value="GOLDPETAL">GOLDPETAL · 1 g</option><option value="SILVER">SILVER · 30 kg</option><option value="SILVERM">SILVERM · 5 kg</option><option value="SILVERMIC">SILVERMIC · 1 kg</option></optgroup></select></label>
           <label class="fno-structure">Expiry <select name="expiry_kind"><option value="weekly">Weekly (NIFTY, SENSEX)</option><option value="monthly">Monthly</option></select></label>
         </div>
         <p class="hint" id="fno-desc"></p>
@@ -439,7 +440,7 @@
       <form id="form-sbt">
         <div class="row">
           <label>Option strategy <select name="structure"></select></label>
-          <label>Index <select name="underlying"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option></select></label>
+          <label>Index <select name="underlying"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option><option>SENSEX50</option></select></label>
           <label>When to trade <select name="mode"><option value="intraday">Intraday: buy and sell the same day</option><option value="positional" selected>Positional: hold until near expiry</option><option value="signal">When a strategy says buy (bullish or bearish strategies)</option></select></label>
           <label class="bt-own" hidden>From <input name="start" type="date" required></label>
           <label class="bt-own" hidden>To <input name="end" type="date" required></label>
@@ -533,7 +534,7 @@
       <p class="hint">Buys or sells index futures in lots when a strategy says so: buy only, sell only, or both (always in the market). Day candles are Kite's continuous futures series; every monthly roll is charged and the basis jump is taken out. Intraday runs use the live contract's candles where they reach back far enough, otherwise the index as a proxy. Futures are leveraged: a 1% move is about 8% of the margin.</p>
       <form id="form-fbt">
         <div class="row">
-          <label>Index <select name="underlying"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option></select></label>
+          <label>Index <select name="underlying"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option><option>SENSEX50</option></select></label>
           <label class="bt-own" hidden>From <input name="start" type="date" required></label>
           <label class="bt-own" hidden>To <input name="end" type="date" required></label>
           <label>Candle <select name="interval"></select></label>
@@ -564,7 +565,7 @@
       <p class="hint">Buys index options when a strategy says so: calls when it says buy, puts when it says sell, or both. Kite keeps no candles for expired contracts, so premiums are <strong>modelled</strong> with Black-Scholes from the index's real candles and India VIX. Real premiums differ, most around events and on expiry day.</p>
       <form id="form-obt">
         <div class="row">
-          <label>Index <select name="underlying"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option></select></label>
+          <label>Index <select name="underlying"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option><option>SENSEX50</option></select></label>
           <label class="bt-own" hidden>From <input name="start" type="date" required></label>
           <label class="bt-own" hidden>To <input name="end" type="date" required></label>
           <label>Candle <select name="interval"></select></label>

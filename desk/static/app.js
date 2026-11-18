@@ -1693,7 +1693,7 @@
         refreshSectors(); refreshIndices();
       } catch (err) { fail.replaceChildren(h("div", { class: "error", text: err.message })); }
     } });
-    box.replaceChildren(h("h3", { text: "How a trend is decided" }), h("p", { class: "hint", text: "One rule for every card on the Markets and Nifty indices boards, and for each stock's trend. It is worked out on daily candles." }),
+    box.replaceChildren(h("h3", { text: "How a trend is decided" }), h("p", { class: "hint", text: "One rule for every card on the Markets and Indices boards, and for each stock's trend. It is worked out on daily candles." }),
       h("div", { class: "row" }, h("label", {}, "Method", method)), fields, h("div", { class: "row" }, save), out, fail);
   }
   $$(".trend-rule-btn").forEach((button) => button.addEventListener("click", () => {
@@ -1702,14 +1702,14 @@
     if (!box.hidden) trendRuleEditor(box);
   }));
 
-  // -- Nifty indices board -----------------------------------------------------------------------
+  // -- Indices board (Nifty and BSE) --------------------------------------------------------------
 
   const ib = { cards: [], group: "all", filter: "all", sort: "", open: null, chart: null, interval: "1d", detail: null };
 
   function renderIndexBoard() {
     let list = ib.cards.filter((c) => (ib.group === "all" || c.group === ib.group) && (ib.filter === "all" || c.trend === ib.filter));
     if (ib.sort) list = list.slice().sort((a, b) => (b[ib.sort] ?? -1e9) - (a[ib.sort] ?? -1e9));
-    $("#index-cards").replaceChildren(...(list.length ? list.map((c) => boardCard(c, () => openIndex(c.id), `${c.group} · ${c.stocks || "?"} stocks`))
+    $("#index-cards").replaceChildren(...(list.length ? list.map((c) => boardCard(c, () => openIndex(c.id), c.has_list === false ? `${c.group} · level only` : `${c.group} · ${c.stocks || "?"} stocks`))
       : [h("p", { class: "hint", text: "No index matches this filter." })]));
   }
 
@@ -1748,7 +1748,8 @@
     const tile = (k, v) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v " + tone(v), text: v == null ? "–" : pct(v) }));
     $("#index-tiles").replaceChildren(h("div", { class: "tile" }, h("div", { class: "k", text: "Level" }), h("div", { class: "v", text: d.value ? inr2.format(d.value) : "–" })),
       tile("Today", d.change_1d), tile("1 week", d.change_1w), tile("1 month", d.change_1m), tile("1 year", d.change_1y));
-    $("#index-weights").textContent = `${d.stocks.length} stocks from NSE's list · weights: ${d.weights} · prices: ${d.quote_source || "loading"}. Click a stock for its details.`;
+    $("#index-weights").textContent = d.has_list === false ? "BSE publishes no constituent file for its indices, so only the level, trend and chart are shown."
+      : `${d.stocks.length} stocks from NSE's list · weights: ${d.weights} · prices: ${d.quote_source || "loading"}. Click a stock for its details.`;
     renderIndexStocks(d);
     if (redraw) drawIndexChart();
   }
@@ -2184,7 +2185,7 @@
       $("#obt-params").replaceChildren(...strategy.params.map((p) => h("label", {}, p.label, h("input", { name: "p_" + p.name, type: "number", min: p.minimum, max: p.maximum, step: p.integer ? 1 : 0.1, value: p.default, required: true }))));
     };
     form.strategy.addEventListener("change", params); params();
-    form.underlying.addEventListener("change", () => { form.expiry_weekday.value = ["SENSEX", "BANKEX"].includes(form.underlying.value) ? "3" : "1"; });
+    form.underlying.addEventListener("change", () => { form.expiry_weekday.value = ["SENSEX", "BANKEX", "SENSEX50"].includes(form.underlying.value) ? "3" : "1"; });
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const button = $("button[type=submit]", form); showError("#obt-error", null); syncSharedDates(); busy(button, true, "Running…");

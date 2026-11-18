@@ -22,9 +22,17 @@ from .settings import home
 
 logger = logging.getLogger(__name__)
 
-# Index underlyings with listed options, and the exchange segment they trade in.
+# Index underlyings with listed options, and the exchange segment they trade in. Lot sizes and expiries are
+# never kept here: they come from Kite's instrument list. Any other index Kite lists on BFO is shown in the
+# F&O list as well (lot size and expiries), but only these can be traded by the desk's algos and backtests.
 INDICES = {"NIFTY": "NFO", "BANKNIFTY": "NFO", "FINNIFTY": "NFO", "MIDCPNIFTY": "NFO", "NIFTYNXT50": "NFO",
-           "SENSEX": "BFO", "BANKEX": "BFO"}
+           "SENSEX": "BFO", "BANKEX": "BFO", "SENSEX50": "BFO"}
+BSE_INDICES = tuple(name for name, exchange in INDICES.items() if exchange == "BFO")
+
+
+def exchange_of(underlying: str) -> str:
+    """The derivatives segment an index trades in: BFO for BSE indices, NFO otherwise."""
+    return INDICES.get(underlying, "NFO")
 
 
 def _date(value) -> str | None:
@@ -79,13 +87,18 @@ class Derivatives:
         if not futures:
             raise KiteError("Kite returned no futures contracts. Its instrument list may still be loading; try again shortly.")
 
-        indices, stocks = [], []
+        indices, stocks, other_bse = [], [], []
+        nse_names = {name for exchange, name in futures if exchange == "NFO"}
         for (exchange, name), entry in sorted(futures.items(), key=lambda item: item[0][1]):
             monthly = sorted(entry["monthly"])
             if name in INDICES:
                 continue
             if exchange == "NFO":
                 stocks.append(self._view(name, exchange, entry["lot_size"], [(d, "monthly") for d in monthly], today))
+            elif name not in nse_names:
+                # BFO carries only index derivatives (a BSE stock future would share its NSE name): a BSE index
+                # the desk does not trade yet. Listed with Kite's lot size and expiries.
+                other_bse.append(self._view(name, exchange, entry["lot_size"], [(d, "monthly") for d in monthly], today))
         contracts: dict[str, list] = {}
         index_futures = {name: sorted(futures[(exchange, name)]["contracts"], key=lambda c: c["expiry"])
                          for name, exchange in INDICES.items() if (exchange, name) in futures}
@@ -109,6 +122,7 @@ class Derivatives:
             if dates:
                 indices.append(self._view(name, exchange, lot, [(d, "monthly" if d in monthly else "weekly")
                                                                 for d in sorted(dates)], today))
+        indices.extend(other_bse)
         metals, metal_note = self._metal_rows(today)
         with self._lock:
             self._data = {"fetched": self._now().strftime("%Y-%m-%d %H:%M"), "indices": indices, "stocks": stocks,

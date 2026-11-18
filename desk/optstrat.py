@@ -45,6 +45,7 @@ import pandas as pd
 
 from .backtest import BacktestParams, _curve_stats, _metrics, _points
 from .charges import futures_charges
+from .fno import BSE_INDICES, exchange_of
 from .futures import monthly_expiries
 from .options import RATE, STRIKE_STEP, bs_greeks, bs_price, option_charges
 from .risk import ExitRules
@@ -160,7 +161,7 @@ NSE_TUESDAY_FROM = date(2025, 9, 1)
 
 def weekly_weekday(underlying: str, day: date) -> int:
     """Weekday of the weekly expiry in force on ``day`` (Mon=0)."""
-    if underlying in ("SENSEX", "BANKEX"):
+    if underlying in BSE_INDICES:
         if day < date(2025, 1, 1):
             return 4                     # Friday
         return 1 if day < date(2025, 9, 1) else 3
@@ -169,7 +170,7 @@ def weekly_weekday(underlying: str, day: date) -> int:
 
 def expiry_after(underlying: str, moment: pd.Timestamp, kind: str, min_days: float, holidays=frozenset()) -> pd.Timestamp:
     """The first weekly or monthly expiry at least ``min_days`` after ``moment``, at 15:30."""
-    exchange = "BFO" if underlying in ("SENSEX", "BANKEX") else "NFO"
+    exchange = exchange_of(underlying)
     if kind == "monthly":
         start = moment.date()
         candidates = monthly_expiries(start, start + timedelta(days=100), holidays, exchange)
@@ -320,7 +321,7 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
             raise ValueError(f"{label} must be between 0 and {top}%")
     if len(bars) < 20:
         raise ValueError("not enough candles")
-    exchange = "BFO" if underlying in ("SENSEX", "BANKEX") else "NFO"
+    exchange = exchange_of(underlying)
     if expiry_kind == "weekly" and underlying not in ("NIFTY", "SENSEX") and bars.index[-1] > pd.Timestamp("2024-11-20"):
         raise ValueError(f"{underlying} has had only monthly options since November 2024. Choose monthly expiry.")
     vol = (vix / 100).reindex(pd.DatetimeIndex(bars.index.normalize().unique())).ffill().bfill()
