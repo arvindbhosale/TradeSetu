@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1729">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TradeSetu">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<title>Sign in · TradeSetu</title>
+<script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="login">
+  <div class="panel">
+    <h1>TradeSetu</h1>
+    <p class="hint">Sign in to your trading desk.</p>
+    <form id="form-login">
+      <label>Username <input name="username" autocomplete="username" required autofocus></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <label id="code-row" hidden>Authenticator code <input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 digits, or a recovery code"></label>
+      <button class="primary" type="submit">Sign in</button>
+      <div class="or" id="passkey-row" hidden><span>or</span></div>
+      <button type="button" id="passkey-login" hidden>Sign in with a passkey</button>
+    </form>
+    <div id="login-error" class="error" hidden></div>
+  </div>
+</main>
+<script src="/static/passkey.js"></script>
+<script src="/static/login.js"></script>
+<script src="/static/pwa.js"></script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{
+  "name": "TradeSetu",
+  "short_name": "TradeSetu",
+  "description": "Trading desk for NSE and BSE: charts, sectors, strategies, backtests, algos and orders.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f1729",
+  "theme_color": "#0f1729",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/static/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ],
+  "shortcuts": [
+    {"name": "Markets", "url": "/#markets"},
+    {"name": "Charts", "url": "/#charts"},
+    {"name": "Trade", "url": "/#trade"},
+    {"name": "Algos", "url": "/#algos"}
+  ]
+}

@@ -1,0 +1,47 @@
+# TradeSetu for Dokploy (Compose service) or plain `docker compose up -d`.
+#
+# Two services:
+#   desk      the web panel. Give it your domain in Dokploy (port 8000).
+#   kite-mcp  Zerodha's kite-mcp-server, private to this stack. The desk talks
+#             to it and relays only its sign-in pages under /kite/.
+#
+# No ports are published: Dokploy's Traefik reaches `desk` over the Docker
+# network. To run without Dokploy, add `ports: ["8000:8000"]` to `desk`.
+services:
+  desk:
+    build: .
+    restart: unless-stopped
+    environment:
+      DESK_ADMIN_USER: ${DESK_ADMIN_USER:-admin}
+      # One of these two. Avoid "$" and "#" in the password: env files change them.
+      DESK_ADMIN_PASSWORD: ${DESK_ADMIN_PASSWORD:-}
+      DESK_ADMIN_PASSWORD_HASH: ${DESK_ADMIN_PASSWORD_HASH:-}
+      DESK_ALLOWED_HOSTS: ${DESK_DOMAIN:?set DESK_DOMAIN to the domain you serve the desk on}
+      DESK_KITE_MCP_URL: http://kite-mcp:8080/mcp
+      # Set to 1 for one deploy to switch two-factor sign-in off (lost phone), then remove.
+      DESK_2FA_RESET: ${DESK_2FA_RESET:-}
+      TZ: Asia/Kolkata
+    expose:
+      - "8000"
+    volumes:
+      - desk_data:/data
+    depends_on:
+      - kite-mcp
+
+  kite-mcp:
+    build: deploy/kite-mcp
+    restart: unless-stopped
+    environment:
+      KITE_API_KEY: ${KITE_API_KEY:?set KITE_API_KEY}
+      KITE_API_SECRET: ${KITE_API_SECRET:?set KITE_API_SECRET}
+      # Where the browser is sent for the Kite sign-in: the desk relays it.
+      PUBLIC_BASE_URL: https://${DESK_DOMAIN}/kite
+      APP_MODE: http
+      APP_HOST: 0.0.0.0
+      APP_PORT: "8080"
+      TZ: Asia/Kolkata
+    expose:
+      - "8080"
+
+volumes:
+  desk_data:

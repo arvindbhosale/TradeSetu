@@ -1,0 +1,38 @@
+TradeSetu is distributed under two licenses.
+
+1. MIT License: everything in this repository except the parts listed in 2.
+
+2. Apache License 2.0 (full text in LICENSE-APACHE), for code derived from
+   TradingAgents (https://github.com/TauricResearch/TradingAgents), Copyright
+   Tauric Research, and for bundled third-party code:
+     - tradingagents/   (the multi-agent research package, modified)
+     - cli/             (the agents command-line interface, modified)
+     - main.py
+     - tests/ files that test the two packages above
+     - desk/static/lightweight-charts.js (TradingView, Inc.)
+   These parts stay under Apache-2.0, including the changes made to them,
+   and NOTICE must be kept with any copy.
+
+---------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2026 TradeSetu contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

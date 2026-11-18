@@ -1,0 +1,26 @@
+TradeSetu
+
+This is a modified distribution of TradingAgents
+(https://github.com/TauricResearch/TradingAgents), Copyright Tauric Research,
+licensed under the Apache License, Version 2.0 (see LICENSE-APACHE).
+The files listed in LICENSE as Apache-2.0 are modified versions of that work.
+The rest of TradeSetu (desk/ and other new files) is MIT-licensed.
+
+Changes from upstream:
+- Indian market defaults: bare symbols resolve to NSE/BSE, Kite-style symbols
+  (NSE:INFY, BSE:500325) and Indian index names are recognised, the run date is
+  the IST date, the Nifty 50 is the default benchmark, statements come from
+  Yahoo rather than SEC EDGAR, and macro news queries cover India.
+- Agents receive Indian market context for NSE/BSE listings; sentiment reads
+  Indian subreddits and StockTwits' NSE symbols; India macro aliases for FRED.
+- Added `desk/` (MIT): a desktop application with strategy and agent backtests,
+  paper trading, live orders through a Kite (Zerodha) MCP server, price charts,
+  rule-based algos, and a hosted mode with sign-in and Docker/Dokploy files
+  (replacing the upstream Dockerfile, docker-compose.yml and .env.example).
+- Tests updated for the changed defaults; tests added for the above.
+- Branding: the upstream logo, banners and update/announcement checks were
+  removed; reports and the CLI carry the TradeSetu name.
+
+Third-party code shipped with the desk:
+- TradingView Lightweight Charts v4.2.3 (desk/static/lightweight-charts.js),
+  Copyright (c) 2025 TradingView, Inc., Apache License 2.0.

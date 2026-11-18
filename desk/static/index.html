@@ -1,0 +1,1018 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1729">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TradeSetu">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<meta name="desk-token" content="__DESK_TOKEN__">
+<title>TradeSetu</title>
+<script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="shell">
+<aside class="side">
+  <div class="brand"><span class="logo" aria-hidden="true">T</span><span>TradeSetu<small>NSE · BSE</small></span></div>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+      <button role="tab" data-tab="markets" aria-selected="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg><span>Markets</span></button>
+      <button role="tab" data-tab="indices"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 18l2.5-2.5 2 2L21 15"/></svg><span>Nifty indices</span></button>
+      <button role="tab" data-tab="analyze"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><span>AI Analyze</span></button>
+      <button role="tab" data-tab="charts" id="tabbtn-charts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5v14M7 9h0M12 3v18M17 7v10"/><rect x="5" y="8" width="4" height="7" rx="1"/><rect x="10" y="6" width="4" height="9" rx="1"/><rect x="15" y="10" width="4" height="5" rx="1"/></svg><span>Charts</span></button>
+      <button role="tab" data-tab="strategies"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg><span>Strategies</span></button>
+      <button role="tab" data-tab="backtest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg><span>Backtest</span></button>
+      <button role="tab" data-tab="scanner"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M4 12h16"/></svg><span>Scanner</span></button>
+      <button role="tab" data-tab="algos"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="8" width="14" height="11" rx="2"/><path d="M12 8V4M9 13h0M15 13h0M9 17h6M2 13h3M19 13h3"/></svg><span>Algos</span></button>
+      <button role="tab" data-tab="trade"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16M7 4L3 8M7 4l4 4M17 20V4M17 20l-4-4M17 20l4-4"/></svg><span>Trade</span></button>
+      <button role="tab" data-tab="pnl"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M17 7.5c0-1.9-2.2-3-5-3s-5 1.1-5 3 2 2.7 5 3.5 5 1.6 5 3.5-2.2 3-5 3-5-1.1-5-3"/></svg><span>P&amp;L &amp; alerts</span></button>
+      <button role="tab" data-tab="mcx"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18h16l-2.5-6h-11z"/><path d="M8 12l1.5-5h5L16 12"/></svg><span>Gold &amp; silver</span></button>
+      <button role="tab" data-tab="fno"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M8 14h2M14 14h2M8 18h2"/></svg><span>F&amp;O expiries</span></button>
+      <button role="tab" data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span></button>
+  </nav>
+  <div class="side-foot">
+    <a class="navlink" href="/manual" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h0"/></svg><span>User manual</span></a>
+    <button class="navlink" id="install-app" type="button" hidden>⤓  Install app</button>
+    <button class="navlink" id="theme-toggle" type="button"></button>
+    <button class="navlink" id="logout" type="button" hidden>Sign out</button>
+  </div>
+</aside>
+<div class="content">
+<header class="top">
+  <h1 id="page-title">Markets</h1>
+  <div class="status">
+    <span class="pill" id="pill-session" title=""></span>
+    <span class="pill" id="pill-window" title=""></span>
+    <span class="pill" id="pill-kite"></span>
+    <div class="seg" id="mode" role="group" aria-label="Trading mode">
+      <button data-mode="paper" aria-pressed="true">Paper</button>
+      <button data-mode="live" aria-pressed="false">Live</button>
+    </div>
+  </div>
+</header>
+<div id="banner" class="banner" hidden></div>
+
+<main>
+<section id="tab-markets" class="tab">
+  <div id="sector-board">
+    <div class="board-head">
+      <div>
+        <p class="hint" id="sector-updated"></p>
+      </div>
+      <div class="board-tools">
+        <div class="seg" id="sector-filter" role="group" aria-label="Show">
+          <button data-filter="all" aria-pressed="true">All</button>
+          <button data-filter="Uptrend" aria-pressed="false">Uptrend</button>
+          <button data-filter="Downtrend" aria-pressed="false">Downtrend</button>
+          <button data-filter="Sideways" aria-pressed="false">Sideways</button>
+        </div>
+        <label class="inline">Sort <select id="sector-sort"><option value="change_1d">Today</option><option value="change_1w">1 week</option><option value="change_1m">1 month</option><option value="change_3m">3 months</option><option value="change_1y">1 year</option><option value="name">Name</option></select></label>
+        <button type="button" id="sector-new">+ New sector</button>
+        <button type="button" class="trend-rule-btn">Trend rule</button>
+      </div>
+    </div>
+    <div class="trend-rule" hidden></div>
+    <div id="sector-progress" class="warnbox" hidden></div>
+    <div id="sector-error" class="error" hidden></div>
+    <div class="summary" id="sector-summary"></div>
+    <div class="cards" id="sector-cards"></div>
+    <p class="hint">Each card is an index of its stocks, starting at 100 a year ago, equal-weighted unless you change the weights. Trend compares the index with its 20 and 50-day averages. The sectors are a curated starting set of liquid NSE stocks, not an exchange classification: open a card to add or remove stocks and change weights.</p>
+  </div>
+  <div id="sector-detail" hidden>
+    <div class="jobhead"><button type="button" id="sector-back">← All sectors</button><span class="hint" id="sector-detail-updated"></span></div>
+    <div class="panel">
+      <div class="jobhead"><h2 id="sector-title"></h2><span class="trend" id="sector-trend"></span></div>
+      <div class="tiles" id="sector-tiles"></div>
+      <div class="legend"><span>Daily candles of the sector index (built from its stocks; high and low approximate)</span></div>
+      <div class="tvchart" id="sector-chart"></div>
+    </div>
+    <div class="panel">
+      <div class="jobhead"><h2>Stocks in this sector</h2>
+        <span class="actions"><button type="button" id="sector-equal">Equal weights</button><button class="primary" type="button" id="sector-save">Save weights</button></span></div>
+      <p class="hint">Weight is each stock's share of the index. Enter any numbers; they are scaled to 100%. A weight of 0 keeps the stock listed but out of the index. Click a stock to open its chart.</p>
+      <div class="scroll tall" id="sector-stocks"></div>
+      <form id="form-sector-add" class="row">
+        <label>Add stocks <input name="symbols" placeholder="NSE symbols, space separated" autocomplete="off"></label>
+        <button type="submit">Add</button>
+        <button type="button" id="sector-rename">Rename</button>
+        <button type="button" id="sector-delete">Delete sector</button>
+      </form>
+      <div id="sector-detail-error" class="error" hidden></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-indices" class="tab" hidden>
+  <div id="index-board">
+    <div class="board-head">
+      <p class="hint" id="index-updated"></p>
+      <div class="board-tools">
+        <div class="seg" id="index-group" role="group" aria-label="Group">
+          <button data-group="all" aria-pressed="true">All</button>
+          <button data-group="Broad market" aria-pressed="false">Broad</button>
+          <button data-group="Sectoral" aria-pressed="false">Sectoral</button>
+          <button data-group="Thematic" aria-pressed="false">Thematic</button>
+          <button data-group="Strategy" aria-pressed="false">Strategy</button>
+        </div>
+        <div class="seg" id="index-filter" role="group" aria-label="Trend">
+          <button data-filter="all" aria-pressed="true">All</button>
+          <button data-filter="Uptrend" aria-pressed="false">Up</button>
+          <button data-filter="Downtrend" aria-pressed="false">Down</button>
+          <button data-filter="Sideways" aria-pressed="false">Sideways</button>
+        </div>
+        <label class="inline">Sort <select id="index-sort"><option value="">NSE order</option><option value="change_1d">Today</option><option value="change_1m">1 month</option><option value="change_1y">1 year</option></select></label>
+        <button type="button" class="trend-rule-btn">Trend rule</button>
+      </div>
+    </div>
+    <div class="trend-rule" hidden></div>
+    <div id="index-error" class="error" hidden></div>
+    <div class="cards" id="index-cards"></div>
+    <p class="hint">Index levels and candles come from Kite when it is logged in (the official index values), otherwise from Yahoo where it carries the index. Constituents are NSE's published lists, refreshed daily.</p>
+  </div>
+  <div id="index-detail" hidden>
+    <div class="jobhead"><button type="button" id="index-back">← All indices</button><span class="hint" id="index-source"></span></div>
+    <div class="panel">
+      <div class="jobhead"><h2 id="index-title"></h2>
+        <span class="actions"><span class="trend" id="index-trend"></span>
+          <span class="seg" id="index-interval" role="group" aria-label="Candle size"><button data-interval="3m" aria-pressed="false">3m</button><button data-interval="5m" aria-pressed="false">5m</button><button data-interval="15m" aria-pressed="false">15m</button><button data-interval="30m" aria-pressed="false">30m</button><button data-interval="1h" aria-pressed="false">1h</button><button data-interval="1d" aria-pressed="true">1D</button></span></span></div>
+      <div class="tiles" id="index-tiles"></div>
+      <div class="ohlc" id="index-ohlc"></div>
+      <div class="tvchart" id="index-chart"></div>
+      <p class="hint" id="index-chart-note"></p>
+    </div>
+    <div class="panel">
+      <div class="jobhead"><h2>Constituents</h2><input id="index-search" type="search" placeholder="Find a stock…" aria-label="Find a stock" autocomplete="off"></div>
+      <p class="hint" id="index-weights"></p>
+      <div class="scroll tall" id="index-stocks"></div>
+      <div id="index-detail-error" class="error" hidden></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-analyze" class="tab" hidden>
+  <div class="panel">
+    <h2>AI analysis</h2>
+    <p class="hint">Analyst, researcher, trader and risk agents study one stock and return a rating. One run makes dozens of LLM calls and takes several minutes.</p>
+    <form id="form-analyze" class="row">
+      <label>Symbol <input name="symbol" required placeholder="RELIANCE, TCS.NS, BSE:TCS" autocomplete="off"></label>
+      <label>As of <input name="date" type="date" required></label>
+      <label class="check"><input name="use_portfolio" type="checkbox" checked> Tell the agents what I hold</label>
+      <button class="primary" type="submit">Run analysis</button>
+    </form>
+    <div id="analyze-error" class="error" hidden></div>
+  </div>
+  <div class="panel" id="analyze-job" hidden>
+    <div class="jobhead"><h3 id="analyze-title"></h3><span class="pill" id="analyze-status"></span></div>
+    <pre class="log" id="analyze-log"></pre>
+  </div>
+  <div class="panel" id="analyze-result" hidden>
+    <div class="jobhead"><h3>Decision</h3><span class="rating" id="analyze-rating"></span></div>
+    <div id="analyze-plan" class="plan"></div>
+    <div id="analyze-reports"></div>
+  </div>
+</section>
+
+<section id="tab-charts" class="tab" hidden>
+  <div class="panel">
+    <form id="form-chart">
+      <div class="row">
+        <label>Symbol <input name="symbol" required placeholder="RELIANCE, NIFTY" autocomplete="off"></label>
+        <div><div class="lbl">Candle</div><div class="seg" id="chart-interval" role="group" aria-label="Candle size"></div></div>
+        <button class="primary" type="submit">Show chart</button>
+        <label class="check"><input type="checkbox" name="live" checked> Live: refresh while the market is open</label>
+      </div>
+      <fieldset><legend>On the price chart</legend><div class="checks" id="chart-overlays"></div></fieldset>
+      <fieldset><legend>Panels below</legend><div class="checks" id="chart-panels"></div></fieldset>
+    </form>
+    <div id="chart-error" class="error" hidden></div>
+  </div>
+  <div class="panel" id="chart-result" hidden>
+    <div class="jobhead"><h3 id="chart-title"></h3><span class="pill" id="chart-live"></span></div>
+    <p class="hint" id="chart-note" hidden></p>
+    <div class="ohlc" id="chart-ohlc"></div>
+    <div class="legend" id="chart-legend"></div>
+    <div class="tvchart" id="chart-main"></div>
+    <div id="chart-panels-out"></div>
+    <div id="chart-pivots" hidden></div>
+    <p class="hint">Scroll to zoom, drag to pan. Candles come from Kite's historical data (log in to Kite on the Trade tab). Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts</a>.</p>
+  </div>
+</section>
+
+<section id="tab-algos" class="tab" hidden>
+  <div class="seg sub-seg" id="algo-kind" role="group" aria-label="Algo type">
+    <button data-kind="stocks" aria-pressed="true">Stocks</button>
+    <button data-kind="fno" aria-pressed="false">Options &amp; Futures</button>
+  </div>
+  <div id="algo-stocks">
+  <div class="panel">
+    <h2>New algo</h2>
+    <p class="hint">An algo runs one strategy on one stock by itself. The easiest way to make one is to backtest first, then press <strong>Create algo</strong> under the result. <strong>Day candles</strong>: delivery (CNC). It reads the day's candle after the close and sends its order when your trade window opens next session; the target and stoploss are placed as a GTT. <strong>Intraday candles</strong>: intraday (MIS). It trades inside your trade window, watches the target and stoploss on the live price, and sells everything at the sell-everything (square-off) time.</p>
+    <form id="form-algo">
+      <div class="row">
+        <label>Name <input name="name" required maxlength="40" placeholder="Reliance supertrend" autocomplete="off"></label>
+        <label>Symbol <input name="symbol" required placeholder="RELIANCE" autocomplete="off"></label>
+        <label>Strategy <select name="strategy"></select></label>
+        <label>Candle <select name="interval"></select></label>
+      </div>
+      <div class="row">
+        <label>Budget (₹) <input name="budget" type="number" min="1000" step="1000" required value="25000"></label>
+        <label>Mode <select name="mode"><option value="paper">Paper</option><option value="live">Live · real money</option></select></label>
+      </div>
+      <div class="row" id="algo-params"></div>
+      <h3>Exit rules</h3>
+      <div id="algo-exits"></div>
+      <div class="row"><button class="primary" type="submit">Create algo</button><span class="hint">Created stopped. Start it from the list below.</span></div>
+    </form>
+    <div id="algo-error" class="error" hidden></div>
+  </div>
+  <div class="panel">
+    <div class="jobhead"><h2>Algos</h2><button id="algo-refresh" type="button">Refresh</button></div>
+    <div id="algo-list"></div>
+  </div>
+  <div class="panel note">
+    <strong>Before you run one live.</strong> Kite signs you out every morning: sign in to Kite before your trade window opens, or a live algo cannot trade that day and says so. Orders are limit orders near the last price; one that does not fill is cancelled and the algo stays as it was. Intraday algos need live candles: Yahoo's are delayed, so a live intraday algo uses Kite's historical-data add-on when your API key has it and refuses to trade on stale candles. Your risk limits and the kill switch apply to every algo order. The desk checks about every 20 seconds; it is not a high-frequency engine.
+  </div>
+  </div>
+  <div id="algo-fno" hidden>
+    <div class="panel">
+      <h2>New F&amp;O algo</h2>
+      <p class="hint">Runs an option strategy or an index future by itself, on Kite's live prices. The easiest way to make one is to backtest first (Backtest → Option strategy), then press <strong>Create algo</strong> under the result. <strong>Paper</strong> fills in the paper book at the last price; <strong>Live</strong> sends real orders. Both take the same path: every leg is a limit order through your risk limits. Bought legs (hedges) are bought first and sold legs are sold only after every hedge has filled; on exit the sold legs are bought back first.</p>
+      <form id="form-fno">
+        <div class="row">
+          <label>Name <input name="name" required maxlength="40" placeholder="Nifty weekly condor" autocomplete="off"></label>
+          <label>Trade <select name="kind"><option value="structure">An option strategy</option><option value="futures">Futures when a strategy says so</option></select></label>
+          <label class="fno-structure">Option strategy <select name="structure"></select></label>
+          <label class="fno-futures">Trade <select name="direction"><option value="long">Buy only</option><option value="short">Sell only</option><option value="both">Buy and sell</option></select></label>
+          <label>Index or MCX metal <select name="underlying"><optgroup label="Indices (NSE, BSE)"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option></optgroup><optgroup label="MCX gold and silver (₹)"><option value="GOLD">GOLD · 1 kg</option><option value="GOLDM">GOLDM · 100 g</option><option value="GOLDTEN">GOLDTEN · 10 g</option><option value="GOLDGUINEA">GOLDGUINEA · 8 g</option><option value="GOLDPETAL">GOLDPETAL · 1 g</option><option value="SILVER">SILVER · 30 kg</option><option value="SILVERM">SILVERM · 5 kg</option><option value="SILVERMIC">SILVERMIC · 1 kg</option></optgroup></select></label>
+          <label class="fno-structure">Expiry <select name="expiry_kind"><option value="weekly">Weekly (NIFTY, SENSEX)</option><option value="monthly">Monthly</option></select></label>
+        </div>
+        <p class="hint" id="fno-desc"></p>
+        <div class="row">
+          <label class="fno-structure">When to trade <select name="schedule"><option value="intraday">Intraday: buy and sell the same day</option><option value="positional">Positional: hold until near expiry</option><option value="signal">When a strategy says buy (bullish or bearish strategies)</option></select></label>
+          <label>Entry time <input name="entry_time" value="09:35" pattern="\d{1,2}:\d{2}" required></label>
+          <label>Exit time <input name="exit_time" value="15:10" pattern="\d{1,2}:\d{2}" required></label>
+          <label class="fno-positional">Exit this many days before expiry <input name="exit_days_before" type="number" min="0" max="10" value="0"></label>
+          <label class="fno-structure">Enter only if expiry is at least (days) <input name="min_days" type="number" min="0" max="30" step="0.5" value="0"></label>
+          <label class="fno-signal">Strategy that decides (day candles) <select name="strategy"></select></label>
+        </div>
+        <div class="row" id="fno-params"></div>
+        <fieldset class="days fno-days"><legend>Enter on</legend>
+          <label class="check"><input type="checkbox" name="fwd" value="0" checked> Mon</label><label class="check"><input type="checkbox" name="fwd" value="1" checked> Tue</label><label class="check"><input type="checkbox" name="fwd" value="2" checked> Wed</label><label class="check"><input type="checkbox" name="fwd" value="3" checked> Thu</label><label class="check"><input type="checkbox" name="fwd" value="4" checked> Fri</label>
+        </fieldset>
+        <div class="row">
+          <label class="fno-k">Strikes away from ATM (sold legs) <input name="k" type="number" min="0" max="40" value="2"></label>
+          <label class="fno-w">Hedge strikes further out (bought legs) <input name="w" type="number" min="1" max="60" value="4"></label>
+          <label>Lots <input name="lots" type="number" min="1" max="50" value="1" required></label>
+        </div>
+        <div class="fno-structure">
+          <h3>Exit rules for each leg</h3>
+          <div class="row"><label>Apply to <select name="leg_scope"><option value="sold">Sold legs</option><option value="bought">Bought legs</option><option value="all">Every leg</option></select></label></div>
+          <div id="fno-exits"></div>
+        </div>
+        <h3>Exit rules for the whole position</h3>
+        <div class="row">
+          <label>Maximum loss (₹) <input name="max_loss" type="number" min="0" step="500" value="5000"></label>
+          <label>Target profit (₹, 0 for none) <input name="target" type="number" min="0" step="500" value="0"></label>
+          <label>Mode <select name="mode"><option value="paper">Paper</option><option value="live">Live · real money</option></select></label>
+        </div>
+        <details class="advanced"><summary>Advanced settings</summary>
+        <div class="row">
+          <label>Limit price buffer % <input name="limit_buffer_pct" type="number" min="0.1" max="10" step="0.1" value="2"></label>
+          <label>Margin % (sold options without a hedge, futures) <input name="margin_pct" type="number" min="5" max="50" step="0.5" value="12"></label>
+        </div>
+        </details>
+        <div class="row">
+          <button type="button" id="fno-preview">Preview entry now</button>
+          <button class="primary" type="submit">Create F&amp;O algo</button>
+          <span class="hint">Created stopped. Start it from the list below.</span>
+        </div>
+      </form>
+      <div id="fno-algo-error" class="error" hidden></div>
+      <div id="fno-preview-result" hidden></div>
+    </div>
+    <div class="panel">
+      <div class="jobhead"><h2>F&amp;O algos</h2><button id="fno-algo-refresh" type="button">Refresh</button></div>
+      <div id="fno-list"></div>
+    </div>
+    <div class="panel note">
+      <strong>Before you run one live.</strong> Option prices come only from Kite, so a paper F&amp;O algo needs Kite too. <strong>MCX metals</strong> run in the MCX session (09:00 to 23:30, or 23:55 while the US is on winter time) with entry and exit times up to 23:25, take funds from Kite's commodity segment, and close every contract once it is within the delivery cut-off in Settings (8 days by default): gold and silver contracts are physically delivered and Zerodha does not take retail positions into delivery. Since 1 April 2026 Kite accepts API orders only from a static IP registered on your Kite Connect app (IP Whitelist), at most 10 a second: run kite-mcp-server on a machine with that IP. A live algo needs a maximum loss; when the position's loss with charges reaches it every leg is closed and the algo waits for the next day. Structures that sell options with no bought option to cover them run live only when Settings allows naked F&amp;O shorts. Margin is the desk's estimate (Kite's MCP server has no margin calculator); Zerodha decides at order time, and a refused leg unwinds the entry. Every leg is closed at the exit time on its expiry day. <strong>Exit</strong> closes everything now, even with the kill switch on.
+    </div>
+  </div>
+</section>
+
+<section id="tab-strategies" class="tab" hidden>
+  <div class="panel">
+    <h2>Build a strategy</h2>
+    <p class="hint">Combine indicators, the time of day and the day of the week into "buy when" and "sell when" rules. You can also type rules straight on the Backtest screen (Strategy → My own rules). Saved strategies appear in Backtest and Algos next to the built-in ones.</p>
+    <form id="form-strategy">
+      <div class="row"><label>Name <input name="name" required maxlength="50" placeholder="RSI dip in an uptrend" autocomplete="off"></label></div>
+      <div class="rulegroup"><h3>Buy when <select name="entry_match"><option value="all">ALL of these are true</option><option value="any">ANY of these is true</option></select></h3>
+        <div id="rules-entry"></div><button type="button" id="add-entry">+ Add rule</button></div>
+      <div class="rulegroup"><h3>Sell when <select name="exit_match"><option value="any">ANY of these is true</option><option value="all">ALL of these are true</option></select></h3>
+        <div id="rules-exit"></div><button type="button" id="add-exit">+ Add rule</button></div>
+      <div class="row"><button class="primary" type="submit">Save strategy</button><button type="button" id="strategy-new" hidden>New strategy</button><span class="hint" id="strategy-msg"></span></div>
+    </form>
+    <div id="strategy-error" class="error" hidden></div>
+  </div>
+  <div class="panel"><h2>My strategies</h2><div id="strategy-list"></div></div>
+  <div class="panel"><h2>Built-in strategies</h2><div class="scroll" id="builtin-list"></div></div>
+</section>
+
+<section id="tab-scanner" class="tab" hidden>
+  <div class="panel">
+    <h2>Legend screens: Buffett, Graham, Lynch, Greenblatt, Kedia</h2>
+    <p class="hint">Each investor's published numeric rules, run on an index's stocks with today's figures (Yahoo; Kite has no fundamentals). These are screens to research from, not buy lists, and not backtests: past figures are not available, and testing today's numbers on old prices would know the future.</p>
+    <form id="form-screen" class="row">
+      <label>Screen <select name="screen"></select></label>
+      <label>Stocks from <select name="universe"></select></label>
+      <button class="primary" type="submit">Run screen</button>
+    </form>
+    <p class="hint" id="screen-desc"></p>
+    <div id="screen-error" class="error" hidden></div>
+    <div id="screen-result"></div>
+  </div>
+  <div class="panel">
+    <h2>Breakout scanner</h2>
+    <p class="hint">Scans a list of stocks on daily candles for a price-and-volume breakout that is still holding near its high, then waits for a pullback: a buy GTT at the breakout candle's low, and a stoploss once that buy triggers. Each setup is acted on once, however often you scan.</p>
+    <form id="form-scanner">
+      <div class="row">
+        <label>Lookback (days) <input name="lookback" type="number" min="5" max="100" step="1" required></label>
+        <label>Volume × average <input name="volume_multiple" type="number" min="1" max="20" step="0.1" required></label>
+        <label>Hold within % of high <input name="tolerance_pct" type="number" min="0.1" max="10" step="0.1" required></label>
+        <label>Breakout within (days) <input name="max_age" type="number" min="1" max="60" step="1" required></label>
+        <label>Stoploss % <input name="stop_loss_pct" type="number" min="0" max="50" step="0.5" required></label>
+        <label>Target % <input name="target_pct" type="number" min="0" max="200" step="0.5" required></label>
+      </div>
+      <details><summary>Stocks to scan (<span id="scanner-count"></span>)</summary>
+        <textarea name="universe" rows="5" spellcheck="false"></textarea>
+        <p class="hint">NSE symbols separated by spaces. The default is the Nifty 100 as last updated in this app; index membership changes, so edit it as needed.</p>
+        <button type="button" id="scanner-reset">Reset to Nifty 100</button>
+      </details>
+      <div class="row"><button class="primary" type="submit">Save and scan</button><span class="hint" id="scanner-when"></span></div>
+    </form>
+    <div id="scanner-error" class="error" hidden></div>
+  </div>
+  <div class="panel" id="scanner-job" hidden>
+    <div class="jobhead"><h3 id="scanner-title"></h3><span class="pill" id="scanner-status"></span></div>
+    <pre class="log" id="scanner-log"></pre>
+  </div>
+  <div class="panel">
+    <div class="jobhead"><h2>Signals</h2><button class="primary" id="scanner-place" type="button" disabled>Place buy GTTs</button></div>
+    <div class="scroll" id="scanner-signals"></div>
+    <div id="scanner-result"></div>
+  </div>
+  <div class="panel">
+    <div class="jobhead"><h2>Orders the scanner is following</h2>
+      <label class="check"><input type="checkbox" id="scanner-live"> Run live: follow these orders and place stoplosses</label></div>
+    <div class="scroll" id="scanner-trades"></div>
+  </div>
+  <div class="panel note"><strong>Read before placing.</strong> A GTT sends a limit order when its trigger is hit; in a fast fall it may not fill. In Live mode the desk assumes a triggered buy filled and places the stoploss; check in Kite. A sell GTT needs the shares in your demat when it triggers. Position size comes from Settings (buy size % and max order value). Paper GTTs are checked about every 20 seconds during market hours.</div>
+</section>
+
+<section id="tab-backtest" class="tab" hidden>
+  <div class="panel bt-head">
+    <h2>Backtest</h2>
+    <div class="row">
+      <label>What to test <select id="bt-what">
+        <optgroup label="Backtest">
+          <option value="strategy">Stocks: buy and sell shares</option>
+          <option value="structures">Option strategy: straddle, strangle, iron condor…</option>
+          <option value="options">Buy index options: calls or puts</option>
+          <option value="futures">Index futures</option>
+        </optgroup>
+        <optgroup label="More tools">
+          <option value="optimise">Find the best settings (walk-forward)</option>
+          <option value="portfolio">ETF portfolios (All Weather and others)</option>
+          <option value="agents">AI agents' ratings</option>
+        </optgroup>
+      </select></label>
+      <label class="bt-shared">From <input id="bt-from" type="date" required></label>
+      <label class="bt-shared">To <input id="bt-to" type="date" required></label>
+      <label class="bt-shared">Capital (₹) <input id="bt-capital" type="number" min="10000" step="10000" required></label>
+    </div>
+  </div>
+  <div id="bt-optimise" hidden>
+    <div class="panel">
+      <h2>Optimise a strategy, walk-forward</h2>
+      <p class="hint">Tries every combination of the settings below. To avoid settings that only fitted the past, the period is cut into windows: in each, the best setting is picked on the first part and then traded on the next part, which it has not seen. Only those unseen results make the walk-forward line.</p>
+      <form id="form-opt">
+        <div class="row">
+          <label>Symbol <input name="symbol" required placeholder="RELIANCE" autocomplete="off"></label>
+          <label>From <input name="start" type="date" required></label>
+          <label>To <input name="end" type="date" required></label>
+          <label>Candle <select name="interval"></select></label>
+          <label>Strategy <select name="strategy"></select></label>
+        </div>
+        <div id="opt-ranges"></div>
+        <div class="row">
+          <label>Choose by <select name="objective"></select></label>
+          <label>Windows <input name="folds" type="number" min="1" max="12" value="4" required></label>
+          <label>In-sample share % <input name="train_pct" type="number" min="40" max="90" value="70" required></label>
+          <label>Minimum trades <input name="min_trades" type="number" min="0" max="50" value="3" required></label>
+          <label>Stoploss % <input name="stop_loss_pct" type="number" min="0" max="90" step="0.5" value="0"></label>
+          <button class="primary" type="submit">Run optimiser</button>
+        </div>
+        <p class="hint" id="opt-count"></p>
+      </form>
+      <div id="opt-error" class="error" hidden></div>
+    </div>
+    <div class="panel" id="opt-job" hidden>
+      <div class="jobhead"><h3 id="opt-title"></h3><span class="pill" id="opt-status"></span></div>
+      <pre class="log" id="opt-log"></pre>
+    </div>
+    <div id="opt-result" hidden>
+      <div class="tiles" id="opt-tiles"></div>
+      <div class="panel"><h3>Walk-forward equity (out-of-sample only)</h3><div class="tvchart short" id="opt-chart"></div></div>
+      <div class="panel"><h3>Each window</h3><div class="scroll" id="opt-windows"></div></div>
+      <div class="panel"><h3>Best settings on the whole period</h3><p class="hint">In-sample: every setting tested on all the data. The top of this list is what a plain optimiser would pick, and it flatters.</p><div class="scroll" id="opt-grid"></div></div>
+    </div>
+  </div>
+  <div id="bt-structures" hidden>
+    <div class="panel">
+      <h2>Option strategies: straddles, strangles, condors, spreads, hedges (simulated)</h2>
+      <p class="hint">Multi-leg index option strategies on the index's real candles. Premiums are <strong>modelled</strong> (Black-Scholes on India VIX): Kite keeps no candles for expired contracts. Real premiums differ, most around events, on expiry day and for far strikes. Use it to compare structures and rules, not to forecast profit.</p>
+      <form id="form-sbt">
+        <div class="row">
+          <label>Option strategy <select name="structure"></select></label>
+          <label>Index <select name="underlying"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option></select></label>
+          <label>When to trade <select name="mode"><option value="intraday">Intraday: buy and sell the same day</option><option value="positional" selected>Positional: hold until near expiry</option><option value="signal">When a strategy says buy (bullish or bearish strategies)</option></select></label>
+          <label class="bt-own" hidden>From <input name="start" type="date" required></label>
+          <label class="bt-own" hidden>To <input name="end" type="date" required></label>
+        </div>
+        <p class="hint" id="sbt-desc"></p>
+        <div class="row">
+          <label>Expiry <select name="expiry_kind"><option value="weekly">Weekly (NIFTY, SENSEX)</option><option value="monthly">Monthly</option></select></label>
+          <label class="sbt-intraday">Candle <select name="interval"><option value="5m">5 minutes</option><option value="1m">1 minute</option><option value="2m">2 minutes</option><option value="3m">3 minutes</option><option value="4m">4 minutes</option><option value="15m">15 minutes</option><option value="30m">30 minutes</option></select></label>
+          <label class="sbt-intraday">Entry time <input name="entry_time" value="09:20" pattern="\d{1,2}:\d{2}" required></label>
+          <label class="sbt-intraday">Exit time <input name="exit_time" value="15:15" pattern="\d{1,2}:\d{2}" required></label>
+          <label class="sbt-daily">Enter only if expiry is at least (days) <input name="min_days" type="number" min="0" max="40" step="0.5" value="1"></label>
+          <label class="sbt-daily">Exit this many days before expiry <input name="exit_days_before" type="number" min="0" max="20" value="0"></label>
+          <label class="sbt-signal">Strategy that decides <select name="strategy"></select></label>
+        </div>
+        <fieldset class="days sbt-days"><legend>Enter on</legend>
+          <label class="check"><input type="checkbox" name="wd" value="0" checked> Mon</label><label class="check"><input type="checkbox" name="wd" value="1" checked> Tue</label><label class="check"><input type="checkbox" name="wd" value="2" checked> Wed</label><label class="check"><input type="checkbox" name="wd" value="3" checked> Thu</label><label class="check"><input type="checkbox" name="wd" value="4" checked> Fri</label>
+        </fieldset>
+        <div class="row">
+          <label>Strikes away from ATM (sold legs) <input name="k" type="number" min="0" max="40" value="2"></label>
+          <label>Hedge strikes further out (bought legs) <input name="w" type="number" min="1" max="60" value="4"></label>
+          <label>Lots <input name="lots" type="number" min="1" max="50" value="1" required></label>
+        </div>
+        <h3>Exit rules for each leg</h3>
+        <div class="row"><label>Apply to <select name="leg_scope"><option value="sold">Sold legs</option><option value="bought">Bought legs</option><option value="all">Every leg</option></select></label></div>
+        <div id="sbt-exits"></div>
+        <h3>Exit rules for the whole position</h3>
+        <div class="row">
+          <label>Stoploss, % of premium received or paid <input name="stop_pct" type="number" min="0" max="1000" step="5" value="0"></label>
+          <label>Target, % of premium received or paid <input name="target_pct" type="number" min="0" max="100" step="5" value="0"></label>
+        </div>
+        <details class="advanced"><summary>Advanced settings</summary>
+        <div class="row">
+          <label>Margin % (sold options without a hedge, futures) <input name="margin_pct" type="number" min="2" max="100" step="0.5" value="12"></label>
+          <label>Volatility: India VIX × <input name="iv_scale" type="number" min="0.3" max="3" step="0.05" value="1"></label>
+          <label>Extra volatility on puts (skew) <input name="skew" type="number" min="0" max="2" step="0.1" value="0"></label>
+          <label>Slippage, % of premium <input name="slippage_pct" type="number" min="0" max="20" step="0.25" value="1"></label>
+        </div>
+        </details>
+        <div class="row">
+          <label class="bt-own" hidden>Capital (₹) <input name="capital" type="number" min="10000" step="10000" value="500000" required></label>
+          <button class="primary" type="submit">Run backtest</button>
+        </div>
+        <details class="advanced"><summary>Payoff now (today's market)</summary>
+        <p class="hint">Works out the strategy above on today's market: strikes, premiums, profit and loss at expiry, breakevens, Greeks and margin. Leave a box empty to use the latest index price, India VIX × the volatility factor, and the next expiry.</p>
+        <div class="row">
+          <label>Spot <input name="spot" type="number" min="0" step="0.05" placeholder="latest"></label>
+          <label>IV % <input name="iv_pct" type="number" min="1" max="300" step="0.1" placeholder="India VIX"></label>
+          <label>Days to expiry <input name="days" type="number" min="0" max="400" step="0.25" placeholder="next expiry"></label>
+          <label class="sbt-far">Days to far expiry <input name="far_days" type="number" min="0" max="400" step="0.25" placeholder="the expiry after"></label>
+          <button type="button" id="sbt-payoff">Payoff now</button>
+        </div>
+        </details>
+      </form>
+      <div id="sbt-error" class="error" hidden></div>
+    </div>
+    <div class="panel" id="sbt-payoff-result" hidden>
+      <h2 id="sbt-payoff-title">Payoff</h2>
+      <div class="tiles" id="sbt-payoff-tiles"></div>
+      <div class="legend" id="sbt-payoff-legend"></div>
+      <div class="chart" id="sbt-payoff-chart"></div>
+      <h3>Legs</h3>
+      <p class="hint">Type the real premiums from the option chain into the Premium boxes and press Recalculate for figures on market prices.</p>
+      <div class="scroll" id="sbt-payoff-legs"></div>
+      <div class="row"><button type="button" id="sbt-payoff-again">Recalculate with these premiums</button></div>
+      <p class="hint" id="sbt-payoff-note"></p>
+    </div>
+  </div>
+  <div id="bt-portfolio" hidden>
+    <div class="panel">
+      <h2>Portfolios: Ray Dalio's All Weather and others, with Indian ETFs</h2>
+      <p class="hint" id="pbt-desc"></p>
+      <form id="form-pbt">
+        <div class="row">
+          <label>Portfolio <select name="portfolio"></select></label>
+          <label>Rebalance <select name="rebalance"><option value="Q">Every quarter</option><option value="M">Every month</option><option value="Y">Every year</option><option value="N">Never</option></select></label>
+          <label>From <input name="start" type="date"></label>
+          <label>To <input name="end" type="date"></label>
+          <label>Cash earns % a year <input name="cash_rate_pct" type="number" min="0" max="15" step="0.25" value="6.5"></label>
+          <label>Cost per trade % <input name="cost_pct" type="number" min="0" max="2" step="0.05" value="0.1"></label>
+          <label>Capital (₹) <input name="capital" type="number" min="10000" step="10000" value="1000000" required></label>
+        </div>
+        <div id="pbt-weights" class="weights"></div>
+        <div class="row"><button type="button" id="pbt-add">+ Add an ETF</button><span class="hint" id="pbt-total"></span><button class="primary" type="submit">Run portfolio backtest</button></div>
+      </form>
+      <div id="pbt-error" class="error" hidden></div>
+    </div>
+  </div>
+  <div id="bt-futures" hidden>
+    <div class="panel">
+      <h2>Index futures backtest</h2>
+      <p class="hint">Buys or sells index futures in lots when a strategy says so: buy only, sell only, or both (always in the market). Day candles are Kite's continuous futures series; every monthly roll is charged and the basis jump is taken out. Intraday runs use the live contract's candles where they reach back far enough, otherwise the index as a proxy. Futures are leveraged: a 1% move is about 8% of the margin.</p>
+      <form id="form-fbt">
+        <div class="row">
+          <label>Index <select name="underlying"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option></select></label>
+          <label class="bt-own" hidden>From <input name="start" type="date" required></label>
+          <label class="bt-own" hidden>To <input name="end" type="date" required></label>
+          <label>Candle <select name="interval"></select></label>
+          <label>Strategy that decides <select name="strategy"></select></label>
+        </div>
+        <p class="hint" id="fbt-desc"></p>
+        <div class="row" id="fbt-params"></div>
+        <div class="row">
+          <label>Trade <select name="direction"><option value="long">Buy only (when the strategy says buy)</option><option value="short">Sell only (when the strategy says sell)</option><option value="both">Buy and sell (always in the market)</option></select></label>
+          <label>Lots <input name="lots" type="number" min="1" max="50" value="1" required></label>
+          <label>Margin, % of the contract value <input name="margin_pct" type="number" min="2" max="100" step="0.5" value="12" required></label>
+          <label>Stoploss, % of price <input name="stop_pct" type="number" min="0" max="50" step="0.1" value="0"></label>
+          <label>Target, % of price <input name="target_pct" type="number" min="0" max="100" step="0.1" value="0"></label>
+        </div>
+        <div class="row">
+          <label>Slippage % <input name="slippage_pct" type="number" min="0" max="2" step="0.01" value="0.02"></label>
+          <label>Cost of carry % a year <input name="carry_pct" type="number" min="0" max="20" step="0.5" value="7"></label>
+          <label class="bt-own" hidden>Capital (₹) <input name="capital" type="number" min="10000" step="10000" value="500000" required></label>
+          <button class="primary" type="submit">Run futures backtest</button>
+        </div>
+      </form>
+      <div id="fbt-error" class="error" hidden></div>
+    </div>
+  </div>
+  <div id="bt-options" hidden>
+    <div class="panel">
+      <h2>Options buying backtest (simulated)</h2>
+      <p class="hint">Buys index options when a strategy says so: calls when it says buy, puts when it says sell, or both. Kite keeps no candles for expired contracts, so premiums are <strong>modelled</strong> with Black-Scholes from the index's real candles and India VIX. Real premiums differ, most around events and on expiry day.</p>
+      <form id="form-obt">
+        <div class="row">
+          <label>Index <select name="underlying"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option></select></label>
+          <label class="bt-own" hidden>From <input name="start" type="date" required></label>
+          <label class="bt-own" hidden>To <input name="end" type="date" required></label>
+          <label>Candle <select name="interval"></select></label>
+          <label>Strategy that decides <select name="strategy"></select></label>
+        </div>
+        <p class="hint" id="obt-desc"></p>
+        <div class="row" id="obt-params"></div>
+        <div class="row">
+          <label>Buy <select name="side"><option value="calls">Calls when the strategy says buy</option><option value="puts">Puts when the strategy says sell</option><option value="both">Both</option></select></label>
+          <label>Strike <select name="moneyness"><option value="1">1 strike in the money</option><option value="0" selected>At the money</option><option value="-1">1 strike out of the money</option><option value="-2">2 strikes out of the money</option></select></label>
+          <label>Lots <input name="lots" type="number" min="1" max="50" value="1" required></label>
+          <label>Enter only if expiry is at least (days) <input name="min_days" type="number" min="0" max="30" step="0.5" value="2" required></label>
+          <label>Expiry day <select name="expiry_weekday"><option value="1">Tuesday (NSE)</option><option value="3">Thursday (BSE)</option><option value="0">Monday</option><option value="2">Wednesday</option><option value="4">Friday</option></select></label>
+        </div>
+        <div class="row">
+          <label>Stoploss, % of premium <input name="stop_pct" type="number" min="0" max="100" step="5" value="35"></label>
+          <label>Target, % of premium <input name="target_pct" type="number" min="0" max="1000" step="5" value="70"></label>
+          <label>Volatility: India VIX × <input name="iv_scale" type="number" min="0.3" max="3" step="0.05" value="1"></label>
+          <label>Slippage % <input name="slippage_pct" type="number" min="0" max="10" step="0.25" value="1"></label>
+          <label class="bt-own" hidden>Capital (₹) <input name="capital" type="number" min="10000" step="10000" value="200000" required></label>
+          <button class="primary" type="submit">Run options backtest</button>
+        </div>
+      </form>
+      <div id="obt-error" class="error" hidden></div>
+    </div>
+  </div>
+  <div id="bt-strategy">
+    <div class="panel">
+      <h2>Stocks</h2>
+      <form id="form-bt">
+        <div class="row">
+          <label>Stock <input name="symbol" required placeholder="RELIANCE" autocomplete="off"></label>
+          <label>Candle <select name="interval"></select></label>
+          <label class="bt-own" hidden>From <input name="start" type="date" required></label>
+          <label class="bt-own" hidden>To <input name="end" type="date" required></label>
+          <label class="bt-own" hidden>Capital (₹) <input name="capital" type="number" min="1000" step="1000" required></label>
+          <label>Use of capital per trade % <input name="allocation_pct" type="number" min="1" max="100" step="1" value="100" required></label>
+        </div>
+        <h3>Entry when and exit when</h3>
+        <div class="row"><label>Strategy <select name="strategy"></select></label></div>
+        <div class="row" id="bt-params"></div>
+        <p class="hint" id="bt-desc"></p>
+        <div id="bt-rules" hidden></div>
+        <div class="row bt-intraday" hidden>
+          <label>Start buying at <input name="trade_start" type="time" min="09:15" max="15:30"></label>
+          <label>Stop buying at <input name="trade_end" type="time" min="09:15" max="15:30"></label>
+          <label>Sell everything at <input name="square_off" type="time" min="09:15" max="15:30"></label>
+        </div>
+        <h3>Exit rules</h3>
+        <div id="bt-exits"></div>
+        <div class="row"><button class="primary" type="submit">Run backtest</button></div>
+      </form>
+      <div id="bt-error" class="error" hidden></div>
+    </div>
+    <div id="bt-result" hidden>
+      <div class="panel bt-deploy" id="bt-deploy" hidden>
+        <h3>Run this as an algo</h3>
+        <p class="hint" id="bt-deploy-what"></p>
+        <div class="row">
+          <label>Algo name <input id="bt-deploy-name" maxlength="40" autocomplete="off"></label>
+          <label id="bt-deploy-budget-label">Budget (₹) <input id="bt-deploy-budget" type="number" min="1000" step="1000"></label>
+          <label id="bt-deploy-loss-label" hidden>Maximum loss a day (₹) <input id="bt-deploy-loss" type="number" min="0" step="500" value="5000"></label>
+          <label>Mode <select id="bt-deploy-mode"><option value="paper">Paper</option><option value="live">Live · real money</option></select></label>
+          <button class="primary" type="button" id="bt-deploy-go">Create algo</button>
+        </div>
+        <p class="hint" id="bt-deploy-msg"></p>
+        <div id="bt-deploy-error" class="error" hidden></div>
+      </div>
+      <div class="tiles" id="bt-tiles"></div>
+      <div class="panel">
+        <h3 id="bt-chart-title">Portfolio value</h3>
+        <p class="hint" id="bt-note" hidden></p>
+        <div class="legend" id="bt-legend"></div>
+        <div class="chart" id="bt-chart"></div>
+        <details><summary>Compare with benchmarks</summary><div id="bt-compare"></div></details>
+      </div>
+      <div class="panel">
+        <h3>Trades</h3>
+        <div class="scroll" id="bt-trades"></div>
+      </div>
+      <div class="panel note">
+        <strong>How to read this.</strong> A buy or sell decided on a candle's close happens at the next candle's open, with slippage and Zerodha charges on every order. Day candles trade as delivery (CNC). Intraday candles trade as intraday (MIS): buys only between your start and stop times, everything sold at the sell-everything time. Stocks are bought, never sold short, in whole shares. It ignores liquidity, circuit-limit days, tax on gains and delisted stocks, so real results would be lower. Past returns do not predict future ones.
+      </div>
+    </div>
+  </div>
+  <div id="bt-agents" hidden>
+    <div class="panel">
+      <h2>AI agent backtest</h2>
+      <p class="hint">Runs the full agent pipeline on each symbol and date, then scores every rating against the Nifty over the next 5 trading days. Each cell is a full analysis: it is slow and costs LLM credits. The model may also know what happened after a past date, so treat results as indicative.</p>
+      <form id="form-bta" class="row">
+        <label>Symbols <input name="symbols" required placeholder="RELIANCE TCS INFY" autocomplete="off"></label>
+        <label>From <input name="start" type="date" required></label>
+        <label>To <input name="end" type="date" required></label>
+        <label>Every N days <input name="every_n_days" type="number" min="1" max="90" value="7" required></label>
+        <button class="primary" type="submit">Run agent backtest</button>
+      </form>
+      <div id="bta-error" class="error" hidden></div>
+    </div>
+    <div class="panel" id="bta-job" hidden>
+      <div class="jobhead"><h3 id="bta-title"></h3><span class="pill" id="bta-status"></span></div>
+      <pre class="log" id="bta-log"></pre>
+      <div id="bta-result"></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-trade" class="tab" hidden>
+  <div class="grid2">
+    <div>
+      <div class="panel">
+        <div class="jobhead"><h2>Kite (Zerodha)</h2>
+          <span><button id="kite-connect">Connect</button> <button id="kite-login" hidden>Log in to Kite</button> <button id="kite-refresh" hidden>Refresh</button></span></div>
+        <div id="kite-info" class="hint"></div>
+        <div id="kite-error" class="error" hidden></div>
+        <div id="kite-account"></div>
+      </div>
+      <div class="panel">
+        <div class="jobhead"><h2>Paper account</h2><button id="paper-reset">Reset</button></div>
+        <div id="paper-account"></div>
+      </div>
+    </div>
+    <div>
+      <div class="panel">
+        <h2>Order ticket <span class="pill" id="ticket-mode"></span></h2>
+        <form id="form-order">
+          <div class="row">
+            <label>Symbol <input name="symbol" required placeholder="RELIANCE" autocomplete="off"></label>
+            <label>Side <select name="side"><option>BUY</option><option>SELL</option></select></label>
+            <label>Quantity <input name="quantity" type="number" min="1" step="1" required></label>
+          </div>
+          <div class="row">
+            <label>Product <select name="product"><option value="CNC">CNC · delivery</option><option value="MIS">MIS · intraday</option></select></label>
+            <label>Type <select name="order_type"><option>LIMIT</option><option>MARKET</option><option>SL</option><option>SL-M</option></select></label>
+            <label>Price (₹) <input name="price" type="number" min="0" step="0.05"></label>
+            <label>Trigger (₹) <input name="trigger_price" type="number" min="0" step="0.05"></label>
+            <label>Variety <select name="variety"><option value="regular">Regular</option><option value="amo">AMO</option></select></label>
+          </div>
+          <div class="row">
+            <label>Then target % <input name="target_pct" type="number" min="0" max="200" step="0.25" placeholder="none"></label>
+            <label>Then stoploss % <input name="stop_loss_pct" type="number" min="0" max="50" step="0.25" placeholder="none"></label>
+            <span class="hint">For a delivery buy: after it fills, a target / stoploss GTT is prepared for you to confirm.</span>
+          </div>
+          <div class="row"><button type="button" id="order-quote">Get price</button><span id="order-quote-out" class="hint"></span>
+            <button class="primary" type="submit">Review order</button></div>
+        </form>
+        <div id="order-error" class="error" hidden></div>
+        <div id="order-review" hidden></div>
+      </div>
+      <div class="panel">
+        <h2>GTT order <span class="hint">Good Till Triggered</span></h2>
+        <form id="form-gtt">
+          <div class="row">
+            <label>Symbol <input name="symbol" required placeholder="RELIANCE" autocomplete="off"></label>
+            <label>Type <select name="kind"><option value="single">Single trigger</option><option value="oco">Target + stoploss (OCO)</option></select></label>
+            <label>Side <select name="side"><option>BUY</option><option>SELL</option></select></label>
+            <label>Quantity <input name="quantity" type="number" min="1" step="1" required></label>
+          </div>
+          <div class="row" id="gtt-single">
+            <label>Trigger (₹) <input name="trigger" type="number" min="0" step="0.05"></label>
+            <label>Limit price (₹) <input name="limit" type="number" min="0" step="0.05" placeholder="same as trigger"></label>
+          </div>
+          <div class="row" id="gtt-oco" hidden>
+            <label>Target (₹) <input name="target" type="number" min="0" step="0.05"></label>
+            <label>Stoploss (₹) <input name="stop" type="number" min="0" step="0.05"></label>
+          </div>
+          <div class="row"><button class="primary" type="submit">Review GTT</button></div>
+        </form>
+        <div id="gtt-error" class="error" hidden></div>
+        <div id="gtt-review" hidden></div>
+        <h3>GTTs <span class="hint" id="gtt-mode"></span></h3>
+        <div class="scroll" id="gtt-list"></div>
+      </div>
+      <div class="panel">
+        <h2>Order journal</h2>
+        <div class="scroll" id="order-journal"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-pnl" class="tab" hidden>
+  <p class="hint" id="pnl-about"></p>
+  <div id="pnl-error" class="error" hidden></div>
+  <div class="tiles" id="pnl-tiles"></div>
+  <div class="panel">
+    <h2>Profit and loss over time</h2>
+    <p class="hint">Realized P&amp;L, added up day by day, after charges.</p>
+    <div class="tvchart short" id="pnl-chart"></div>
+    <p class="hint" id="pnl-empty" hidden>No closed trades yet on this account.</p>
+  </div>
+  <div class="grid2">
+    <div class="panel"><h2>By algo and source</h2><div class="scroll" id="pnl-sources"></div></div>
+    <div class="panel"><h2>Open positions</h2><div class="scroll" id="pnl-open"></div></div>
+  </div>
+  <div class="panel"><h2>Closed trades</h2><div class="scroll" id="pnl-closed"></div></div>
+  <div class="panel">
+    <div class="jobhead"><h2>Alerts</h2><span class="hint" id="alerts-state"></span></div>
+    <div class="scroll" id="alerts-list"></div>
+  </div>
+  <div class="panel">
+    <div class="jobhead"><h2>Export and tax P&amp;L</h2>
+      <span class="actions"><a class="btnlink" id="dl-journal" href="#">Order journal CSV</a><a class="btnlink" id="dl-fills" href="#">Fills CSV</a><a class="btnlink" id="dl-lots" href="#">Tax lots CSV</a></span></div>
+    <p class="hint">Indicative, by Indian financial year (April to March), for trades this desk recorded on the account selected at the top. Delivery shares are matched first-in, first-out: held over 12 months is long-term. Same-day intraday is speculative income; F&amp;O is non-speculative business income. Rates from 23 July 2024: STCG 20%, LTCG 12.5% above ₹1.25 lakh a year. Not a tax computation: use Kite Console's tax P&amp;L and your CA.</p>
+    <div class="scroll" id="tax-years"></div>
+  </div>
+  <div class="panel note"><strong>What this counts.</strong> Fills the desk made: every paper fill, and live fills read from Kite's trade book for orders this desk placed. It does not see trades you place in Kite directly, or the order a triggered live GTT sends. For the live account, Kite's console is the final word.</div>
+</section>
+
+<section id="tab-mcx" class="tab" hidden>
+  <div class="panel">
+    <div class="jobhead"><h2>MCX gold &amp; silver futures</h2>
+      <span class="actions"><span class="pill" id="mcx-session"></span><label class="check"><input type="checkbox" id="mcx-live" checked> Live</label><button type="button" id="mcx-refresh">Refresh</button><button type="button" id="mcx-reload">Reload contracts from Kite</button></span></div>
+    <div id="mcx-error" class="error" hidden></div>
+    <p class="hint" id="mcx-note"></p>
+    <div class="scroll" id="mcx-futures"></div>
+    <p class="hint">Priced in rupees on MCX: the international gold or silver price times the rupee rate, plus import duty. Kite takes MCX quantity in <strong>lots</strong>. "₹ per lot" is the rupee value of one lot (GOLD is quoted per 10 g in 1 kg lots, so a ₹1 move is ₹100 a lot); margin is the desk's estimate at the MCX margin % in Settings, and Zerodha decides at order time. Contracts inside the delivery cut-off are marked: the desk opens nothing in them.</p>
+  </div>
+  <div class="panel" id="mcx-ticket" hidden>
+    <div class="jobhead"><h2 id="mcx-ticket-title"></h2>
+      <span class="seg" id="mcx-interval" role="group" aria-label="Candle size"><button data-interval="5m" aria-pressed="false">5m</button><button data-interval="15m" aria-pressed="true">15m</button><button data-interval="1h" aria-pressed="false">1h</button><button data-interval="1d" aria-pressed="false">1D</button></span></div>
+    <div class="ohlc" id="mcx-ohlc"></div>
+    <div class="tvchart short" id="mcx-chart"></div>
+    <p class="hint" id="mcx-spec"></p>
+    <form id="form-mcx-order" class="row">
+      <label>Side <select name="side"><option>BUY</option><option>SELL</option></select></label>
+      <label>Lots <input name="lots" type="number" min="1" max="100" value="1" required></label>
+      <label>Limit price (₹) <input name="price" type="number" min="0.05" step="0.05" required></label>
+      <label>Product <select name="product"><option value="NRML">NRML · carry over</option><option value="MIS">MIS · intraday</option></select></label>
+      <button class="primary" type="submit">Review order</button>
+    </form>
+    <div id="mcx-order-error" class="error" hidden></div>
+    <div id="mcx-review" hidden></div>
+  </div>
+  <div class="panel">
+    <div class="jobhead"><h2>MCX option chain</h2>
+      <span class="actions">
+        <select id="mcx-oc-name" aria-label="Metal"></select>
+        <select id="mcx-oc-expiry" aria-label="Expiry"></select>
+        <button type="button" id="mcx-oc-load" class="primary">Load chain</button>
+      </span></div>
+    <div id="mcx-oc-error" class="error" hidden></div>
+    <div class="tiles" id="mcx-oc-tiles"></div>
+    <div class="scroll chain" id="mcx-oc-table"></div>
+    <p class="hint">MCX options are written on a futures contract, not on spot: the chain is centred on that future, and IV and delta are Black-76. An in-the-money option left to expiry turns into that future, which is then physically delivered, so the delivery cut-off applies to options too. Click a price to trade it.</p>
+  </div>
+  <div class="panel">
+    <div class="jobhead"><h2>MCX positions <span class="hint" id="mcx-pos-mode"></span></h2><button type="button" id="mcx-pos-refresh">Refresh</button></div>
+    <div class="scroll" id="mcx-positions"></div>
+  </div>
+  <div class="panel note"><strong>How MCX trading works here.</strong> Same Kite account, commodity segment (activate it in Zerodha Console first). Every order is a LIMIT order through your risk limits: kill switch, MCX trade window, order value (a future is weighed by its margin), orders per day. Manual orders buy, and sell what you hold; a short position is opened only by an armed F&amp;O algo (Algos → Options &amp; Futures, pick a metal). <strong>Physical delivery:</strong> every gold and silver contract here is compulsorily delivered. Zerodha squares off positions before the delivery period and publishes the date for each expiry ("MCX precious metals expiry" bulletin, usually 3 to 7 days before expiry). The desk takes no new position within the cut-off in Settings, and closes paper positions there, the way Zerodha would close a real one. <strong>Session:</strong> 09:00 to 23:30 IST, 23:55 while the US is on winter time; MCX holidays go in Settings (on some NSE holidays MCX trades only its evening session). No AMO for MCX here.</div>
+</section>
+
+<section id="tab-fno" class="tab" hidden>
+  <div class="panel">
+    <div class="jobhead"><h2>Option chain</h2>
+      <span class="actions">
+        <select id="oc-underlying" aria-label="Index"></select>
+        <select id="oc-expiry" aria-label="Expiry"></select>
+        <select id="oc-width" aria-label="Strikes"><option value="8">±8 strikes</option><option value="12" selected>±12 strikes</option><option value="20">±20 strikes</option></select>
+        <label class="check"><input type="checkbox" id="oc-live" checked> Live</label>
+        <button type="button" id="oc-load" class="primary">Load chain</button>
+      </span></div>
+    <div id="oc-error" class="error" hidden></div>
+    <div class="tiles" id="oc-tiles"></div>
+    <div class="scroll chain" id="oc-table"></div>
+    <p class="hint">Live from Kite every 5 seconds in market hours. IV and delta are worked out here from each option's last price (Black-Scholes). OI change is since the desk first read the chain today. Click a price to chart the contract and trade it.</p>
+  </div>
+  <div class="panel" id="oc-contract" hidden>
+    <div class="jobhead"><h2 id="oc-contract-title"></h2>
+      <span class="seg" id="oc-interval" role="group" aria-label="Candle size"><button data-interval="1m" aria-pressed="false">1m</button><button data-interval="2m" aria-pressed="false">2m</button><button data-interval="3m" aria-pressed="false">3m</button><button data-interval="4m" aria-pressed="false">4m</button><button data-interval="5m" aria-pressed="true">5m</button><button data-interval="15m" aria-pressed="false">15m</button><button data-interval="30m" aria-pressed="false">30m</button><button data-interval="1h" aria-pressed="false">1h</button><button data-interval="1d" aria-pressed="false">1D</button></span></div>
+    <div class="ohlc" id="oc-ohlc"></div>
+    <div class="tvchart short" id="oc-chart"></div>
+    <form id="form-oc-order" class="row">
+      <label>Side <select name="side"><option>BUY</option><option>SELL</option></select></label>
+      <label>Lots <input name="lots" type="number" min="1" max="50" value="1" required></label>
+      <label>Limit price (₹) <input name="price" type="number" min="0.05" step="0.05" required></label>
+      <label>Product <select name="product"><option value="NRML">NRML · carry over</option><option value="MIS">MIS · intraday</option></select></label>
+      <button class="primary" type="submit">Review order</button>
+    </form>
+    <div id="oc-order-error" class="error" hidden></div>
+    <div id="oc-review" hidden></div>
+  </div>
+  <div class="panel">
+    <div class="jobhead"><h2>Index futures</h2>
+      <span class="actions"><label class="check"><input type="checkbox" id="fut-live" checked> Live</label><button type="button" id="fut-refresh">Refresh</button></span></div>
+    <div id="fut-error" class="error" hidden></div>
+    <div class="scroll" id="fut-table"></div>
+    <p class="hint">From Kite. Basis = future − index; annualised it is the market's cost of carry. Click a contract for its candle chart. Day candles are Kite's continuous series, stitched across expired contracts; intraday candles are the contract's own (it lives about three months).</p>
+  </div>
+  <div class="panel" id="fut-contract" hidden>
+    <div class="jobhead"><h2 id="fut-title"></h2>
+      <span class="seg" id="fut-interval" role="group" aria-label="Candle size"><button data-interval="1m" aria-pressed="false">1m</button><button data-interval="2m" aria-pressed="false">2m</button><button data-interval="3m" aria-pressed="false">3m</button><button data-interval="4m" aria-pressed="false">4m</button><button data-interval="5m" aria-pressed="false">5m</button><button data-interval="15m" aria-pressed="true">15m</button><button data-interval="30m" aria-pressed="false">30m</button><button data-interval="1h" aria-pressed="false">1h</button><button data-interval="1d" aria-pressed="false">1D</button></span></div>
+    <div class="ohlc" id="fut-ohlc"></div>
+    <div class="tvchart" id="fut-chart"></div>
+    <p class="hint" id="fut-note"></p>
+  </div>
+  <div class="panel">
+    <div class="jobhead"><h2>Option positions <span class="hint" id="oc-pos-mode"></span></h2><button type="button" id="oc-pos-refresh">Refresh</button></div>
+    <div class="scroll" id="oc-positions"></div>
+    <p class="hint">Buying options only: the desk does not sell (write) options here. Paper options left open at expiry are settled at their intrinsic value against the index close.</p>
+  </div>
+  <div class="panel">
+    <div class="jobhead"><h2>Futures &amp; options: contracts and expiry dates</h2>
+      <span class="actions"><input id="fno-search" type="search" placeholder="Find a stock…" aria-label="Find a stock" autocomplete="off"><button type="button" id="fno-refresh">Refresh from Kite</button></span></div>
+    <p class="hint" id="fno-when"></p>
+    <div id="fno-error" class="error" hidden></div>
+    <h3>Indices</h3>
+    <div class="scroll" id="fno-indices"></div>
+  </div>
+  <div class="panel">
+    <h3 id="fno-stock-title">Stocks</h3>
+    <div class="scroll tall" id="fno-stocks"></div>
+  </div>
+  <div class="panel note"><strong>Where this comes from.</strong> Kite's instrument list, which the exchange updates every morning. An expired contract drops off and the next one moves up by itself; the desk rebuilds the list each day and whenever the nearest date has passed. Dates are never worked out by rule here, because expiry days change and move for holidays. A lot is the smallest quantity you can trade. The desk shows these contracts but does not place F&amp;O orders.</div>
+</section>
+
+<section id="tab-settings" class="tab" hidden>
+  <div class="panel app-panel">
+    <h2>App</h2>
+    <div class="row">
+      <button type="button" id="install-app-2" hidden>Install as an app</button>
+      <a class="btnlink" href="/manual" target="_blank" rel="noopener">User manual</a>
+      <button type="button" id="theme-toggle-2">Switch theme</button>
+      <button type="button" id="logout-2" hidden>Sign out</button>
+    </div>
+    <p class="hint" id="install-hint">Install TradeSetu on this device to open it from the home screen or desktop in its own window. On iPhone and iPad: Safari → Share → Add to Home Screen. On Android and desktop Chrome or Edge: the Install button here or in the address bar.</p>
+  </div>
+  <form id="form-settings">
+    <div class="grid2">
+      <div class="panel">
+        <h2>AI model</h2>
+        <label>Quick setup <select name="llm_preset"><option value="">Choose a paid, free or custom AI service…</option></select></label>
+        <p class="hint" id="preset-hint">Any service with an OpenAI-compatible API works: pick “Any OpenAI-compatible service”, set its Endpoint URL, model name and key. Free tiers are rate-limited; one analysis makes dozens of calls.</p>
+        <label>Provider <select name="llm_provider"></select></label>
+        <label>API key <span class="hint" id="key-env"></span><input name="api_key" type="password" autocomplete="off" placeholder="unchanged"></label>
+        <label>Deep-thinking model (research and decisions) <input name="deep_think_llm" list="models-deep" placeholder="provider default" autocomplete="off"></label>
+        <datalist id="models-deep"></datalist>
+        <label>Quick-thinking model (analysts) <input name="quick_think_llm" list="models-quick" placeholder="provider default" autocomplete="off"></label>
+        <datalist id="models-quick"></datalist>
+        <p class="hint" id="model-hint"></p>
+        <label>Endpoint URL <input name="backend_url" placeholder="provider default" autocomplete="off"></label>
+        <div class="row"><button type="button" id="llm-test">Test AI connection</button><span class="hint">Save first, then test.</span></div>
+        <div id="llm-test-out"></div>
+        <fieldset><legend>Analysts</legend>
+          <label class="check"><input type="checkbox" name="analyst" value="market"> Market / technicals</label>
+          <label class="check"><input type="checkbox" name="analyst" value="social"> Sentiment</label>
+          <label class="check"><input type="checkbox" name="analyst" value="news"> News</label>
+          <label class="check"><input type="checkbox" name="analyst" value="fundamentals"> Fundamentals</label>
+        </fieldset>
+        <div class="row">
+          <label>Debate rounds <input name="max_debate_rounds" type="number" min="1" max="5"></label>
+          <label>Risk rounds <input name="max_risk_discuss_rounds" type="number" min="1" max="5"></label>
+          <label>Bare symbols are <select name="default_exchange"><option>NSE</option><option>BSE</option></select></label>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Risk limits</h2>
+        <div class="row">
+          <label>Max order value (₹) <input name="max_order_value" type="number" min="0" step="1000"></label>
+          <label>Max orders a day <input name="max_orders_per_day" type="number" min="0" step="1"></label>
+        </div>
+        <div class="row">
+          <label>Buy size, % of capital <input name="position_pct" type="number" min="0" max="100" step="0.5"></label>
+          <label>Max per stock, % <input name="max_position_pct" type="number" min="0" max="100" step="1"></label>
+          <label>Limit buffer % <input name="limit_buffer_pct" type="number" min="0" max="5" step="0.05"></label>
+        </div>
+        <div class="row">
+          <label>Default product <select name="product"><option value="CNC">CNC · delivery</option><option value="MIS">MIS · intraday</option></select></label>
+          <label>Paper capital (₹) <input name="paper_capital" type="number" min="1000" step="1000"></label>
+        </div>
+        <label>Daily loss limit (₹, 0 = off) <input name="daily_loss_limit" type="number" min="0" step="500"></label>
+        <p class="hint">When today's loss on an account reaches this, the kill switch turns on by itself, intraday algos close their positions, and you get an alert. You switch it back off yourself.</p>
+        <fieldset><legend>Trade window (IST)</legend>
+          <div class="row">
+            <label>Start buying at <input name="trade_start" type="time" min="09:15" max="15:30" required></label>
+            <label>Stop buying at <input name="trade_end" type="time" min="09:15" max="15:30" required></label>
+            <label>Square off intraday at <input name="square_off" type="time" min="09:15" max="15:30" required></label>
+          </div>
+          <label class="check"><input type="checkbox" name="enforce_trade_window"> Take new buys only inside this window</label>
+        </fieldset>
+        <label class="check"><input type="checkbox" name="kill_switch"> Kill switch: block every new order</label>
+        <label class="check danger"><input type="checkbox" name="live_enabled"> Allow live orders with real money</label>
+        <label class="check danger"><input type="checkbox" name="fno_naked_live"> Allow live F&amp;O algos to sell options no bought option covers (naked shorts: unlimited loss)</label>
+        <fieldset><legend>MCX gold &amp; silver</legend>
+          <div class="row">
+            <label>New MCX positions from <input name="mcx_trade_start" type="time" min="09:00" max="23:55" required></label>
+            <label>until <input name="mcx_trade_end" type="time" min="09:00" max="23:55" required></label>
+            <label>Delivery cut-off, days before expiry <input name="mcx_exit_days" type="number" min="1" max="30" step="1" required></label>
+            <label>MCX futures margin % (estimate) <input name="mcx_margin_pct" type="number" min="3" max="100" step="0.5" required></label>
+          </div>
+          <p class="hint">Gold and silver contracts are physically delivered. Inside the cut-off the desk opens nothing and its algos close what they hold. Zerodha publishes its own square-off date for each expiry (Market Intel → "MCX precious metals expiry"); if it is earlier than the cut-off, raise the cut-off.</p>
+        </fieldset>
+        <label class="check"><input type="checkbox" name="charts_enabled"> Show the Charts tab</label>
+        <label class="check"><input type="checkbox" name="chart_yahoo"> If Kite cannot serve a chart, fall back to delayed Yahoo data</label>
+        <p class="hint">Live orders also need a Kite server that offers order placement, and a typed confirmation for each order.</p>
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="panel">
+        <h2>Alerts to your phone (Telegram)</h2>
+        <p class="hint">1. In Telegram, message <code>@BotFather</code>, send <code>/newbot</code>, and copy the token it gives. 2. Open your new bot and press Start. 3. Message <code>@userinfobot</code> to get your chat id. 4. Fill both in, tick the box, Save, then Test.</p>
+        <label>Bot token <span class="hint" id="tg-saved"></span><input name="telegram_token" type="password" autocomplete="off" placeholder="unchanged"></label>
+        <label>Chat id <input name="telegram_chat_id" autocomplete="off" placeholder="123456789"></label>
+        <label class="check"><input type="checkbox" name="alerts_enabled"> Send alerts to Telegram</label>
+        <div class="row"><button type="button" id="alerts-test">Send a test alert</button><span class="hint">Save first.</span></div>
+        <div id="alerts-test-out"></div>
+        <p class="hint">Sent for: orders filled or refused, an algo blocked or closed by a stop or target, the daily loss limit, Kite signing you out while live algos wait, and security changes.</p>
+      </div>
+      <div class="panel">
+        <h2>Exchange holidays</h2>
+        <p class="hint">One date per line, as YYYY-MM-DD. On these days the desk treats the market as closed: no orders, no algo runs. NSE publishes the list each December (nseindia.com → Resources → Holidays); paste the trading holidays here once a year.</p>
+        <textarea name="holidays" rows="8" spellcheck="false" placeholder="2026-12-25"></textarea>
+        <div class="row"><button type="button" id="holidays-fixed">Add the fixed-date holidays</button><span class="hint" id="holidays-note"></span></div>
+        <h3>MCX holidays</h3>
+        <p class="hint">MCX keeps its own list (mcxindia.com → Market Operations → Trading Holidays). One per line: <code>2026-12-25</code> closes the whole day; <code>2026-11-24 evening</code> means only the evening session (17:00 onwards) trades, as on many NSE holidays.</p>
+        <textarea name="mcx_holidays" rows="5" spellcheck="false" placeholder="2026-12-25"></textarea>
+      </div>
+    </div>
+    <div class="panel" id="security-panel" hidden>
+      <h2>Two-factor sign-in</h2>
+      <div id="twofa"></div>
+    </div>
+    <div class="panel" id="passkey-panel" hidden>
+      <h2>Passkeys</h2>
+      <p class="hint">Sign in with your phone's or laptop's fingerprint, face or screen lock instead of the password and code. The device keeps the key; the desk stores only its public half, and a passkey works only on this desk's address, so it cannot be phished. Add one on each device you use. Needs HTTPS.</p>
+      <div id="passkeys"></div>
+    </div>
+    <div class="panel">
+      <h2>Broker connection (MCP)</h2>
+      <p class="hint">Standard <code>mcpServers</code> JSON. Zerodha's hosted server <code>mcp.kite.trade</code> gives portfolio and market data but does not place orders. To trade live, run <code>kite-mcp-server</code> with your own Kite Connect API key and point this at it.</p>
+      <label>Server name <input name="mcp_server" autocomplete="off"></label>
+      <textarea name="mcp" rows="9" spellcheck="false"></textarea>
+    </div>
+    <div class="row"><button class="primary" type="submit">Save settings</button><span id="settings-msg" class="hint"></span></div>
+    <div id="settings-error" class="error" hidden></div>
+  </form>
+</section>
+</main>
+</div>
+</div>
+<dialog id="stock-dialog" aria-labelledby="sd-title">
+  <div class="dialog-head"><h2 id="sd-title"></h2><span class="actions"><button type="button" id="sd-chart">Open in Charts</button><button type="button" id="sd-trade">Trade</button><button type="button" id="sd-close" aria-label="Close">✕</button></span></div>
+  <div id="sd-body"></div>
+</dialog>
+<div id="tooltip" class="tooltip" hidden></div>
+<script src="/static/pwa.js"></script>
+<script src="/static/lightweight-charts.js"></script>
+<script src="/static/passkey.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

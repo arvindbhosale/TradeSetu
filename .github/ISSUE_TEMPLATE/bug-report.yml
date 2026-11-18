@@ -1,0 +1,58 @@
+name: Bug report
+description: Something fails, crashes, or behaves differently from the docs.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search [existing issues](https://github.com/arvindbhosale/TradeSetu/issues?q=is%3Aissue) first, and check that the bug reproduces on the latest release.
+        Remove API keys, Kite access tokens, passwords, client IDs and other personal details from anything you paste.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `git rev-parse --short HEAD` in your checkout, or the release you installed.
+      placeholder: "0.5.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: entry
+    attributes:
+      label: How you run it
+      options:
+        - Desk on my computer (tradesetu)
+        - Desk hosted (Docker / Dokploy)
+        - Agents CLI (tradingagents)
+        - Python package (TradingAgentsGraph)
+        - Backtest (run_backtest or tradingagents backtest)
+        - Docker
+    validations:
+      required: true
+  - type: input
+    id: models
+    attributes:
+      label: LLM provider and models (only for Analyze or the agents CLI)
+      placeholder: "openai, gpt-6-sol / gpt-6-luna"
+  - type: input
+    id: run
+    attributes:
+      label: Screen, symbol and date
+      placeholder: "Backtest → Option strategies, NIFTY, 2026-11-14"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps or code to reproduce
+      description: The smallest steps or snippet that shows the problem.
+      render: python
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output
+      description: The full traceback or log lines, as text rather than a screenshot.
+      render: text
