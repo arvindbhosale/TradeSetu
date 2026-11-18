@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="tradingagents/assets/tradesetu-logo.svg" width="72" alt="TradeSetu logo">
+  <img src="assets/readme/tradesetu-logo.png" width="300" alt="TradeSetu logo">
 </p>
 
 <h1 align="center">TradeSetu</h1>
