@@ -2,13 +2,12 @@
 
 Index levels and candles come from Kite (the official index values) when Kite is
 signed in; otherwise from Yahoo for the indices it carries. Constituents come
-from NSE's published list for each Nifty index, downloaded once a day. BSE
-publishes no such file, so BSE indices show their level and trend only.
+from NSE's published list for each Nifty index, downloaded once a day, and for
+BSE indices from BSE's market-movers feed (see ``bselists``).
 
-The BSE list is Kite's own: every instrument Kite files under the INDICES
-segment on BSE, read from its instrument list once a day. Sensex, Sensex 50 and
-Bankex are named here so they show (from Yahoo, for Sensex) before Kite is
-signed in; the rest appear once Kite has been asked.
+The BSE indices are Kite's (every instrument it files under the INDICES segment
+on BSE, read once a day) plus any other index BSE's feed names. Sensex, Sensex
+50 and Bankex are named here so they show before Kite is signed in.
 
 Weights: NSE weights its indices by free-float market cap and publishes the
 weights only in monthly factsheets. The desk approximates them by full market
@@ -32,7 +31,7 @@ import pandas as pd
 
 from tradingagents.dataflows.symbols import normalize_symbol
 
-from . import data, market, trend
+from . import bselists, data, market, trend
 from .sectors import CARD_CANDLES, candles, change
 from .settings import home
 
@@ -45,7 +44,7 @@ LEVEL_SECONDS = 6 * 3600
 BSE_GROUP = "BSE"
 
 # (id, name, group, constituent file, Kite names to try, Yahoo symbol). File names checked against NSE. A Kite
-# name without an exchange is on NSE. BSE indices have no constituent file (None).
+# name without an exchange is on NSE. BSE indices take their stocks from BSE's feed ("bse").
 CATALOG = [
     ("nifty50", "Nifty 50", "Broad market", "ind_nifty50list", ["NIFTY 50"], "^NSEI"),
     ("niftynext50", "Nifty Next 50", "Broad market", "ind_niftynext50list", ["NIFTY NEXT 50"], "^NSMIDCP"),
@@ -99,9 +98,9 @@ CATALOG = [
     ("nifty200quality30", "Nifty 200 Quality 30", "Strategy", "ind_nifty200Quality30_list", ["NIFTY200 QUALTY30", "NIFTY200 QUALITY 30"], None),
     ("nifty100lowvol30", "Nifty 100 Low Volatility 30", "Strategy", "ind_nifty100LowVolatility30list", ["NIFTY100 LOWVOL30", "NIFTY100 LOW VOLATILITY 30"], None),
     ("niftymidcap150momentum50", "Nifty Midcap 150 Momentum 50", "Strategy", "ind_niftyMidcap150Momentum50_list", ["NIFTY M150 MOM 50", "NIFTY MIDCAP150 MOMENTUM 50"], None),
-    ("bsesensex", "BSE Sensex", BSE_GROUP, None, ["BSE:SENSEX"], "^BSESN"),
-    ("bsesensex50", "BSE Sensex 50", BSE_GROUP, None, ["BSE:SENSEX50"], None),
-    ("bsebankex", "BSE Bankex", BSE_GROUP, None, ["BSE:BANKEX"], None),
+    ("bsesensex", "BSE Sensex", BSE_GROUP, "bse", ["BSE:SENSEX"], "^BSESN"),
+    ("bsesensex50", "BSE Sensex 50", BSE_GROUP, "bse", ["BSE:SENSEX50"], None),
+    ("bsebankex", "BSE Bankex", BSE_GROUP, "bse", ["BSE:BANKEX"], None),
 ]
 BY_ID = {entry[0]: entry for entry in CATALOG}
 
@@ -122,7 +121,12 @@ def bse_entry(row: dict) -> tuple | None:
     name = " ".join(str(row.get("name") or "").split()) or symbol
     if not name.upper().startswith(("BSE", "S&P BSE")):
         name = f"BSE {name}"
-    return ("bse_" + re.sub(r"[^a-z0-9]", "", symbol.lower()), name, BSE_GROUP, None, [f"BSE:{symbol}"], None)
+    return ("bse_" + re.sub(r"[^a-z0-9]", "", symbol.lower()), name, BSE_GROUP, "bse", [f"BSE:{symbol}"], None)
+
+
+def bse_keys(entry: tuple) -> set[str]:
+    """The ``bselists`` keys a BSE board entry may go by: its name and each Kite symbol."""
+    return {bselists.key(entry[1])} | {bselists.key(n.split(":", 1)[-1]) for n in entry[4]}
 SYNTHETIC_MAX = 100        # an index this size or smaller can be rebuilt from its stocks when nothing else serves it
 
 
@@ -138,14 +142,16 @@ def parse_constituents(text: str) -> list[dict]:
 
 class Indices:
     def __init__(self, sectors, fundamentals, kite=None, path: Path | None = None, download=None, fetch=None,
-                 now=market.now_ist):
+                 now=market.now_ist, get_json=None):
         self.sectors, self.fundamentals, self.kite = sectors, fundamentals, kite
         self._download = download            # (url) -> text; replaces the HTTP call
+        self._get_json = get_json            # (url, params) -> decoded JSON; replaces the BSE call
         self.fetch, self._now = fetch, now
         self.path = path or home() / "indices.json"
         self._lock = threading.RLock()
         self._tick_lock = threading.Lock()
-        self._state = {"lists": {}, "listed_at": 0, "kite_names": {}, "bse": [], "bse_at": 0}
+        self._state = {"lists": {}, "listed_at": 0, "kite_names": {}, "bse": [], "bse_at": 0,
+                       "bse_lists": {}, "bse_listed_at": 0}
         self._levels: dict[str, pd.DataFrame] = {}
         self._level_source: dict[str, str] = {}
         self._level_at = 0.0
@@ -164,7 +170,7 @@ class Indices:
     # -- which indices -------------------------------------------------------
 
     def entries(self) -> list[tuple]:
-        """The catalogue, then every other BSE index Kite lists (in Kite's order)."""
+        """The catalogue, then every other BSE index Kite lists, then any BSE index only BSE's feed names."""
         known = {kite_key(name) for entry in CATALOG for name in entry[4]}
         ids = {entry[0] for entry in CATALOG}
         out = list(CATALOG)
@@ -173,6 +179,14 @@ class Indices:
             if len(entry) == 6 and entry[0] not in ids and entry[4][0] not in known:
                 ids.add(entry[0])
                 out.append(entry)
+        covered = {k for e in out if e[2] == BSE_GROUP for k in bse_keys(e)}
+        for k, lst in sorted((self._state.get("bse_lists") or {}).items(), key=lambda item: item[1].get("name", "")):
+            index_id = "bsel_" + k.lower()
+            if k not in covered and index_id not in ids:
+                ids.add(index_id)
+                name = lst.get("name") or k
+                name = name if name.upper().startswith(("BSE", "S&P")) else f"BSE {name}"
+                out.append((index_id, name.replace("S&P BSE", "BSE"), BSE_GROUP, "bse", [], None))
         return out
 
     def entry(self, index_id: str) -> tuple | None:
@@ -204,6 +218,30 @@ class Indices:
 
     # -- constituents --------------------------------------------------------
 
+    def refresh_bse_lists(self, force: bool = False) -> None:
+        """Every BSE index's members from BSE's market-movers feed, once a day. A failure keeps the stored lists."""
+        if not force and time.time() - self._state.get("bse_listed_at", 0) < LIST_SECONDS and self._state.get("bse_lists"):
+            return
+        try:
+            fresh = bselists.fetch(self._get_json or bselists.http_get_json)
+        except Exception:  # noqa: BLE001 - BSE down or blocking: keep what we have
+            logger.info("BSE index lists could not be read", exc_info=True)
+            return
+        if not fresh:
+            return
+        with self._lock:
+            self._state.update(bse_lists=bselists.merge(self._state.get("bse_lists") or {}, fresh),
+                               bse_listed_at=time.time())
+            self._save()
+
+    def _bse_rows(self, entry: tuple) -> list[dict]:
+        lists = self._state.get("bse_lists") or {}
+        for k in sorted(bse_keys(entry) | ({entry[0][5:].upper()} if entry[0].startswith("bsel_") else set())):
+            if k in lists:
+                return [{"symbol": s, "name": v[0] if isinstance(v, list) else str(v), "industry": ""}
+                        for s, v in sorted(lists[k]["stocks"].items())]
+        return []
+
     def _get(self, url: str) -> str:
         if self._download is not None:
             return self._download(url)
@@ -218,7 +256,7 @@ class Indices:
             return
         lists = dict(self._state["lists"])
         for index_id, _, _, file, _, _ in CATALOG:
-            if not file:
+            if not file or file == "bse":
                 continue
             for template in (NSE_FILE, NIFTY_FILE):
                 try:
@@ -231,9 +269,14 @@ class Indices:
         with self._lock:
             self._state.update(lists=lists, listed_at=time.time())
             self._save()
+        self.refresh_bse_lists(force=force)
 
     def constituents(self, index_id: str) -> list[dict]:
-        return list(self._state["lists"].get(index_id, []))
+        rows = self._state["lists"].get(index_id)
+        if rows:
+            return list(rows)
+        entry = self.entry(index_id) if index_id.startswith("bse") else None
+        return self._bse_rows(entry) if entry else []
 
     def industry_of(self) -> dict[str, str]:
         out = {}

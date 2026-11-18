@@ -50,6 +50,7 @@ from .fnoalgo import FnoAlgoEngine, arm_phrase as fno_arm_phrase
 from .fundamentals import LABELS as FUNDAMENTAL_LABELS, Fundamentals
 from .indices import Indices
 from .kite import KiteError, KiteMCP
+from .markettools import MarketTools, finite
 from .optimiser import OBJECTIVES, optimise
 from .passkeys import PasskeyError, Passkeys, relying_party
 from .scanner import Scanner
@@ -89,8 +90,12 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     derivatives = Derivatives(kite)
     desk.contract_lookup = derivatives.contract
     fundamentals = Fundamentals(fetch=(lambda symbol: {}) if fetch is not None else None)
+    offline_json = (lambda url, params: (_ for _ in ()).throw(OSError("offline"))) if fetch is not None else None
     indices = Indices(sectors, fundamentals, kite, fetch=fetch,
-                      download=(lambda url: (_ for _ in ()).throw(OSError("offline"))) if fetch is not None else None)
+                      download=(lambda url: (_ for _ in ()).throw(OSError("offline"))) if fetch is not None else None,
+                      get_json=offline_json)
+    tools = MarketTools(sectors, indices, fundamentals, fetch=fetch, get_json=offline_json,
+                        download=(lambda url: (_ for _ in ()).throw(OSError("offline"))) if fetch is not None else None)
     sectors.extra = []                      # filled from index lists so contributor prices stay warm
     first_oi: dict = {"day": None, "values": {}}
     algos.extra_ticks.append(derivatives.tick)
@@ -129,6 +134,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     app.state.algos, app.state.auth, app.state.scanner = algos, auth, scanner
     app.state.sectors, app.state.indices, app.state.fundamentals = sectors, indices, fundamentals
     app.state.derivatives = derivatives
+    app.state.tools = tools
     app.state.fno_algos = fno_algos
 
     @app.middleware("http")
@@ -983,6 +989,26 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     @app.get("/api/indices")
     def index_cards():
         return indices.cards(settings.get("trend_rule"))
+
+    @app.get("/api/tools/pulse")
+    def tool_pulse():
+        return finite(tools.pulse())
+
+    @app.get("/api/tools/deals")
+    def tool_deals(days: int = 5, min_value: float = 0.0):
+        return finite(tools.deals(max(1, min(days, 30)), max(0.0, min_value)))
+
+    @app.get("/api/tools/drift")
+    def tool_drift(min_move: float = 4.0):
+        return finite(tools.drift(max(1.0, min(min_move, 30.0))))
+
+    @app.get("/api/tools/rotation")
+    def tool_rotation(period: str = "weekly"):
+        return finite(tools.rotation(period != "daily"))
+
+    @app.get("/api/tools/radar")
+    def tool_radar():
+        return finite(tools.radar())
 
     @app.get("/api/indices/{index_id}")
     def index_detail(index_id: str):

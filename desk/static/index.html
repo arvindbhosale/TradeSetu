@@ -25,6 +25,7 @@
   <nav class="tabs" role="tablist" aria-label="Sections">
       <button role="tab" data-tab="markets" aria-selected="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg><span>Markets</span></button>
       <button role="tab" data-tab="indices"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 18l2.5-2.5 2 2L21 15"/></svg><span>Indices</span></button>
+      <button role="tab" data-tab="tools"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 12l4-4M12 3v2M3 12h2M19 12h2"/></svg><span>Market tools</span></button>
       <button role="tab" data-tab="analyze"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><span>AI Analyze</span></button>
       <button role="tab" data-tab="charts" id="tabbtn-charts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5v14M7 9h0M12 3v18M17 7v10"/><rect x="5" y="8" width="4" height="7" rx="1"/><rect x="10" y="6" width="4" height="9" rx="1"/><rect x="15" y="10" width="4" height="5" rx="1"/></svg><span>Charts</span></button>
       <button role="tab" data-tab="strategies"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg><span>Strategies</span></button>
@@ -61,6 +62,20 @@
 
 <main>
 <section id="tab-markets" class="tab">
+  <div class="panel" id="pulse-panel">
+    <div class="jobhead"><h2>Market Pulse</h2><span class="hint" id="pulse-updated"></span></div>
+    <div class="pulse-wrap">
+      <div class="pulse-gauge"><svg id="pulse-gauge" viewBox="0 0 240 192" role="img" aria-label="Market Pulse gauge"></svg>
+        <div class="pulse-then" id="pulse-then"></div></div>
+      <div class="pulse-parts" id="pulse-parts"></div>
+    </div>
+    <div class="jobhead"><h3>Heat map</h3>
+      <span class="actions"><span class="seg" id="heat-period" role="group" aria-label="Period"><button data-period="change_1d" aria-pressed="true">Today</button><button data-period="change_1w" aria-pressed="false">1 week</button><button data-period="change_1m" aria-pressed="false">1 month</button></span>
+      <span class="seg" id="heat-what" role="group" aria-label="Show"><button data-what="sectors" aria-pressed="true">Sectors</button><button data-what="stocks" aria-pressed="false">Nifty 50 stocks</button></span></span></div>
+    <div class="heatmap" id="pulse-heat"></div>
+    <div id="pulse-error" class="error" hidden></div>
+    <p class="hint">Market Pulse runs from 0 (extreme fear) to 100 (extreme greed). It is the average of six readings, each 0 to 100: Nifty against its 200-day average, the Nifty's one-month return ranked against the past year, India VIX ranked against the past year (inverted), the share of tracked stocks above their 50-day average, stocks near 52-week highs against those near lows, and the share of stocks up today. Below 20 extreme fear, 20 to 40 fear, 40 to 60 neutral, 60 to 80 greed, above 80 extreme greed.</p>
+  </div>
   <div id="sector-board">
     <div class="board-head">
       <div>
@@ -109,6 +124,60 @@
   </div>
 </section>
 
+<section id="tab-tools" class="tab" hidden>
+  <div class="board-head">
+    <div class="seg" id="tool-pick" role="group" aria-label="Tool">
+      <button data-tool="deals" aria-pressed="true">Whale Deals</button>
+      <button data-tool="drift" aria-pressed="false">Results Drift</button>
+      <button data-tool="compass" aria-pressed="false">Sector Compass</button>
+      <button data-tool="radar" aria-pressed="false">Stock Radar</button>
+    </div>
+    <p class="hint" id="tool-updated"></p>
+  </div>
+  <div id="tool-error" class="error" hidden></div>
+  <div class="tool" id="tool-deals">
+    <div class="panel">
+      <div class="jobhead"><h2>Bulk and block deals</h2>
+        <form class="row inline" id="form-deals"><label class="inline">Last <select name="days"><option value="1">1 day</option><option value="5" selected>5 days</option><option value="10">10 days</option><option value="30">30 days</option></select></label>
+          <label class="inline">At least ₹ <input name="min_value" type="number" min="0" step="1" value="0" style="width:80px"> crore</label>
+          <label class="inline"><input type="search" name="q" placeholder="Stock or client"></label></form></div>
+      <p class="hint">A bulk deal is a trade in one day of more than 0.5% of a company's shares; a block deal is a trade of at least ₹10 crore in the exchange's block window. Both are published by NSE with the client's name after the close. The desk reads NSE's file every two hours and keeps 30 days.</p>
+      <div class="scroll tall" id="deals-table"></div>
+    </div>
+    <div class="panel">
+      <div class="jobhead"><h2>Volume spikes today</h2></div>
+      <p class="hint" id="spikes-note"></p>
+      <div class="scroll" id="spikes-table"></div>
+    </div>
+  </div>
+  <div class="tool" id="tool-drift" hidden>
+    <div class="panel">
+      <div class="jobhead"><h2>Results Drift</h2>
+        <form class="row inline" id="form-drift"><label class="inline">Reaction of at least <input name="min_move" type="number" min="1" max="30" step="0.5" value="4" style="width:70px">%</label>
+          <label class="inline">Show <select name="only"><option value="edge">Drifting or holding</option><option value="all">All results</option></select></label></form></div>
+      <p class="hint">Post-earnings drift: a stock that moves hard on its results tends to keep going the same way for weeks. Results dates are BSE's calendar for the last 60 days. Reaction is the move from the close before the board meeting to the close of the next session. "Drifting up" means a reaction of at least the set move, the price still above the low of those two sessions and higher than the reaction close; "Holding up" is above that low but not higher. The same in reverse for down. Only stocks the desk prices (Nifty 500 and your sectors) are listed.</p>
+      <div class="scroll tall" id="drift-table"></div>
+    </div>
+  </div>
+  <div class="tool" id="tool-compass" hidden>
+    <div class="panel">
+      <div class="jobhead"><h2>Sector Compass</h2>
+        <span class="seg" id="compass-period" role="group" aria-label="Period"><button data-period="weekly" aria-pressed="true">Weekly</button><button data-period="daily" aria-pressed="false">Daily</button></span></div>
+      <p class="hint">Each Nifty sector index against the Nifty 50. Across: relative strength (above 100 is beating the Nifty). Up: whether that strength is rising. Sectors usually turn clockwise: Improving → Leading → Weakening → Lagging. The tail shows the last 6 weeks (10 days on daily).</p>
+      <div class="compass-wrap"><svg id="compass-chart" viewBox="0 0 520 520" role="img" aria-label="Sector rotation chart"></svg><div class="scroll" id="compass-table"></div></div>
+    </div>
+  </div>
+  <div class="tool" id="tool-radar" hidden>
+    <div class="panel">
+      <div class="jobhead"><h2>Stock Radar</h2>
+        <form class="row inline" id="form-radar"><label class="inline"><input type="search" name="q" placeholder="Stock, company or sector"></label>
+          <label class="inline">Show <select name="only"><option value="all">All</option><option value="flags">With a signal</option><option value="above">Above 50 and 200-day</option><option value="near">Within 5% of 52-week high</option></select></label></form></div>
+      <p class="hint">Every stock the desk tracks, in one table. Score (0 to 100): strength against the Nifty over 3 months (30%), nearness to the 52-week high (20%), above the 50 and 200-day averages (20%), 1-month return (15%) and today's volume against its 20-day average (15%). Strength, return and volume are ranked within the list. Signals: deals in the last 5 days, Results Drift and volume spikes. Click a column to sort.</p>
+      <div class="scroll tall" id="radar-table"></div>
+    </div>
+  </div>
+</section>
+
 <section id="tab-indices" class="tab" hidden>
   <div id="index-board">
     <div class="board-head">
@@ -135,7 +204,7 @@
     <div class="trend-rule" hidden></div>
     <div id="index-error" class="error" hidden></div>
     <div class="cards" id="index-cards"></div>
-    <p class="hint">Index levels and candles come from Kite when it is logged in (the official index values), otherwise from Yahoo where it carries the index. Constituents are NSE's published lists, refreshed daily. BSE indices are every index Kite lists on BSE; BSE publishes no constituent file, so they show level and trend only.</p>
+    <p class="hint">Index levels and candles come from Kite when it is logged in (the official index values), otherwise from Yahoo where it carries the index. Constituents are NSE's published lists, refreshed daily. BSE indices are every index Kite or BSE lists; their stocks come from BSE's daily market data.</p>
   </div>
   <div id="index-detail" hidden>
     <div class="jobhead"><button type="button" id="index-back">← All indices</button><span class="hint" id="index-source"></span></div>

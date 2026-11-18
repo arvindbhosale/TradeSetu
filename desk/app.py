@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import socket
@@ -89,6 +90,11 @@ def _start_indices(app) -> None:
                 wanted = {r["symbol"] for i in ("nifty50", "niftynext50", "niftybank", "niftyit", "niftyfinance", "niftyauto",
                                                 "niftypharma", "niftyfmcg", "niftymetal", "niftyrealty", "niftyenergy")
                           for r in indices.constituents(i)}
+                tools = app.state.tools
+                with contextlib.suppress(Exception):
+                    tools.tick()
+                broad = {r["symbol"] for r in indices.constituents("nifty500")} | wanted | set(app.state.sectors.symbols())
+                wanted |= set(tools.result_symbols(broad))        # stocks that reported, for Results Drift
                 app.state.sectors.extra = sorted(wanted)
             except Exception:  # noqa: BLE001 - try again next round
                 logging.getLogger(__name__).exception("index refresh failed")
