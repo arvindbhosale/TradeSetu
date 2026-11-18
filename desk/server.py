@@ -44,6 +44,7 @@ from .algo import AlgoEngine, AlgoError, arm_phrase
 from .auth import COOKIE, SESSION_SECONDS, Auth
 from .backtest import BacktestParams, run_strategy
 from .broker import Desk, OrderRejected
+from .brokers import Switch, catalog as broker_catalog
 from .custom import OPS as RULE_OPS, TIME_OPS as RULE_TIME_OPS, CustomStrategies
 from .fno import BSE_INDICES, Derivatives, exchange_of
 from .fnoalgo import FnoAlgoEngine, arm_phrase as fno_arm_phrase
@@ -77,7 +78,9 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     settings = settings or Settings()
     settings.export_keys()
     set_config({"default_exchange": settings.get("default_exchange")})
-    kite = kite or KiteMCP()
+    kite = kite or Switch()
+    if isinstance(kite, Switch):
+        kite.use(settings.get("broker"))
     desk = desk or Desk(settings, kite, price_lookup=lambda symbol: data.last_close(symbol, fetch=fetch))
     token = token or secrets.token_urlsafe(32)
     runner = jobs_module.Jobs()
@@ -143,7 +146,10 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if hosted:
             session = auth.session(request.cookies.get(COOKIE))
             request.state.session = session
-            public = path in ("/login", "/api/login", "/api/passkey/options", "/api/passkey/login", "/sw.js") \
+            # /broker/callback: a broker's sign-in page redirecting back. No session cookie comes with a
+            # cross-site redirect; the one-time OAuth state it must carry is the check instead.
+            public = path in ("/login", "/api/login", "/api/passkey/options", "/api/passkey/login", "/sw.js",
+                              "/broker/callback") \
                 or path.startswith(("/static/", "/kite/"))
             if not session and not public:
                 if path.startswith("/api/"):
@@ -437,7 +443,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             "app": APP_NAME, "version": __version__, "engine": tradingagents.__version__,
             "today": get_current_date(), "settings": settings.public(),
             "providers": dict(PROVIDER_API_KEY_ENV.items()),
-            "kite": kite.status(), "session": market.session_status(), "llm_problem": llm_ready(),
+            "kite": kite.status(), "brokers": broker_catalog(), "session": market.session_status(), "llm_problem": llm_ready(),
             "hosted": hosted, "user": auth.username if hosted else None,
             "window": desk.window_status(), "llm_presets": LLM_PRESETS, "llm_models": _llm_models(),
             "trend_methods": __import__("desk.trend", fromlist=["METHODS"]).METHODS,
@@ -453,6 +459,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     def put_settings(payload: dict):
         updated = settings.update(body_of(payload))
         set_config({"default_exchange": settings.get("default_exchange")})
+        if isinstance(kite, Switch):
+            kite.use(settings.get("broker"))      # a different broker: the old connection closes
         return {"settings": updated, "llm_problem": llm_ready()}
 
     @app.post("/api/llm/test")
@@ -845,13 +853,43 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
 
     # -- broker ---------------------------------------------------------------
 
+    @app.get("/api/brokers")
+    def brokers_list():
+        return {"brokers": broker_catalog(), "active": settings.get("broker")}
+
     @app.post("/api/kite/connect")
-    def kite_connect():
+    def kite_connect(request: Request):
+        name = settings.get("broker")
+        if isinstance(kite, Switch):
+            kite.use(name)
+            if name != "kite":
+                entry = dict(settings.get("broker_keys").get(name) or {})
+                if not entry.get("redirect_uri"):
+                    entry["redirect_uri"] = str(request.base_url).rstrip("/") + "/broker/callback"
+                return kite.connect(entry)
         servers = settings.get("mcp")["mcpServers"]
         name = settings.get("mcp_server")
         if name not in servers:
             raise ValueError(f'No MCP server named "{name}" in Settings. Found: {", ".join(servers) or "none"}')
         return kite.connect(servers[name])
+
+    @app.get("/broker/callback")
+    def broker_callback(request: Request):
+        """Where Upstox and Fyers send the browser back after their sign-in page."""
+        import html
+
+        params = dict(request.query_params)
+        try:
+            if not isinstance(kite, Switch):
+                raise KiteError("This desk is not set up for broker sign-in redirects.")
+            kite.complete_login(params)
+            text, ok = f"Signed in to {kite.status().get('broker_label')}. Return to TradeSetu and press Refresh.", True
+        except KiteError as exc:
+            text, ok = str(exc), False
+        body = (f"<!doctype html><meta charset=utf-8><title>TradeSetu sign-in</title>"
+                f"<body style='font-family:system-ui;max-width:36rem;margin:3rem auto;padding:0 1rem'>"
+                f"<h1>{'Signed in' if ok else 'Sign-in failed'}</h1><p>{html.escape(text)}</p><p><a href='/'>Back to TradeSetu</a></p>")
+        return HTMLResponse(body, status_code=200 if ok else 400)
 
     @app.post("/api/kite/disconnect")
     def kite_disconnect():
@@ -1614,13 +1652,18 @@ def _market_data(kite: KiteMCP) -> dict:
         now = market.now_ist().replace(tzinfo=None)
         from datetime import timedelta
         rows = kite.candles("NSE:RELIANCE", "1d", now - timedelta(days=10), now)
-        result = {"ok": bool(rows), "detail": "Kite market data is working: charts, live prices and long intraday "
-                                              "backtests use it." if rows else "Kite returned no candles."}
+        status = kite.status()
+        label = "Kite" if status.get("broker", "kite") == "kite" else status.get("broker_label")
+        result = {"ok": bool(rows), "detail": f"{label} market data is working: charts, live prices and long intraday "
+                                              "backtests use it." if rows else f"{label} returned no candles."}
     except KiteError as exc:
         if exc.needs_login:
             raise
-        result = {"ok": False, "detail": f"Kite did not serve candles: {str(exc)[:200]}. Market data needs the paid "
-                                         f"Kite Connect plan on the API key this desk was installed with."}
+        status = kite.status()
+        label = "Kite" if status.get("broker", "kite") == "kite" else status.get("broker_label")
+        plan = ("the paid Kite Connect plan on the API key this desk was installed with" if label == "Kite"
+                else f"market data enabled on your {label} API plan")
+        result = {"ok": False, "detail": f"{label} did not serve candles: {str(exc)[:200]}. Market data needs {plan}."}
     _market_data_seen[id(kite)] = (clock.time(), result)
     return result
 

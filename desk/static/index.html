@@ -678,7 +678,7 @@
   <div class="grid2">
     <div>
       <div class="panel">
-        <div class="jobhead"><h2>Kite (Zerodha)</h2>
+        <div class="jobhead"><h2 id="broker-title">Kite (Zerodha)</h2>
           <span><button id="kite-connect">Connect</button> <button id="kite-login" hidden>Log in to Kite</button> <button id="kite-refresh" hidden>Refresh</button></span></div>
         <div id="kite-info" class="hint"></div>
         <div id="kite-error" class="error" hidden></div>
@@ -996,6 +996,13 @@
       <div id="passkeys"></div>
     </div>
     <div class="panel">
+      <h2>Broker</h2>
+      <p class="hint">Zerodha Kite is the tested broker. The others talk to each broker's own API and are marked experimental: they are built on the broker's published API but not yet tried with a live account, so start in Paper mode and check every order in your broker's app.</p>
+      <label>Broker <select name="broker"></select></label>
+      <p id="broker-notes" class="hint"></p>
+      <div id="broker-fields"></div>
+    </div>
+    <div class="panel" id="mcp-panel">
       <h2>Broker connection (MCP)</h2>
       <p class="hint">Standard <code>mcpServers</code> JSON. Zerodha's hosted server <code>mcp.kite.trade</code> gives portfolio and market data but does not place orders. To trade live, run <code>kite-mcp-server</code> with your own Kite Connect API key and point this at it.</p>
       <label>Server name <input name="mcp_server" autocomplete="off"></label>

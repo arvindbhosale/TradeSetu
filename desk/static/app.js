@@ -599,8 +599,11 @@
     const kite = state.app.kite;
     $("#kite-connect").textContent = kite.connected ? "Disconnect" : "Connect";
     $("#kite-login").hidden = !kite.connected; $("#kite-refresh").hidden = !kite.connected;
-    const info = $("#kite-info");
-    if (!kite.connected) { info.textContent = kite.error || "Not connected. Connect to read your Zerodha account through the MCP server in Settings."; $("#kite-account").replaceChildren(); return; }
+    const info = $("#kite-info"), label = kite.broker_label || "Kite", rest = kite.broker && kite.broker !== "kite";
+    $("#broker-title").textContent = rest ? label + (kite.broker_status === "experimental" ? " (experimental)" : "") : "Kite (Zerodha)";
+    $("#kite-login").textContent = "Log in to " + (rest ? label : "Kite");
+    if (!kite.connected) { info.textContent = kite.error || (rest ? `Not connected. Connect to read your ${label} account with the keys in Settings → Broker.` : "Not connected. Connect to read your Zerodha account through the MCP server in Settings."); $("#kite-account").replaceChildren(); return; }
+    if (rest) { info.textContent = `Connected to ${label}'s API. ` + (kite.signed_in ? "Signed in for today." : "Press “Log in to " + label + "” to sign in.") + " Experimental: check every live order in your broker's app."; return; }
     info.textContent = `Connected over ${kite.transport} to ${kite.endpoint}. ` + (kite.can_trade
       ? "This server can place orders."
       : "This server is read-only (no place_order tool): portfolio and prices only.")
@@ -625,7 +628,8 @@
       const login = await api("/kite/login", { method: "POST" });
       const box = $("#kite-account");
       box.replaceChildren(h("div", { class: "warnbox" },
-        login.url ? h("p", {}, "Open this link, sign in to Kite, then press Refresh: ", h("a", { href: login.url, target: "_blank", rel: "noopener noreferrer", text: login.url })) : h("p", { text: login.message })));
+        login.url ? h("p", {}, `Open this link, sign in to ${state.app.kite.broker_label || "Kite"}, then press Refresh: `, h("a", { href: login.url, target: "_blank", rel: "noopener noreferrer", style: "overflow-wrap:anywhere", text: login.url })) : h("p", { text: login.message })));
+      await loadState(); renderKiteInfo();
     } catch (err) { showError("#kite-error", err); }
   });
   $("#kite-refresh").addEventListener("click", () => refreshKiteAccount());
@@ -636,7 +640,7 @@
     let account;
     try { account = await api("/kite/account"); }
     catch (err) {
-      if (err.payload && err.payload.needs_login) box.replaceChildren(h("div", { class: "warnbox", text: "Kite needs a login. Press “Log in to Kite”. Sessions expire every morning." }));
+      if (err.payload && err.payload.needs_login) { const label = state.app.kite.broker_label || "Kite"; box.replaceChildren(h("div", { class: "warnbox", text: `${label} needs a login. Press “Log in to ${label}”. Sessions expire every day.` })); }
       else showError("#kite-error", err);
       return;
     }
@@ -797,6 +801,9 @@
       });
     }
     form.mcp.value = JSON.stringify(s.mcp, null, 2);
+    form.broker.replaceChildren(...state.app.brokers.map((b) => h("option", { value: b.name, text: b.label + (b.status === "experimental" ? " (experimental)" : "") })));
+    form.broker.value = s.broker;
+    renderBrokerFields();
     form.api_key.value = "";
     updateKeyHint();
   }
@@ -811,6 +818,18 @@
     form.api_key.disabled = !env;
   }
   $("#form-settings").llm_provider.addEventListener("change", updateKeyHint);
+
+  function renderBrokerFields() {
+    const form = $("#form-settings"), broker = state.app.brokers.find((b) => b.name === form.broker.value);
+    const saved = (state.app.settings.broker_keys || {})[form.broker.value] || {};
+    $("#mcp-panel").hidden = form.broker.value !== "kite";
+    $("#broker-notes").textContent = broker ? broker.notes + (broker.oauth ? ` Register this redirect URL on the app: ${location.origin}/broker/callback` : "") : "";
+    $("#broker-fields").replaceChildren(...(broker ? broker.fields : []).map((f) => h("label", {},
+      f.label + (f.required ? "" : " (optional)") + (f.secret && saved[f.key] ? ` (saved ${saved[f.key]})` : ""),
+      h("input", { name: "bk_" + f.key, type: f.secret ? "password" : "text", autocomplete: "off", value: f.secret ? "" : (saved[f.key] || "") }),
+      f.hint ? h("span", { class: "hint", text: f.hint }) : null)));
+  }
+  $("#form-settings").broker.addEventListener("change", renderBrokerFields);
 
   $("#form-settings").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -829,6 +848,13 @@
     NUMERIC.forEach((k) => { changes[k] = Number(form[k].value); });
     TEXT.forEach((k) => { changes[k] = form[k].value; });
     TIMES.forEach((k) => { changes[k] = form[k].value; });
+    changes.broker = form.broker.value;
+    const brokerInfo = state.app.brokers.find((b) => b.name === form.broker.value);
+    if (brokerInfo && brokerInfo.fields.length) {
+      const keys = {};
+      brokerInfo.fields.forEach((f) => { const v = form["bk_" + f.key].value; if (!f.secret || v) keys[f.key] = v; });
+      changes.broker_keys = { [form.broker.value]: keys };
+    }
     const env = state.app.providers[form.llm_provider.value];
     if (env && form.api_key.value) changes.api_keys = { [env]: form.api_key.value };
     if (form.telegram_token.value) changes.api_keys = { ...(changes.api_keys || {}), TELEGRAM_BOT_TOKEN: form.telegram_token.value };
