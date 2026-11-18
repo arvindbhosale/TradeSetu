@@ -37,7 +37,10 @@ DEFAULTS: dict = {
     # Keys by environment variable name. Stored in this file, readable only by
     # the user; never returned by the API except masked.
     "api_keys": {},
-    # Broker
+    # Broker: "kite" (Zerodha, through the MCP server below) or one of desk.brokers.BROKERS.
+    "broker": "kite",
+    # Credentials for the other brokers, by broker then field. Secret fields are masked to the UI.
+    "broker_keys": {},
     "mcp": DEFAULT_MCP_CONFIG,
     "mcp_server": "kite",
     # Trading
@@ -149,6 +152,11 @@ class Settings:
         """Settings as the UI may see them: keys masked."""
         data = self.all()
         data["api_keys"] = {name: mask(value) for name, value in data["api_keys"].items()}
+        from .brokers import secret_fields
+
+        data["broker_keys"] = {broker: {key: mask(value) if key in secret_fields(broker) else value
+                                        for key, value in fields.items()}
+                               for broker, fields in data["broker_keys"].items()}
         return data
 
     def update(self, changes: dict) -> dict:
@@ -214,6 +222,38 @@ def _validated(key: str, value, current):
             else:
                 merged.pop(name, None)
                 os.environ.pop(name, None)
+        return merged
+    if key == "broker":
+        from .brokers import BROKERS
+
+        if value not in BROKERS:
+            raise ValueError(f"broker must be one of {', '.join(BROKERS)}")
+        return value
+    if key == "broker_keys":
+        from .brokers import field_names
+
+        if not isinstance(value, dict):
+            raise ValueError("broker_keys must be an object")
+        merged = copy.deepcopy(current)
+        for broker, fields in value.items():
+            allowed = field_names(broker)
+            if not allowed:
+                raise ValueError(f"unknown broker: {broker}")
+            if not isinstance(fields, dict):
+                raise ValueError(f"broker_keys.{broker} must be an object")
+            entry = dict(merged.get(broker) or {})
+            for name, text in fields.items():
+                if name not in allowed:
+                    raise ValueError(f"unknown field for {broker}: {name}")
+                if not isinstance(text, str):
+                    raise ValueError(f"{broker}.{name} must be text")
+                if text.startswith("•"):      # the masked value sent back unchanged
+                    continue
+                if text.strip():
+                    entry[name] = text.strip()
+                else:
+                    entry.pop(name, None)
+            merged[broker] = entry
         return merged
     if key == "mcp":
         if not isinstance(value, dict) or not isinstance(value.get("mcpServers"), dict):

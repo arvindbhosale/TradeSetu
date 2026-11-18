@@ -75,6 +75,16 @@ To place live orders, run [`kite-mcp-server`](https://github.com/zerodha/kite-mc
 
 The desk reads the tool list from whichever server is connected and enables live trading only when `place_order` is there.
 
+## Other brokers (experimental)
+
+`desk/brokers/` puts Upstox, Dhan, Angel One, Fyers and Groww behind the same interface the desk uses for Kite. Each adapter (`upstox.py`, `dhan.py`, ...) calls the broker's REST API and answers in Kite's shape; `base.py` holds what they share. `brokers.Switch` is the one broker object the desk holds, forwarding to the broker chosen in Settings.
+
+Instrument names stay Kite's everywhere. `instruments.py` reads each broker's daily instrument file into fields (exchange, underlying, expiry, strike, option type) and builds the Kite symbol from them: `NIFTY25NOVFUT`, `NIFTY25NOV24000CE` for the month's last expiry, `NIFTY25N1824000PE` for a weekly (year, month code 1-9/O/N/D, day). Index names are matched through an alias table (`Nifty Fin Service`, `FINNIFTY`, `FINNIFTY-INDEX` all become `NIFTY FIN SERVICE`). Each row keeps the broker's own key for API calls. Instrument files are cached in `~/.tradingagents/desk/instruments/` for the day; session tokens in `broker-sessions.json` (mode 600).
+
+Upstox and Fyers sign in by OAuth: the broker redirects to `/broker/callback` on the desk, which accepts only the one-time `state` the desk issued. Angel One and Groww (with an API key) sign in with a TOTP made from the secret in Settings. Dhan uses a pasted access token.
+
+Not covered yet: GTT orders (Kite only), live websocket ticks (the desk polls quotes for every broker), and testing against live accounts.
+
 ## Live order safeguards
 
 - Live is off until **Allow live orders** is ticked in Settings.

@@ -6,13 +6,14 @@
 
 <p align="center">
   <b>An open-source trading desk built for Indian traders.</b><br>
-  NSE · BSE · F&amp;O · MCX. Charts, strategy backtests, paper trading and algos on Zerodha Kite.
+  NSE · BSE · F&amp;O · MCX. Charts, strategy backtests, paper trading and algos on Zerodha Kite,<br>
+  with experimental support for Upstox, Dhan, Angel One, Fyers and Groww.
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT and Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2B%20Apache--2.0-blue"></a>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&amp;logoColor=white">
-  <img alt="Broker: Zerodha Kite" src="https://img.shields.io/badge/broker-Zerodha%20Kite-387ed1">
+  <img alt="Brokers: Zerodha Kite, Upstox, Dhan, Angel One, Fyers, Groww" src="https://img.shields.io/badge/brokers-Kite%20%7C%20Upstox%20%7C%20Dhan%20%7C%20Angel%20One%20%7C%20Fyers%20%7C%20Groww-387ed1">
   <img alt="Made for Indian markets" src="https://img.shields.io/badge/markets-NSE%20%7C%20BSE%20%7C%20MCX-f59e0b">
 </p>
 
@@ -25,7 +26,7 @@
 
 ## Who this is for
 
-TradeSetu is made for **traders and investors in India**. It speaks the Indian market's language: NSE and BSE symbols (`RELIANCE`, `NSE:INFY`, `BSE:500325`), Nifty and Sensex indices, weekly F&amp;O expiries, MCX gold and silver, IST market hours, exchange holidays, and Zerodha's charges, including STT, exchange fees, stamp duty and GST. Live trading goes through **Zerodha Kite Connect**.
+TradeSetu is made for **traders and investors in India**. It speaks the Indian market's language: NSE and BSE symbols (`RELIANCE`, `NSE:INFY`, `BSE:500325`), Nifty and Sensex indices, weekly F&amp;O expiries, MCX gold and silver, IST market hours, exchange holidays, and Zerodha's charges, including STT, exchange fees, stamp duty and GST. Live trading goes through **Zerodha Kite Connect**, or, experimentally, through Upstox, Dhan, Angel One, Fyers or Groww (see [Supported brokers](#supported-brokers)).
 
 If you trade outside India, this is not the tool for you. Symbols resolve to Indian listings by default.
 
@@ -56,9 +57,32 @@ If you trade outside India, this is not the tool for you. Symbols resolve to Ind
 
 The [user manual](desk/static/manual/USER_MANUAL.md) explains every screen with screenshots. It is also in the app under **Help**.
 
+## Supported brokers
+
+Choose the broker in **Settings → Broker**. Paper trading, charts from Yahoo and backtests work with no broker at all.
+
+| Broker | Status | How the desk signs in | API plan the broker needs |
+|---|---|---|---|
+| **Zerodha Kite** | ✅ Supported | Kite MCP server (hosted by Zerodha, or your own `kite-mcp-server`) | Kite Connect (paid) for orders and candles |
+| **Upstox** | 🧪 Experimental | Upstox login page, redirected back to the desk | Upstox API app |
+| **Dhan** | 🧪 Experimental | Access token pasted from web.dhan.co | DhanHQ Trading API; Data API (paid) for prices and candles |
+| **Angel One** | 🧪 Experimental | Client code, PIN and TOTP (the desk signs in itself) | SmartAPI app |
+| **Fyers** | 🧪 Experimental | Fyers login page, redirected back to the desk | Fyers API v3 app |
+| **Groww** | 🧪 Experimental | Access token, or API key with its secret or TOTP | Groww Trade API subscription (paid) |
+
+**Supported** means tested end to end with a live account. **Experimental** means the adapter is written against the broker's published API and official SDK, and covered by offline tests, but **has not yet been run against a live account**. Start an experimental broker in Paper mode, connect it, check that holdings, positions and prices match your broker's app, and only then try a small live order. Reports of what works and what does not are welcome as issues.
+
+What works the same on every broker: holdings, positions, funds, today's orders and fills, live quotes, historical candles (sizes a broker lacks are built from smaller ones), the F&amp;O contract list, and regular and after-market LIMIT, MARKET and stoploss orders. The desk keeps Kite's names for every instrument (`NSE:RELIANCE`, `NFO:NIFTY25NOV24000CE`, `NFO:NIFTY25N1824000PE`, `NSE:NIFTY 50`). Each broker's instrument file is read into its fields (underlying, expiry, strike, option type) and the Kite name is built from those, so saved algos and watchlists move between brokers unchanged.
+
+Differences to know:
+
+- **GTT orders** (the scanner's and the order ticket's stoploss/target triggers) are Kite only. With other brokers GTTs stay in paper.
+- **Charges** in P&amp;L and backtests follow Zerodha's schedule; your broker's brokerage may differ.
+- **SEBI's static IP rule** applies to every broker: register the IP the desk runs from on your broker's API app before placing live orders.
+
 ## Setup guide
 
-You need **Python 3.11 or later** and **Git**. For live orders you also need a **Zerodha account** with a [Kite Connect](https://developers.kite.trade) app (paid). Paper trading, charts and backtests work without Kite.
+You need **Python 3.11 or later** and **Git**. For live orders you also need an account and API app with one of the [supported brokers](#supported-brokers), for example a **Zerodha account** with a [Kite Connect](https://developers.kite.trade) app (paid). Paper trading, charts and backtests work without a broker.
 
 ### Option A: on your own computer
 
@@ -79,7 +103,7 @@ The desk opens in a window, with no sign-in, and is reachable only from your com
 
 Then, in the app:
 
-1. **Settings → Broker connection**: connect Kite. Zerodha's hosted server gives read-only access to holdings, positions and live prices. To place live orders, run [`kite-mcp-server`](https://github.com/zerodha/kite-mcp-server) with your Kite Connect key (see [desk/README.md](desk/README.md#kite-zerodha-connection)).
+1. **Settings → Broker**: choose your broker and enter its API keys, then press **Connect** on the Trade tab. For Kite, Zerodha's hosted server gives read-only access to holdings, positions and live prices. To place live orders, run [`kite-mcp-server`](https://github.com/zerodha/kite-mcp-server) with your Kite Connect key (see [desk/README.md](desk/README.md#kite-zerodha-connection)).
 2. **Settings → AI model** (optional): choose a provider and paste its API key. You only need this for the Analyze tab.
 3. Start on **Paper**. Switch to **Live** only after you have read the [going-live checklist](desk/static/manual/USER_MANUAL.md#12-going-live-checklist).
 

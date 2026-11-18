@@ -514,9 +514,26 @@ Sign in with your phone's or laptop's fingerprint, face or screen-lock PIN: no p
 - **Remove** next to a passkey stops it working at once (do this if a device is lost). Password sign-in always remains.
 - Passkeys sync with your Google or Apple account, so one made on a phone usually works on your other devices signed in to the same account.
 
+### Broker
+
+Choose the broker the desk trades through. **Zerodha Kite** is the tested broker. **Upstox, Dhan, Angel One, Fyers and Groww** are experimental: they are built on each broker's published API but have not yet been run against a live account. Use them in Paper mode first, compare holdings, positions and prices with your broker's own app, and check every live order there.
+
+Pick the broker, fill in its fields and press **Save settings**. Secret fields show only their last four characters once saved; leave them empty to keep the saved value. Then on the **Trade** tab press **Connect**, then **Log in to …**.
+
+| Broker | What to enter | Signing in |
+|---|---|---|
+| Zerodha Kite | Nothing here: the MCP server below | Through the Kite MCP server, as before |
+| Upstox | API key and secret from your Upstox developer app | **Log in to Upstox** gives a link to Upstox's login page; after signing in you come back to the desk. Register the redirect URL shown under the broker list on the Upstox app. |
+| Dhan | Client id and the access token from web.dhan.co → My Profile → DhanHQ Trading APIs | **Log in to Dhan** checks the token. Paste a new token when it expires. |
+| Angel One | SmartAPI key, client code, account PIN and TOTP secret (the text under the QR code at smartapi.angelone.in/enable-totp) | **Log in to Angel One** signs in at once with a fresh one-time code. |
+| Fyers | App ID and secret key from myapi.fyers.in | Like Upstox: a link to Fyers' login page, then back to the desk. |
+| Groww | An access token from groww.in/trade-api, or an API key with its secret (approve the key on Groww each day) or TOTP secret | **Log in to Groww** signs in with what you gave. |
+
+Every broker's session ends overnight; log in again each trading day. Instruments keep Kite's names whichever broker you use (`NFO:NIFTY25NOV24000CE`), so algos and watchlists carry over when you change broker. GTT orders are Kite only, and charges are estimated with Zerodha's schedule.
+
 ### Broker connection (MCP)
 
-Set up during installation. Leave it unless you move the Kite server.
+Kite only. Set up during installation. Leave it unless you move the Kite server.
 
 ---
 

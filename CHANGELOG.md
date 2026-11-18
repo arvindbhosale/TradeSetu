@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+- Broker choice in Settings → Broker: Upstox, Dhan, Angel One, Fyers and Groww beside Zerodha Kite. The new brokers are experimental: built on each broker's published API and official SDK and covered by offline tests, not yet run against a live account. Kite stays the default.
+
 ### Changed
 - New TradeSetu logo in the README, the desk sidebar, the sign-in page, the browser tab icon, the installed-app icons and the social preview.
 
