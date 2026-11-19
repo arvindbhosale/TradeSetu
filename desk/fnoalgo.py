@@ -254,6 +254,46 @@ class FnoAlgoEngine:
             self._save()
             return _copy(algo)
 
+    # While legs are open, only these can change: they are read afresh on every check and touch no leg's state.
+    OPEN_EDITABLE = ("max_loss", "target", "limit_buffer_pct", "leg_exits", "leg_scope")
+    _DERIVED = ("exchange", "structure_name", "naked", "leg_sl_pct", "strategy_name")
+
+    def update(self, algo_id: str, raw: dict) -> dict:
+        """Change an algo that is not trading live. The name is fixed (the P&L ledger files every fill under it).
+        With legs open only the whole-position and per-leg exit rules and the limit buffer can change; a change of
+        mode stops the algo, so it goes live only through Start and its typed phrase."""
+        with self._lock:
+            algo = self.get(algo_id)
+            if algo["enabled"] and algo["mode"] == "live":
+                raise AlgoError("This algo is trading live. Stop it before editing.")
+            if algo["exit_requested"]:
+                raise AlgoError("This algo is closing its legs. Edit it once it is flat.")
+            config = self.validate({**raw, "name": algo["name"]})
+            changed = [k for k in config if k not in self._DERIVED and config[k] != algo.get(k)]
+            if algo.get("leg_exits") is None and "leg_exits" in changed \
+                    and config["leg_exits"] == self.leg_rules(algo).as_dict():
+                changed.remove("leg_exits")                  # saved before leg exit rules, rules unchanged
+            if not changed:
+                return _copy(algo)
+            if algo["book"]:
+                locked = [k for k in changed if k not in self.OPEN_EDITABLE]
+                if locked:
+                    raise AlgoError("This algo has open legs. While it does, only the maximum loss, the target, the "
+                                    "exit rules for each leg and the limit buffer can change. Exit, or clear the "
+                                    "legs, to change the rest.")
+            was_enabled = algo["enabled"]
+            algo.update(config)
+            core = [k for k in changed if k not in self.OPEN_EDITABLE]
+            if any(k in core for k in ("kind", "underlying", "structure", "direction", "schedule", "strategy", "params")):
+                algo.update(last_signal=None, ready=False)  # a signal algo waits for a fresh signal, as a new one does
+            if "mode" in changed and was_enabled:
+                algo.update(enabled=False, status="Stopped")
+            self._retry_at.pop(algo_id, None)
+            self._log(algo, f"Edited ({', '.join(changed)}): {self._describe(algo)}, {algo['lots']} lot(s), "
+                            f"{algo['mode']}." + (" Stopped: the mode changed." if "mode" in changed and was_enabled else ""))
+            self._save()
+            return _copy(algo)
+
     def _describe(self, algo: dict) -> str:
         what = algo["structure_name"] if algo["kind"] == "structure" else f"{algo['underlying']} futures {algo['direction']}"
         how = {"intraday": f"intraday {algo['entry_time']}-{algo['exit_time']}",

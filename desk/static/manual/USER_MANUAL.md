@@ -343,30 +343,33 @@ How the desk's own trading has done, on the account selected at the top (Paper o
 
 ![P&L and alerts](img/20-pnl.png)
 
+A sentence at the top says it in words, for example *Booked profit of ₹2,400 on 6 closed trades; 1 position still held, up ₹310 at current prices.*
+
 | Tile | Meaning |
 |---|---|
+| **Total profit/loss** | Booked plus still holding. |
+| **Booked (closed trades)** | Profit or loss on trades bought and sold, after charges. |
+| **Still holding** | What the positions not yet closed would make or lose at the current price. |
 | **Today** | Profit or loss today: what was closed today, plus the open result of positions opened today. This is the number the daily loss limit watches. |
-| **Realized, all time** | Total profit or loss on closed trades, after charges. |
-| **Open positions** | What the positions still held would make or lose at the last price. |
-| **Win rate** | Share of closed trades that made money, with the best and worst day. |
-| **Max drawdown** | The largest fall of the running total from a peak. |
-| **Charges paid** | Brokerage, STT, stamp duty, exchange fees and GST. |
 
-Below: the running total day by day, a table **by algo and source** (each algo, the scanner, and your manual orders, so you can see which one earns its keep), open positions, and every closed trade.
+Below: **Still holding** (each open position with its entry and current price), **Closed trades** (buy price, sell price, profit/loss), **Profit/Loss by algo** (each algo, the scanner, and your manual orders, so you can see which one earns its keep) and the running total day by day.
+
+**Advanced** (closed until you open it): win rate, best and worst day, the largest fall from a peak (max drawdown), charges paid, the daily loss limit, the tax estimate and what is counted.
 
 It counts fills the desk made: every paper fill, and live fills read from Kite's trade book for orders this desk placed. Trades you place in Kite directly, and the order a triggered live GTT sends, are not seen. For the live account Kite's console is the final word.
 
 ### Export and tax report
 
-Under the P&L panel. All on the account selected at the top.
+The **Download** panel on the P&L tab. All on the account selected at the top; the tax summary is under **Advanced**.
 
 ![Tax summary and downloads](img/32-tax-export.png)
 
 | Download | Contents |
 |---|---|
-| **Journal (CSV)** | Every order the desk sent or refused: time, source, symbol, side, quantity, price, result, reason. |
-| **Fills (CSV)** | Every fill with price, product and charges. |
-| **Tax lots (CSV)** | Each sale matched to its buys first-in first-out, with buy and sell dates, days held, cost, proceeds, charges, gain and category. |
+| **Profit/Loss (closed trades)** | Every closed trade: when, source, symbol, quantity, buy and sell price, profit/loss and return. |
+| **Order journal** | Every order the desk sent or refused: time, source, symbol, side, quantity, price, result, reason. |
+| **Fills** | Every fill with price, product and charges. |
+| **Tax lots** | Each sale matched to its buys first-in first-out, with buy and sell dates, days held, cost, proceeds, charges, gain and category. |
 
 **Tax summary by financial year (April–March):**
 
@@ -1079,6 +1082,8 @@ How exit rules work in an algo: an **intraday** algo checks them against the liv
 
 | Button | What it does |
 |---|---|
+| **Details** (or click the name) | Each stock or leg the algo traded: buy price, sell price, realised P&L (booked, after charges), unrealised P&L (at the current price), whether it is **Active** or **Closed**, the orders still out, and every fill. |
+| **Edit** | Changes the algo in the form above (**Save changes**). Shown unless the algo is running live: stop a live algo to edit it. The name cannot change, because its profit/loss history is filed under it. While the algo holds a position, only the budget and the exit rules can change (for an F&O algo: maximum loss, target, each leg's exit rules and the limit buffer); a live daily algo whose target and stoploss sit at the broker as a GTT can change only its budget. Changing Paper/Live stops the algo, so it goes live only through Start and the typed phrase. |
 | **Start** | Starts it. A live algo asks you to type `ARM LIVE <NAME>`. |
 | **Stop** | Stops it. It does not sell what it holds. |
 | **Run now** | Checks the market immediately instead of waiting. |

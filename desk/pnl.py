@@ -82,9 +82,9 @@ class Ledger:
 
     # -- reports -------------------------------------------------------------
 
-    def report(self, mode: str, price_of=None) -> dict:
-        """Everything the P&L screen shows for one account."""
-        today = self._now().strftime("%Y-%m-%d")
+    def _walk(self, mode: str) -> tuple[dict, dict, dict, list]:
+        """Every fill of one account by average cost: the books (per source and instrument), the per-source
+        totals, realized P&L by day, and the closed trades."""
         books: dict[tuple, dict] = {}
         sources: dict[str, dict] = defaultdict(lambda: {"realized": 0.0, "charges": 0.0, "trades": 0, "wins": 0,
                                                         "fills": 0, "turnover": 0.0})
@@ -94,7 +94,19 @@ class Ledger:
             source, day = fill["source"], fill["time_ist"][:10]
             key = (source, fill["exchange"], fill["tradingsymbol"])
             factor = fill.get("multiplier") or 1
-            book = books.setdefault(key, {"quantity": 0, "cost": 0.0, "opened": day, "factor": factor})
+            book = books.setdefault(key, {"quantity": 0, "cost": 0.0, "opened": day, "factor": factor, "realized": 0.0,
+                                          "charges": 0.0, "bought": 0, "buy_value": 0.0, "sold": 0, "sell_value": 0.0,
+                                          "fills": []})
+            lots = fill["quantity"]
+            if fill["side"] == "BUY":
+                book["bought"] += lots
+                book["buy_value"] += lots * fill["price"]
+            else:
+                book["sold"] += lots
+                book["sell_value"] += lots * fill["price"]
+            book["charges"] += fill["charges"]
+            book["fills"].append({"time_ist": fill["time_ist"], "side": fill["side"], "quantity": lots,
+                                  "price": fill["price"], "charges": fill["charges"]})
             stats = sources[source]
             stats["fills"] += 1
             stats["charges"] += fill["charges"]
@@ -114,6 +126,7 @@ class Ledger:
                 book["quantity"] = held + closing if buying else held - closing
                 book["cost"] = average * book["quantity"]
                 stats["realized"] += profit
+                book["realized"] += profit
                 stats["trades"] += 1
                 stats["wins"] += profit > 0
                 days[day] += profit
@@ -130,7 +143,12 @@ class Ledger:
                 part = charge * rest / quantity
                 book["quantity"] += rest if buying else -rest
                 book["cost"] += rest * price + part if buying else -(rest * price - part)
+        return books, sources, days, closed
 
+    def report(self, mode: str, price_of=None) -> dict:
+        """Everything the P&L screen shows for one account."""
+        today = self._now().strftime("%Y-%m-%d")
+        books, sources, days, closed = self._walk(mode)
         open_rows, unrealized, unrealized_today = [], 0.0, 0.0
         for (source, exchange, symbol), book in books.items():
             if not book["quantity"]:
@@ -176,3 +194,35 @@ class Ledger:
                         for name, s in sorted(sources.items(), key=lambda item: -item[1]["realized"])],
             "curve": curve, "open": open_rows, "closed": list(reversed(closed[-200:])),
         }
+
+    def closed_trades(self, mode: str) -> list[dict]:
+        """Every closed trade of one account, oldest first (the P&L screen shows the latest 200)."""
+        return self._walk(mode)[3]
+
+    def legs(self, source: str, price_of=None, modes: tuple[str, ...] = ("paper", "live")) -> list[dict]:
+        """One row per instrument a source (an algo) traded: what it bought and sold at, its booked and open
+        profit and loss, and whether it is still held. Realized P&L is after charges; open P&L is not."""
+        rows = []
+        for mode in modes:
+            books = self._walk(mode)[0]
+            for (src, exchange, symbol), book in books.items():
+                if src != source:
+                    continue
+                factor, held = book["factor"], book["quantity"]
+                average = book["cost"] / held if held else None
+                last = price_of(f"{exchange}:{symbol}") if price_of and held else None
+                open_pnl = (last - average) * held if held and last else None
+                rows.append({
+                    "mode": mode, "exchange": exchange, "symbol": symbol,
+                    "status": "Active" if held else "Closed",
+                    "bought": book["bought"], "buy_price": round(book["buy_value"] / book["bought"], 2) if book["bought"] else None,
+                    "sold": book["sold"], "sell_price": round(book["sell_value"] / book["sold"], 2) if book["sold"] else None,
+                    "open_quantity": int(round(held / factor)) if factor != 1 else held,
+                    "open_price": round(average, 2) if average is not None else None, "last": last,
+                    "realized": round(book["realized"], 2),
+                    "unrealized": 0.0 if not held else None if open_pnl is None else round(open_pnl, 2),
+                    "charges": round(book["charges"], 2), "opened": book["opened"],
+                    "fills": book["fills"][-100:]})
+        rows.sort(key=lambda r: r["fills"][-1]["time_ist"] if r["fills"] else "", reverse=True)
+        rows.sort(key=lambda r: r["status"] != "Active")          # held first, then the latest closed
+        return rows

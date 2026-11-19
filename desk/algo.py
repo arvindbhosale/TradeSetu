@@ -114,7 +114,8 @@ class AlgoEngine:
 
     # -- create, change, remove ---------------------------------------------
 
-    def create(self, raw: dict) -> dict:
+    def _config(self, raw: dict) -> dict:
+        """The settings ``raw`` describes, checked; raises AlgoError. Nothing is stored."""
         name = " ".join(str(raw.get("name", "")).split())
         if not 1 <= len(name) <= 40 or not all(c.isalnum() or c in " -_&." for c in name):
             raise AlgoError("Give the algo a name of up to 40 letters, digits or spaces.")
@@ -154,22 +155,94 @@ class AlgoEngine:
         except ValueError as exc:
             raise AlgoError(f"{str(exc)[:1].upper()}{str(exc)[1:]}.") from None
         levels.update(target_pct=0.0, stop_loss_pct=0.0)       # kept for algos saved before exit rules
+        return {"name": name, "symbol": symbol, "strategy": strategy.key, "strategy_name": strategy.name,
+                "params": params, "interval": interval, "product": "CNC" if interval == "1d" else "MIS",
+                "mode": mode, "budget": float(budget), **levels, "exits": exits.as_dict()}
+
+    @staticmethod
+    def _summary(algo: dict) -> str:
+        kind = "daily, delivery" if algo["interval"] == "1d" else f"{algo['interval']} candles, intraday"
+        exits = AlgoEngine.rules(algo).text()
+        return (f"{algo['strategy_name']} on {algo['symbol']}, ₹{algo['budget']:,.0f}, {algo['mode']}, {kind}; "
+                f"{exits}")
+
+    def create(self, raw: dict) -> dict:
+        config = self._config(raw)
         with self._lock:
             if len(self._algos) >= MAX_ALGOS:
                 raise AlgoError(f"The desk runs at most {MAX_ALGOS} algos.")
-            if any(a["name"].lower() == name.lower() for a in self._algos.values()):
+            if any(a["name"].lower() == config["name"].lower() for a in self._algos.values()):
                 raise AlgoError("An algo with that name already exists.")
-            algo = {**json.loads(json.dumps(_BLANK)),
-                    "id": uuid.uuid4().hex[:10], "name": name, "symbol": symbol,
-                    "strategy": strategy.key, "strategy_name": strategy.name, "params": params,
-                    "interval": interval, "product": "CNC" if interval == "1d" else "MIS",
-                    "mode": mode, "budget": float(budget), **levels, "exits": exits.as_dict(),
+            algo = {**json.loads(json.dumps(_BLANK)), **config, "id": uuid.uuid4().hex[:10],
                     "created": self._now().strftime("%Y-%m-%d %H:%M:%S")}
-            kind = "daily, delivery" if interval == "1d" else f"{interval} candles, intraday"
-            self._log(algo, f"Created: {strategy.name} on {symbol}, ₹{budget:,.0f}, {mode}, {kind}; {exits.text()}.")
+            self._log(algo, f"Created: {self._summary(algo)}.")
             self._algos[algo["id"]] = algo
             self._save()
             return json.loads(json.dumps(algo))
+
+    @staticmethod
+    def holding(algo: dict) -> bool:
+        """Whether the algo has shares, an order out, an order waiting for the window, or a GTT."""
+        return bool(algo["position"] or algo["pending"] or algo["queued"] or algo["protect"])
+
+    def update(self, algo_id: str, raw: dict) -> dict:
+        """Change an algo that is not trading live.
+
+        The name is fixed: the P&L ledger files every fill under it. While the algo holds shares or has an order
+        or GTT out, only the budget and the exit rules can change (and not the exit rules of a live GTT, which
+        sits at the broker); the stock, strategy, candle and mode are tied to that position. A change of mode
+        stops the algo, so a paper algo becomes live only through Start and its typed phrase."""
+        with self._lock:
+            algo = self.get(algo_id)
+            if algo["enabled"] and algo["mode"] == "live":
+                raise AlgoError("This algo is trading live. Stop it before editing.")
+            config = self._config({**raw, "name": algo["name"]})
+            changed = [k for k in config if config[k] != algo.get(k)]
+            if algo.get("exits") is None and "exits" in changed and config["exits"] == self.rules(algo).as_dict():
+                changed.remove("exits")                      # an algo saved before exit rules, rules unchanged
+            for key in ("strategy_name", "product", "target_pct", "stop_loss_pct"):
+                if key in changed:
+                    changed.remove(key)                       # follow from the fields below
+            if not changed:
+                return json.loads(json.dumps(algo))
+            core = [k for k in changed if k in ("symbol", "strategy", "params", "interval", "mode")]
+            if self.holding(algo):
+                if core:
+                    raise AlgoError(f"This algo {self._holding_text(algo)}. While it does, only the budget and the "
+                                    f"exit rules can change. Close or clear the position to change the rest.")
+                if "exits" in changed and algo["protect"] and algo["mode"] == "live":
+                    raise AlgoError(f"The target and stoploss of this algo sit at your broker as GTT {algo['protect']}. "
+                                    f"Change them there, or close the position first.")
+            was_enabled = algo["enabled"]
+            algo.update(config)
+            if core:
+                # A different stock, strategy or candle is a new algo in all but name: wait for a fresh signal.
+                algo.update(last_bar=None, last_signal=None, seen_flat=False, blocked=False, rearm=None,
+                            peak=None, trail_stop=None, stop_kind=None, stop_level=None)
+                self._retry_at.pop(algo_id, None)
+            if "mode" in changed and was_enabled:
+                algo.update(enabled=False, status="Stopped")
+            if "exits" in changed and algo["position"]:
+                algo.update(trail_stop=None, stop_level=None, stop_kind=None, reentries_left=self.rules(algo).reentry)
+                if algo["protect"]:                         # paper GTT: replace it with the new levels
+                    with contextlib.suppress(KiteError):
+                        self.desk.cancel_gtt(algo["mode"], algo["protect"])
+                    algo["protect"] = None
+                    self._protect(algo)
+            self._log(algo, f"Edited ({', '.join(changed)}): {self._summary(algo)}."
+                      + (" Stopped: the mode changed." if "mode" in changed and was_enabled else ""))
+            self._save()
+            return json.loads(json.dumps(algo))
+
+    @staticmethod
+    def _holding_text(algo: dict) -> str:
+        if algo["position"]:
+            return f"holds {algo['position']} shares"
+        if algo["pending"]:
+            return f"has an order out ({algo['pending']['side']} {algo['pending']['quantity']})"
+        if algo["queued"]:
+            return f"has a {algo['queued']['side']} waiting for the trade window"
+        return f"has a GTT ({algo['protect']}) out"
 
     def set_enabled(self, algo_id: str, enabled: bool, phrase: str = "") -> dict:
         with self._lock:

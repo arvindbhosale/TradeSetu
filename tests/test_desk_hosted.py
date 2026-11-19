@@ -461,8 +461,25 @@ def test_algo_api(hosted):
     ran = hosted.post(f"/api/algos/{algo['id']}/run", json={}, headers=headers).json()
     assert ran["status"] == "Blocked: Kite not connected"
     assert hosted.post("/api/algos/nope/stop", headers=headers).status_code == 400
+    edited = hosted.put(f"/api/algos/{algo['id']}", json={**spec, "budget": 40000}, headers=headers).json()
+    assert edited["budget"] == 40000 and edited["name"] == "TCS st"
+    assert hosted.put(f"/api/algos/{algo['id']}", json={**spec, "budget": 5}, headers=headers).status_code == 400
+    assert hosted.put(f"/api/algos/{algo['id']}", json={**spec, "budget": 50000}).status_code == 403   # no request token
+    detail = hosted.get(f"/api/algos/{algo['id']}/detail", headers=headers).json()
+    assert detail["legs"] == [] and detail["orders"] == [] and detail["can_edit"]
+    assert detail["totals"] == {"realized": 0, "unrealized": 0, "total": 0, "charges": 0, "held": 0, "closed": 0}
     assert hosted.delete(f"/api/algos/{algo['id']}", headers=headers).json() == {"ok": True}
     assert hosted.get("/api/algos", headers=headers).json()["algos"] == []
+
+
+def test_csv_exports_need_the_request_token(hosted):
+    assert hosted.get("/api/export/fills.csv?mode=paper").status_code == 401
+    headers = sign_in(hosted)
+    assert hosted.get("/api/export/fills.csv?mode=paper").status_code == 403                  # cookie alone
+    for kind in ("journal", "fills", "tax-lots", "pnl"):
+        response = hosted.get(f"/api/export/{kind}.csv?mode=paper", headers=headers)
+        assert response.status_code == 200 and response.headers["content-type"].startswith("text/csv"), kind
+        assert f'filename="tradesetu-{kind}-paper.csv"' in response.headers["content-disposition"]
 
 
 def test_charts_come_from_kite_when_it_is_signed_in(hosted):

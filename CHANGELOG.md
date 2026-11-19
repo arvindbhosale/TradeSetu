@@ -10,8 +10,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Added
 - Broker choice in Settings → Broker: Upstox, Dhan, Angel One, Fyers and Groww beside Zerodha Kite. The new brokers are experimental: built on each broker's published API and official SDK and covered by offline tests, not yet run against a live account. Kite stays the default.
 
+- Algo details: click an algo (stock or F&O, paper or live) for each stock or leg it traded: buy and sell price, realised and unrealised P&L, Active or Closed, orders still out and every fill.
+- Edit an algo that is not running live. While it holds a position only the budget and exit rules can change; the name is fixed; a change of Paper/Live stops it.
+- Profit/Loss (closed trades) CSV download.
+
 ### Changed
+- The P&L tab leads with a plain summary (total, booked, still holding, today) and tables in plain words; statistics and the tax estimate moved under Advanced.
 - New TradeSetu logo in the README, the desk sidebar, the sign-in page, the browser tab icon, the installed-app icons and the social preview.
+
+### Fixed
+- CSV downloads (order journal, fills, tax lots) failed with "missing or wrong request token": plain links cannot send the request token the API needs. They now download through the API with the token. Text cells a spreadsheet would run as a formula are written as text.
 
 ## [0.1.0] - 2026-11-18
 
