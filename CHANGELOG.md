@@ -19,6 +19,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - New TradeSetu logo in the README, the desk sidebar, the sign-in page, the browser tab icon, the installed-app icons and the social preview.
 
 ### Fixed
+- Option chain: says every listed expiry has passed (refresh the contract list) instead of failing with a server error.
+- CI installs the desk extras, so the ~220 desk API tests run instead of skipping. The F&O API tests read contracts on the fake Kite's anchor day, so they no longer fail once the real date passes it.
 - CSV downloads (order journal, fills, tax lots) failed with "missing or wrong request token": plain links cannot send the request token the API needs. They now download through the API with the token. Text cells a spreadsheet would run as a formula are written as text.
 
 ## [0.1.0] - 2026-11-18

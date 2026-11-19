@@ -488,6 +488,9 @@ def client(tmp_path):
         return walk(900, seed=sum(map(ord, symbol)) % 50, end="2026-11-13") * (24.0 if symbol.startswith("^") else 1)
 
     app = create_app(settings=settings, token="t", fetch=fetch)
+    # The fake Kite lists contracts relative to FAKE_KITE_ANCHOR; read them on that day, not the real one,
+    # or expiries before today are dropped and these tests start failing as the calendar moves on.
+    app.state.derivatives._now = lambda: datetime(2026, 11, 16, 10, 0, tzinfo=market.IST)
     with TestClient(app, headers={"X-Desk-Token": "t"}) as test_client:
         yield test_client
     app.state.kite.disconnect()
@@ -504,7 +507,17 @@ def test_api_state_lists_paid_models_and_trend_methods(client):
     assert client.put("/api/trend-rule", json={"method": "x"}).status_code == 400
 
 
-def test_api_option_chain_trade_and_positions(client):
+def test_api_option_chain_says_so_when_every_listed_expiry_has_passed(client, monkeypatch):
+    client.post("/api/kite/connect")
+    client.post("/api/kite/login")
+    monkeypatch.setattr(market, "now_ist", lambda: datetime(2027, 6, 1, 10, 0, tzinfo=market.IST))
+    assert "has passed" in client.get("/api/options/chain?underlying=NIFTY").json()["error"]
+
+
+def test_api_option_chain_trade_and_positions(client, monkeypatch):
+    moment = datetime(2026, 11, 16, 10, 0, tzinfo=market.IST)          # the fake Kite's anchor day
+    client.app.state.desk._now = lambda: moment
+    monkeypatch.setattr(market, "now_ist", lambda: moment)
     assert "Kite" in client.get("/api/options/chain?underlying=NIFTY").json()["error"]
     client.post("/api/kite/connect")
     client.post("/api/kite/login")
@@ -587,7 +600,8 @@ def test_api_fno_algo_runs_a_paper_condor_on_kite_prices(client):
 
     app = client.app
     moment = datetime(2026, 11, 17, 10, 0, tzinfo=market_module.IST)
-    app.state.desk._now = app.state.fno_algos._now = lambda: moment
+    # Every clock the flow reads, or Derivatives.refresh drops the 17 Nov weekly once the real date passes it.
+    app.state.desk._now = app.state.fno_algos._now = app.state.derivatives._now = lambda: moment
     body = {"name": "API condor", "kind": "structure", "structure": "iron_condor", "underlying": "NIFTY",
             "expiry_kind": "weekly", "schedule": "intraday", "entry_time": "09:30", "exit_time": "15:10", "k": 2, "w": 2,
             "lots": 1, "mode": "paper", "max_loss": 5000}
