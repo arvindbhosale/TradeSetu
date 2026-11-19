@@ -2,7 +2,7 @@
 
 import copy
 import sys
-from datetime import date
+from datetime import date, datetime
 
 import numpy as np
 import pandas as pd
@@ -274,6 +274,9 @@ def client(tmp_path):
         return walk(900, seed=sum(map(ord, symbol)) % 50, start="2023-03-01", base=24000 if symbol.startswith("^") else 200)
 
     app = create_app(settings=settings, token="t", fetch=fetch)
+    # The fake Kite lists contracts relative to FAKE_KITE_ANCHOR; read them on that day, not the real one,
+    # or expiries before today are dropped and these tests start failing as the calendar moves on.
+    app.state.derivatives._now = lambda: datetime(2026, 11, 16, 10, 0, tzinfo=market.IST)
     with TestClient(app, headers={"X-Desk-Token": "t"}) as test_client:
         yield test_client
     app.state.kite.disconnect()

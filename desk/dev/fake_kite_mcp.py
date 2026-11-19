@@ -100,6 +100,14 @@ METAL_FUTURE = {"GOLDM": 130000.0, "SILVERM": 152000.0}
 TOKENS: dict = {}
 
 
+def _anchor():
+    """The fake's "today": FAKE_KITE_ANCHOR when set, so tests pinned to it do not age; else the real date."""
+    import os
+    from datetime import date
+
+    return date.fromisoformat(os.environ.get("FAKE_KITE_ANCHOR") or date.today().isoformat())
+
+
 def _token(instrument: str) -> int:
     token = abs(hash(instrument)) % 10_000_000
     TOKENS[token] = instrument
@@ -137,7 +145,7 @@ def _price(instrument: str):
     import math
     from datetime import date
 
-    days = max((date.fromisoformat(option["expiry"]) - date.today()).days, 0) + 0.3
+    days = max((date.fromisoformat(option["expiry"]) - _anchor()).days, 0) + 0.3
     spot, strike, vol, t = PRICES["NSE:NIFTY 50"], option["strike"], 0.13, days / 365
     d1 = (math.log(spot / strike) + (0.065 + vol * vol / 2) * t) / (vol * math.sqrt(t))
     d2 = d1 - vol * math.sqrt(t)
@@ -224,11 +232,10 @@ def get_historical_data(instrument_token: float, from_date: str, to_date: str, i
 @server.tool()
 def search_instruments(query: str, filter_on: str = "id") -> str:
     """Search instruments."""
-    import os
-    from datetime import date, timedelta
+    from datetime import timedelta
 
     # Dates hang off an anchor day (today unless FAKE_KITE_ANCHOR is set) so they are always in the future.
-    anchor = date.fromisoformat(os.environ.get("FAKE_KITE_ANCHOR") or date.today().isoformat())
+    anchor = _anchor()
     monthly = [(anchor + timedelta(days=d)).isoformat() for d in (8, 43, 71)]
     weekly = [(anchor + timedelta(days=d)).isoformat() for d in (1, 15)]
     past = (anchor - timedelta(days=20)).isoformat()

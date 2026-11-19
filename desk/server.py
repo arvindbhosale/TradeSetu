@@ -1259,6 +1259,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if not contracts:
             raise ValueError(f"Kite listed no {underlying} options. Refresh the contract list from Kite.")
         expiries = sorted({c["expiry"] for c in contracts if c["expiry"] >= market.now_ist().strftime("%Y-%m-%d")})
+        if not expiries:
+            raise ValueError(f"Every {underlying} expiry in the contract list has passed. Refresh the contract list from Kite.")
         expiry = expiry or expiries[0]
         if expiry not in expiries:
             raise ValueError("That expiry is not listed.")
