@@ -27,6 +27,7 @@ from datetime import date, datetime
 STCG_RATE, LTCG_RATE, LTCG_EXEMPTION = 0.20, 0.125, 125_000.0
 JOURNAL_FIELDS = ["time_ist", "mode", "source", "exchange", "tradingsymbol", "side", "quantity", "product", "order_type",
                   "price", "fill_price", "variety", "order_id", "ok", "error", "gtt"]
+PNL_FIELDS = ["time_ist", "source", "symbol", "side", "quantity", "buy_price", "sell_price", "pnl", "return_pct"]
 FILL_FIELDS = ["time_ist", "mode", "source", "exchange", "tradingsymbol", "side", "quantity", "price", "product", "charges", "trade_id"]
 
 
@@ -41,8 +42,15 @@ def to_csv(rows: list[dict], fields: list[str]) -> str:
     writer = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
     for row in rows:
-        writer.writerow({k: row.get(k, "") for k in fields})
+        writer.writerow({k: _cell(row.get(k, "")) for k in fields})
     return out.getvalue()
+
+
+def _cell(value):
+    """A text cell a spreadsheet would run as a formula (=, +, -, @) is written as text."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 def _kind(fill: dict) -> str:

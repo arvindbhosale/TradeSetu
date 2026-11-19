@@ -752,6 +752,45 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     def algo_create(payload: dict):
         return algos.create(body_of(payload))
 
+    @app.put("/api/algos/{algo_id}")
+    def algo_update(algo_id: str, payload: dict):
+        return algos.update(algo_id, body_of(payload))
+
+    def algo_detail(algo: dict, source: str, orders: list[dict]) -> dict:
+        """What one algo bought and sold, at what price, its booked and open P&L, and its orders still out."""
+        if algo["mode"] == "live":
+            with contextlib.suppress(Exception):
+                desk.sync_live_fills()
+        legs = desk.ledger.legs(source, lambda instrument: desk.last_price(instrument)[0])
+        held = [g for g in legs if g["status"] == "Active"]
+        priced = [g["unrealized"] for g in held if g["unrealized"] is not None]
+        unrealized = round(sum(priced), 2) if len(priced) == len(held) else None     # a held leg without a price
+        realized = round(sum(g["realized"] for g in legs), 2)
+        return {"algo": algo, "legs": legs, "orders": orders, "can_edit": not (algo["enabled"] and algo["mode"] == "live"),
+                "totals": {"realized": realized, "unrealized": unrealized,
+                           "total": None if unrealized is None else round(realized + unrealized, 2),
+                           "charges": round(sum(g["charges"] for g in legs), 2), "held": len(held),
+                           "closed": len(legs) - len(held)}}
+
+    @app.get("/api/algos/{algo_id}/detail")
+    def algo_detail_view(algo_id: str):
+        algo = next((a for a in algos.list() if a["id"] == algo_id), None)
+        if algo is None:
+            raise AlgoError("no such algo")
+        orders = []
+        if algo["pending"]:
+            p = algo["pending"]
+            orders.append({"symbol": algo["symbol"], "side": p["side"], "quantity": p["quantity"], "price": p["price"],
+                           "order_id": p["order_id"], "status": "Sent, waiting to fill", "time_ist": p["placed"]})
+        if algo["queued"]:
+            q = algo["queued"]
+            orders.append({"symbol": algo["symbol"], "side": q["side"], "quantity": None, "price": None, "order_id": None,
+                           "status": "Waiting for the trade window", "time_ist": None})
+        if algo["protect"]:
+            orders.append({"symbol": algo["symbol"], "side": "SELL", "quantity": algo["position"], "price": algo.get("stop_level"),
+                           "order_id": algo["protect"], "status": "Target / stoploss order (GTT) active", "time_ist": None})
+        return algo_detail(algo, f"algo:{algo['name']}", orders)
+
     @app.post("/api/algos/{algo_id}/start")
     def algo_start(algo_id: str, payload: dict):
         return algos.set_enabled(algo_id, True, str(body_of(payload).get("phrase", "")))
@@ -796,6 +835,24 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     @app.post("/api/fno-algos/preview")
     def fno_algo_preview(payload: dict):
         return fno_algos.preview(body_of(payload))
+
+    @app.put("/api/fno-algos/{algo_id}")
+    def fno_algo_update(algo_id: str, payload: dict):
+        return fno_algos.update(algo_id, body_of(payload))
+
+    @app.get("/api/fno-algos/{algo_id}/detail")
+    def fno_algo_detail_view(algo_id: str):
+        algo = next((a for a in fno_algos.list() if a["id"] == algo_id), None)
+        if algo is None:
+            raise AlgoError("no such F&O algo")
+        orders = []
+        if algo["book"]:
+            for g in algo["book"]["legs"]:
+                for p in g["pending"]:
+                    orders.append({"symbol": g["tradingsymbol"], "side": p["side"], "quantity": p["quantity"],
+                                   "price": p["price"], "order_id": p["order_id"], "status": "Sent, waiting to fill",
+                                   "time_ist": p["placed"]})
+        return algo_detail(algo, f"fno:{algo['name']}", orders)
 
     @app.post("/api/fno-algos/{algo_id}/start")
     def fno_algo_start(algo_id: str, payload: dict):
@@ -1630,6 +1687,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             text = tax.to_csv(rows, tax.JOURNAL_FIELDS)
         elif kind == "fills":
             text = tax.to_csv([f for f in desk.ledger.fills() if f.get("mode") == mode], tax.FILL_FIELDS)
+        elif kind == "pnl":
+            text = tax.to_csv(desk.ledger.closed_trades(mode), tax.PNL_FIELDS)
         elif kind == "tax-lots":
             lots = [lot for lot in tax.tax_lots(desk.ledger.fills(), mode) if not fy or lot["fy"] == fy]
             text = tax.to_csv(lots, tax.LOT_FIELDS)

@@ -282,9 +282,10 @@
   </div>
   <div id="algo-stocks">
   <div class="panel">
-    <h2>New algo</h2>
+    <h2 id="algo-form-title">New algo</h2>
     <p class="hint">An algo runs one strategy on one stock by itself. The easiest way to make one is to backtest first, then press <strong>Create algo</strong> under the result. <strong>Day candles</strong>: delivery (CNC). It reads the day's candle after the close and sends its order when your trade window opens next session; the target and stoploss are placed as a GTT. <strong>Intraday candles</strong>: intraday (MIS). It trades inside your trade window, watches the target and stoploss on the live price, and sells everything at the sell-everything (square-off) time.</p>
     <form id="form-algo">
+      <div class="editing-banner" id="algo-editing" hidden><span></span><button type="button" id="algo-edit-cancel">Cancel edit</button></div>
       <div class="row">
         <label>Name <input name="name" required maxlength="40" placeholder="Reliance supertrend" autocomplete="off"></label>
         <label>Symbol <input name="symbol" required placeholder="RELIANCE" autocomplete="off"></label>
@@ -298,7 +299,7 @@
       <div class="row" id="algo-params"></div>
       <h3>Exit rules</h3>
       <div id="algo-exits"></div>
-      <div class="row"><button class="primary" type="submit">Create algo</button><span class="hint">Created stopped. Start it from the list below.</span></div>
+      <div class="row"><button class="primary" type="submit">Create algo</button><span class="hint" data-create-hint>Created stopped. Start it from the list below.</span></div>
     </form>
     <div id="algo-error" class="error" hidden></div>
   </div>
@@ -312,9 +313,10 @@
   </div>
   <div id="algo-fno" hidden>
     <div class="panel">
-      <h2>New F&amp;O algo</h2>
+      <h2 id="fno-form-title">New F&amp;O algo</h2>
       <p class="hint">Runs an option strategy or an index future by itself, on Kite's live prices. The easiest way to make one is to backtest first (Backtest → Option strategy), then press <strong>Create algo</strong> under the result. <strong>Paper</strong> fills in the paper book at the last price; <strong>Live</strong> sends real orders. Both take the same path: every leg is a limit order through your risk limits. Bought legs (hedges) are bought first and sold legs are sold only after every hedge has filled; on exit the sold legs are bought back first.</p>
       <form id="form-fno">
+        <div class="editing-banner" id="fno-editing" hidden><span></span><button type="button" id="fno-edit-cancel">Cancel edit</button></div>
         <div class="row">
           <label>Name <input name="name" required maxlength="40" placeholder="Nifty weekly condor" autocomplete="off"></label>
           <label>Trade <select name="kind"><option value="structure">An option strategy</option><option value="futures">Futures when a strategy says so</option></select></label>
@@ -361,7 +363,7 @@
         <div class="row">
           <button type="button" id="fno-preview">Preview entry now</button>
           <button class="primary" type="submit">Create F&amp;O algo</button>
-          <span class="hint">Created stopped. Start it from the list below.</span>
+          <span class="hint" data-create-hint>Created stopped. Start it from the list below.</span>
         </div>
       </form>
       <div id="fno-algo-error" class="error" hidden></div>
@@ -820,29 +822,47 @@
 <section id="tab-pnl" class="tab" hidden>
   <p class="hint" id="pnl-about"></p>
   <div id="pnl-error" class="error" hidden></div>
+  <p class="pnl-sentence" id="pnl-sentence"></p>
   <div class="tiles" id="pnl-tiles"></div>
   <div class="panel">
-    <h2>Profit and loss over time</h2>
-    <p class="hint">Realized P&amp;L, added up day by day, after charges.</p>
+    <h2>Still holding</h2>
+    <p class="hint">Bought (or sold) and not closed yet. Their profit/loss is at the current price and changes until you close them.</p>
+    <div class="scroll" id="pnl-open"></div>
+  </div>
+  <div class="panel">
+    <h2>Closed trades</h2>
+    <p class="hint">Bought and sold. This profit/loss is booked, after all charges. The first price of each trade (the buy, or the sell for a short) includes its charges.</p>
+    <div class="scroll" id="pnl-closed"></div>
+  </div>
+  <div class="panel">
+    <h2>Profit/Loss by algo</h2>
+    <p class="hint">Each algo, the scanner and your own orders (Manual). Open an algo on the Algos tab to see its every buy and sell.</p>
+    <div class="scroll" id="pnl-sources"></div>
+  </div>
+  <div class="panel">
+    <h2>Profit/Loss over time</h2>
+    <p class="hint">Booked profit/loss, added up day by day, after charges.</p>
     <div class="tvchart short" id="pnl-chart"></div>
     <p class="hint" id="pnl-empty" hidden>No closed trades yet on this account.</p>
   </div>
-  <div class="grid2">
-    <div class="panel"><h2>By algo and source</h2><div class="scroll" id="pnl-sources"></div></div>
-    <div class="panel"><h2>Open positions</h2><div class="scroll" id="pnl-open"></div></div>
+  <div class="panel">
+    <div class="jobhead"><h2>Download</h2>
+      <span class="actions"><button type="button" data-export="pnl">Profit/Loss (closed trades)</button><button type="button" data-export="journal">Order journal</button><button type="button" data-export="fills">Fills</button><button type="button" data-export="tax-lots">Tax lots</button></span></div>
+    <p class="hint">Spreadsheet (CSV) files for the account selected at the top (Paper or Live). They open in Excel or Google Sheets.</p>
+    <div id="export-error" class="error" hidden></div>
   </div>
-  <div class="panel"><h2>Closed trades</h2><div class="scroll" id="pnl-closed"></div></div>
+  <details class="panel advanced-panel" id="pnl-advanced">
+    <summary>Advanced: statistics, tax estimate and what is counted</summary>
+    <div class="tiles" id="pnl-stats"></div>
+    <h3>Tax estimate by financial year</h3>
+    <p class="hint">Indicative, by Indian financial year (April to March), for trades this desk recorded on the account selected at the top. Delivery shares are matched first-in, first-out: held over 12 months is long-term. Same-day intraday is speculative income; F&amp;O is non-speculative business income. Rates from 23 July 2024: STCG 20%, LTCG 12.5% above ₹1.25 lakh a year. Not a tax computation: use your broker's tax P&amp;L and your CA.</p>
+    <div class="scroll" id="tax-years"></div>
+    <p class="hint"><strong>What this counts.</strong> Fills the desk made: every paper fill, and live fills read from your broker's trade book for orders this desk placed. It does not see trades you place with your broker directly, or the order a triggered live GTT sends. For the live account, your broker's console is the final word. Open profit/loss is before the charges of closing.</p>
+  </details>
   <div class="panel">
     <div class="jobhead"><h2>Alerts</h2><span class="hint" id="alerts-state"></span></div>
     <div class="scroll" id="alerts-list"></div>
   </div>
-  <div class="panel">
-    <div class="jobhead"><h2>Export and tax P&amp;L</h2>
-      <span class="actions"><a class="btnlink" id="dl-journal" href="#">Order journal CSV</a><a class="btnlink" id="dl-fills" href="#">Fills CSV</a><a class="btnlink" id="dl-lots" href="#">Tax lots CSV</a></span></div>
-    <p class="hint">Indicative, by Indian financial year (April to March), for trades this desk recorded on the account selected at the top. Delivery shares are matched first-in, first-out: held over 12 months is long-term. Same-day intraday is speculative income; F&amp;O is non-speculative business income. Rates from 23 July 2024: STCG 20%, LTCG 12.5% above ₹1.25 lakh a year. Not a tax computation: use Kite Console's tax P&amp;L and your CA.</p>
-    <div class="scroll" id="tax-years"></div>
-  </div>
-  <div class="panel note"><strong>What this counts.</strong> Fills the desk made: every paper fill, and live fills read from Kite's trade book for orders this desk placed. It does not see trades you place in Kite directly, or the order a triggered live GTT sends. For the live account, Kite's console is the final word.</div>
 </section>
 
 <section id="tab-mcx" class="tab" hidden>
@@ -1087,6 +1107,10 @@
 <dialog id="stock-dialog" aria-labelledby="sd-title">
   <div class="dialog-head"><h2 id="sd-title"></h2><span class="actions"><button type="button" id="sd-chart">Open in Charts</button><button type="button" id="sd-trade">Trade</button><button type="button" id="sd-close" aria-label="Close">✕</button></span></div>
   <div id="sd-body"></div>
+</dialog>
+<dialog id="algo-dialog" aria-labelledby="ad-title">
+  <div class="dialog-head"><h2 id="ad-title"></h2><span class="actions"><button type="button" id="ad-edit">Edit</button><button type="button" id="ad-refresh">Refresh</button><button type="button" id="ad-close" aria-label="Close">✕</button></span></div>
+  <div id="ad-body"></div>
 </dialog>
 <div id="tooltip" class="tooltip" hidden></div>
 <script src="/static/pwa.js"></script>

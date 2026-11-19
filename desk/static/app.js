@@ -50,6 +50,25 @@
     return payload;
   }
 
+  // A file from the API. A plain link cannot send the request token the API needs, so the file is fetched with
+  // it and handed to the browser from memory.
+  async function download(path, fallbackName) {
+    let response;
+    try { response = await fetch("/api" + path, { headers: { "X-Desk-Token": TOKEN } }); }
+    catch (err) { throw new Error("The desk's local service is not answering. Restart the app."); }
+    if (!response.ok) {
+      let payload = {};
+      try { payload = await response.json(); } catch (err) { /* not JSON */ }
+      if (response.status === 401 && payload.signed_out) window.location.replace("/login");
+      throw new Error(payload.error || `Download failed (${response.status})`);
+    }
+    const match = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") || "");
+    const url = URL.createObjectURL(await response.blob());
+    const link = h("a", { href: url, download: match ? match[1] : fallbackName, hidden: true });
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+
   function showError(id, err) {
     const box = $(id);
     box.textContent = err ? (err.message || String(err)) : "";
@@ -74,6 +93,9 @@
   }
 
   const tone = (v) => (v > 0 ? "pos" : v < 0 ? "neg" : "");
+  // Where a fill came from, in words: "algo:Name" is a stock algo, "fno:Name" an F&O algo.
+  const sourceLabel = (source) => (source.startsWith("algo:") ? "Algo: " + source.slice(5) : source.startsWith("fno:") ? "F&O algo: " + source.slice(4)
+    : source === "manual" ? "Manual" : source.charAt(0).toUpperCase() + source.slice(1));
 
   // A small, safe Markdown renderer: text is only ever set as text nodes.
   function markdown(source) {
@@ -1070,19 +1092,184 @@
     $("#algo-exits").replaceWith(Object.assign(exitRulesBox(false), { id: "algo-exits" }));
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const button = $("button[type=submit]", form); showError("#algo-error", null); busy(button, true, "Creating…");
+      const editing = algoEdit.stock;
+      const button = $("button[type=submit]", form); showError("#algo-error", null); busy(button, true, editing ? "Saving…" : "Creating…");
       const strategyParams = {};
       $$("#algo-params input").forEach((input) => { strategyParams[input.name.slice(2)] = Number(input.value); });
+      const body = { name: form.name.value, symbol: form.symbol.value, strategy: form.strategy.value,
+        strategy_params: strategyParams, budget: Number(form.budget.value), mode: form.mode.value, interval: form.interval.value,
+        exits: $("#algo-exits").read() };
+      let saved = false;
       try {
-        await api("/algos", { method: "POST", body: { name: form.name.value, symbol: form.symbol.value, strategy: form.strategy.value,
-          strategy_params: strategyParams, budget: Number(form.budget.value), mode: form.mode.value, interval: form.interval.value,
-          exits: $("#algo-exits").read() } });
-        form.name.value = ""; form.symbol.value = ""; await refreshAlgos();
+        if (editing) await api(`/algos/${editing.id}`, { method: "PUT", body });
+        else await api("/algos", { method: "POST", body });
+        saved = true;
       } catch (err) { showError("#algo-error", err); }
       busy(button, false);
+      if (saved) { endAlgoEdit("stock"); form.name.value = ""; form.symbol.value = ""; await refreshAlgos(); }
     });
+    $("#algo-edit-cancel").addEventListener("click", () => endAlgoEdit("stock"));
     $("#algo-refresh").addEventListener("click", refreshAlgos);
   }
+
+  // -- editing an algo that is not trading live ---------------------------------------------------------------------
+  // The create form doubles as the edit form. The name is fixed (the P&L ledger files every fill under it). While an
+  // algo holds a position, the fields tied to that position are locked; the server enforces the same rules.
+
+  const algoEdit = { stock: null, fno: null };
+  const EDIT = {
+    stock: { form: "#form-algo", banner: "#algo-editing", title: "#algo-form-title", newTitle: "New algo", create: "Create algo", error: "#algo-error",
+      params: "#algo-params", exits: "#algo-exits" },
+    fno: { form: "#form-fno", banner: "#fno-editing", title: "#fno-form-title", newTitle: "New F&O algo", create: "Create F&O algo", error: "#fno-algo-error",
+      params: "#fno-params", exits: "#fno-exits" },
+  };
+  const stockHolding = (a) => Boolean(a.position || a.pending || a.queued || a.protect);
+  const canEdit = (a) => !(a.enabled && a.mode === "live");
+
+  function beginAlgoEdit(kind, a, note, unlocked) {
+    const cfg = EDIT[kind], form = $(cfg.form);
+    algoEdit[kind] = a;
+    $(cfg.title).textContent = `Edit algo: ${a.name}`;
+    $("button[type=submit]", form).textContent = "Save changes";
+    $("[data-create-hint]", form).textContent = "The name cannot change: the profit/loss history is filed under it.";
+    form.name.value = a.name; form.name.readOnly = true;
+    $$("input, select", form).forEach((el) => {
+      const key = el.closest("[data-x]") ? "exits" : el.closest(cfg.params) ? "params" : el.name === "fwd" ? "weekdays" : el.name;
+      el.disabled = Boolean(unlocked) && !unlocked.includes(key) && el.name !== "name";
+    });
+    $(`${cfg.banner} span`).textContent = note;
+    $(cfg.banner).hidden = false;
+    showError(cfg.error, null);
+    if (kind === "stock") { $$("#algo-kind button")[0].click(); } else { $$("#algo-kind button")[1].click(); }
+    form.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function endAlgoEdit(kind) {
+    const cfg = EDIT[kind], form = $(cfg.form);
+    if (!algoEdit[kind]) return;
+    algoEdit[kind] = null;
+    $(cfg.title).textContent = cfg.newTitle;
+    $("button[type=submit]", form).textContent = cfg.create;
+    $("[data-create-hint]", form).textContent = "Created stopped. Start it from the list below.";
+    form.name.readOnly = false; form.name.value = "";
+    $$("input, select", form).forEach((el) => { el.disabled = false; });
+    $(cfg.banner).hidden = true;
+  }
+
+  function editStockAlgo(a) {
+    if (!canEdit(a)) { showError("#algo-error", new Error(`“${a.name}” is trading live. Stop it before editing.`)); return; }
+    const form = $("#form-algo");
+    form.symbol.value = a.symbol.replace(/\.NS$/, "");
+    form.strategy.value = a.strategy; form.strategy.dispatchEvent(new Event("change"));
+    Object.entries(a.params || {}).forEach(([k, v]) => { const input = form.elements["p_" + k]; if (input) input.value = v; });
+    form.interval.value = a.interval; form.budget.value = a.budget; form.mode.value = a.mode;
+    $("#algo-exits").load(a.exits || { unit: "pct", stop_loss: a.stop_loss_pct || 0, target: a.target_pct || 0 });
+    const holding = stockHolding(a), gttAtBroker = a.protect && a.mode === "live";
+    const note = !holding ? `Editing “${a.name}”. ${a.enabled ? "It keeps running with the new settings; a new stock, strategy or candle waits for a fresh signal." : "It stays stopped."}`
+      + " Changing Paper/Live stops it."
+      : gttAtBroker ? `“${a.name}” holds ${a.position} shares with its target and stoploss at your broker (GTT ${a.protect}). Only the budget can change now.`
+        : `“${a.name}” holds a position, so only the budget and the exit rules can change. Close or clear the position to change the rest.`;
+    beginAlgoEdit("stock", a, note, holding ? (gttAtBroker ? ["budget"] : ["budget", "exits"]) : null);
+  }
+
+  function editFnoAlgo(a) {
+    if (!canEdit(a)) { showError("#fno-algo-error", new Error(`“${a.name}” is trading live. Stop it before editing.`)); return; }
+    const form = $("#form-fno"), fire = (el) => el.dispatchEvent(new Event("change"));
+    form.kind.value = a.kind; fire(form.kind);
+    if (a.structure) { form.structure.value = a.structure; fire(form.structure); }
+    if (a.direction) form.direction.value = a.direction;
+    form.underlying.value = a.underlying; fire(form.underlying);
+    form.expiry_kind.value = a.expiry_kind;
+    if (a.kind === "structure") { form.schedule.value = a.schedule; fire(form.schedule); }
+    if (a.strategy) { form.strategy.value = a.strategy; fire(form.strategy); }
+    Object.entries(a.params || {}).forEach(([k, v]) => { const input = form.elements["p_" + k]; if (input) input.value = v; });
+    ["entry_time", "exit_time", "exit_days_before", "min_days", "k", "w", "lots", "max_loss", "target", "mode", "limit_buffer_pct", "margin_pct", "leg_scope"]
+      .forEach((key) => { if (a[key] != null && form.elements[key]) form.elements[key].value = a[key]; });
+    $$("input[name=fwd]", form).forEach((c) => { c.checked = (a.weekdays || []).includes(Number(c.value)); });
+    $("#fno-exits").load(a.leg_exits || { unit: "pct", stop_loss: a.leg_sl_pct || 0 });
+    const note = a.book ? `“${a.name}” has open legs, so only the maximum loss, the target, each leg's exit rules and the limit buffer can change. Exit, or clear the legs, to change the rest.`
+      : `Editing “${a.name}”. ${a.enabled ? "It keeps running with the new settings." : "It stays stopped."} Changing Paper/Live stops it.`;
+    beginAlgoEdit("fno", a, note, a.book ? ["max_loss", "target", "limit_buffer_pct", "leg_scope", "exits"] : null);
+  }
+
+  // -- one algo in detail: every leg's buy and sell price, booked and open P&L, orders still out ---------------------
+
+  const detailView = { kind: null, id: null, data: null, timer: null };
+
+  async function openAlgoDetail(kind, id) {
+    Object.assign(detailView, { kind, id, data: null });
+    const dialog = $("#algo-dialog");
+    $("#ad-body").replaceChildren(h("p", { class: "hint", text: "Loading…" }));
+    if (!dialog.open) dialog.showModal();
+    await loadAlgoDetail();
+    clearInterval(detailView.timer);
+    detailView.timer = setInterval(() => { if (dialog.open && !document.hidden) loadAlgoDetail(); }, 15000);
+  }
+
+  async function loadAlgoDetail() {
+    const { kind, id } = detailView;
+    let d;
+    try { d = await api(`/${kind === "fno" ? "fno-algos" : "algos"}/${id}/detail`); }
+    catch (err) { $("#ad-body").replaceChildren(h("p", { class: "error", text: err.message })); return; }
+    detailView.data = d;
+    const a = d.algo, t = d.totals;
+    const money = (v) => (v == null ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + "₹" + inr2.format(Math.abs(v)));
+    const price = (v) => (v == null ? "–" : inr2.format(v));
+    const blocked = /^Blocked/.test(a.status);
+    $("#ad-title").replaceChildren(a.name, " ", h("span", { class: "pill " + (a.mode === "live" ? "bad" : ""), text: a.mode === "live" ? "LIVE" : "Paper" }), " ",
+      h("span", { class: "pill " + (blocked ? "warn" : a.enabled ? "good" : ""), text: a.status }));
+    $("#ad-edit").hidden = !d.can_edit;
+    const what = kind === "fno"
+      ? `${a.kind === "futures" ? `${a.underlying} futures` : a.structure_name} on ${a.underlying} (${a.expiry_kind}) · ${a.lots} lot(s)`
+      : `${a.strategy_name} on ${a.symbol} · ${state.app.intervals[a.interval]} candles · budget ${rupees(a.budget)}`;
+    const tile = (k, v, sub, cls) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v " + (cls || ""), text: v }), sub ? h("div", { class: "s", text: sub }) : null);
+    const legs = d.legs, otherMode = (g) => (g.mode !== a.mode ? ` (${g.mode})` : "");
+    const status = (g) => h("span", { class: "pill " + (g.status === "Active" ? "good" : ""), text: g.status });
+    $("#ad-body").replaceChildren(...[
+      h("p", { class: "hint", text: what + (d.can_edit ? "" : " · Stop it to edit.") }),
+      h("div", { class: "tiles" },
+        tile("Realised P&L (booked)", money(t.realized), `${t.closed} closed, after charges`, tone(t.realized)),
+        tile("Unrealised P&L (open)", money(t.unrealized), t.unrealized == null ? "no live price for a held leg" : `${t.held} still held, at current price`, tone(t.unrealized)),
+        tile("Total", money(t.total), "realised + unrealised", tone(t.total)),
+        tile("Orders", d.orders.length ? `${d.orders.length} active` : "None active", d.orders.length ? "waiting at the broker or for the trade window" : "every order is closed")),
+      h("h3", { text: kind === "fno" ? "Each leg" : "Each stock" }),
+      h("div", { class: "scroll" }, table([
+        { label: "Stock / contract", get: (g) => g.symbol + otherMode(g) }, { label: "Status", get: status },
+        { label: "Bought", num: true, get: (g) => g.bought || "–" }, { label: "Buy price ₹", num: true, get: (g) => price(g.buy_price) },
+        { label: "Sold", num: true, get: (g) => g.sold || "–" }, { label: "Sell price ₹", num: true, get: (g) => price(g.sell_price) },
+        { label: "Open qty", num: true, get: (g) => (g.open_quantity ? `${Math.abs(g.open_quantity)} ${g.open_quantity < 0 ? "sold" : "bought"}` : "–") },
+        { label: "Current price ₹", num: true, get: (g) => (g.status === "Active" ? price(g.last) : "–") },
+        { label: "Realised P&L", num: true, get: (g) => money(g.realized), tone: (g) => tone(g.realized) },
+        { label: "Unrealised P&L", num: true, get: (g) => (g.status === "Active" ? money(g.unrealized) : "–"), tone: (g) => tone(g.unrealized) }],
+        legs, "Nothing bought or sold yet.")),
+      d.orders.length ? h("h3", { text: "Orders still active" }) : null,
+      d.orders.length ? h("div", { class: "scroll" }, table([
+        { label: "Stock / contract", get: (o) => o.symbol }, { label: "Buy / Sell", get: (o) => (o.side === "BUY" ? "Buy" : "Sell"), tone: (o) => (o.side === "BUY" ? "pos" : "neg") },
+        { label: "Qty", num: true, get: (o) => o.quantity ?? "–" }, { label: "Price ₹", num: true, get: (o) => price(o.price) },
+        { label: "Status", get: (o) => o.status }, { label: "Order", get: (o) => o.order_id || "–" }, { label: "Sent (IST)", get: (o) => o.time_ist || "–" }], d.orders, "")) : null,
+      h("details", {}, h("summary", { text: "Every buy and sell (fills)" }),
+        h("div", { class: "scroll" }, table([
+          { label: "Time (IST)", get: (f) => f.time_ist }, { label: "Stock / contract", get: (f) => f.symbol },
+          { label: "Buy / Sell", get: (f) => (f.side === "BUY" ? "Buy" : "Sell"), tone: (f) => (f.side === "BUY" ? "pos" : "neg") },
+          { label: "Qty", num: true, get: (f) => f.quantity }, { label: "Price ₹", num: true, get: (f) => price(f.price) },
+          { label: "Charges ₹", num: true, get: (f) => price(f.charges) }],
+          legs.flatMap((g) => g.fills.map((f) => ({ ...f, symbol: g.symbol + otherMode(g) }))).sort((x, y) => y.time_ist.localeCompare(x.time_ist)),
+          "No fills yet."))),
+      h("details", {}, h("summary", { text: "Activity" }),
+        h("pre", { class: "log", text: a.log.slice().reverse().map((e) => `${e.time_ist}  ${e.message}`).join("\n") })),
+      h("p", { class: "hint", text: "Realised P&L is after charges. Unrealised P&L is at the current price, before the charges of closing. "
+        + (a.mode === "live" ? "Live fills are read from your broker's trade book for orders this desk placed; your broker's console is the final word." : "") })]
+      .filter(Boolean));
+  }
+
+  $("#ad-close").addEventListener("click", () => $("#algo-dialog").close());
+  $("#ad-refresh").addEventListener("click", loadAlgoDetail);
+  $("#algo-dialog").addEventListener("close", () => { clearInterval(detailView.timer); detailView.timer = null; });
+  $("#ad-edit").addEventListener("click", () => {
+    const d = detailView.data; if (!d) return;
+    $("#algo-dialog").close();
+    if (detailView.kind === "fno") editFnoAlgo(d.algo); else editStockAlgo(d.algo);
+  });
 
   async function algoAction(algo, action, button) {
     showError("#algo-error", null);
@@ -1114,9 +1301,12 @@
       const signal = a.last_signal ? `${a.last_signal.target ? "buy" : "sell / stay out"} on ${a.last_signal.bar} (close ${rupees(a.last_signal.close, 2)})` : "not checked yet";
       return h("div", { class: "algo" },
         h("div", { class: "head" },
-          h("span", {}, h("strong", { text: a.name }), " ", h("span", { class: "pill " + (a.mode === "live" ? "bad" : ""), text: a.mode === "live" ? "LIVE" : "Paper" }), " ",
+          h("span", {}, h("button", { type: "button", class: "name", text: a.name, title: "Buy and sell prices, P&L and orders", onclick: () => openAlgoDetail("stock", a.id) }), " ",
+            h("span", { class: "pill " + (a.mode === "live" ? "bad" : ""), text: a.mode === "live" ? "LIVE" : "Paper" }), " ",
             h("span", { class: "pill " + (blocked ? "warn" : a.enabled ? "good" : ""), text: a.status })),
           h("span", { class: "actions" },
+            h("button", { type: "button", text: "Details", onclick: () => openAlgoDetail("stock", a.id) }),
+            canEdit(a) ? h("button", { type: "button", text: "Edit", onclick: () => editStockAlgo(a) }) : null,
             a.enabled ? act("Stop", "stop") : act("Start", "start", a.mode === "live" ? "danger" : "primary"),
             act("Run now", "run"), !a.enabled && a.position ? act("Clear position", "clear") : null, !a.enabled ? act("Delete", "delete") : null)),
         h("dl", { class: "kv" },
@@ -1224,11 +1414,18 @@
     });
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const button = $("button[type=submit]", form); showError("#fno-algo-error", null); busy(button, true, "Creating…");
-      try { await api("/fno-algos", { method: "POST", body: fnoBody(form) }); form.name.value = ""; await refreshFnoAlgos(); }
-      catch (err) { showError("#fno-algo-error", err); }
+      const editing = algoEdit.fno;
+      const button = $("button[type=submit]", form); showError("#fno-algo-error", null); busy(button, true, editing ? "Saving…" : "Creating…");
+      let saved = false;
+      try {
+        if (editing) await api(`/fno-algos/${editing.id}`, { method: "PUT", body: fnoBody(form) });
+        else await api("/fno-algos", { method: "POST", body: fnoBody(form) });
+        saved = true;
+      } catch (err) { showError("#fno-algo-error", err); }
       busy(button, false);
+      if (saved) { endAlgoEdit("fno"); await refreshFnoAlgos(); }
     });
+    $("#fno-edit-cancel").addEventListener("click", () => endAlgoEdit("fno"));
     $("#fno-algo-refresh").addEventListener("click", refreshFnoAlgos);
   }
 
@@ -1273,10 +1470,13 @@
         a.leg_exits_text ? `each ${a.leg_scope === "all" ? "" : a.leg_scope + " "}leg: ${a.leg_exits_text}` : null].filter(Boolean).join(" · ");
       return h("div", { class: "algo" },
         h("div", { class: "head" },
-          h("span", {}, h("strong", { text: a.name }), " ", h("span", { class: "pill " + (a.mode === "live" ? "bad" : ""), text: a.mode === "live" ? "LIVE" : "Paper" }), " ",
+          h("span", {}, h("button", { type: "button", class: "name", text: a.name, title: "Each leg's buy and sell prices, P&L and orders", onclick: () => openAlgoDetail("fno", a.id) }), " ",
+            h("span", { class: "pill " + (a.mode === "live" ? "bad" : ""), text: a.mode === "live" ? "LIVE" : "Paper" }), " ",
             a.naked ? h("span", { class: "pill warn", text: "naked short" }) : null, " ",
             h("span", { class: "pill " + (blocked ? "warn" : a.enabled ? "good" : ""), text: a.status })),
           h("span", { class: "actions" },
+            h("button", { type: "button", text: "Details", onclick: () => openAlgoDetail("fno", a.id) }),
+            canEdit(a) && !a.exit_requested ? h("button", { type: "button", text: "Edit", onclick: () => editFnoAlgo(a) }) : null,
             a.enabled ? act("Stop", "stop") : act("Start", "start", a.mode === "live" ? "danger" : "primary"),
             a.enabled ? act("Run now", "run") : null, book ? act("Exit", "exit", "danger") : null,
             !a.enabled && book ? act("Clear legs", "clear") : null, !a.enabled && !book ? act("Delete", "delete") : null)),
@@ -1476,18 +1676,31 @@
     try { [r, feed] = await Promise.all([api("/pnl?mode=" + state.mode), api("/alerts")]); }
     catch (err) { showError("#pnl-error", err); return; }
     showError("#pnl-error", null);
-    $("#pnl-about").textContent = `${state.mode === "live" ? "LIVE account" : "Paper account"} · switch with Paper / Live at the top · ` +
-      (r.loss_limit ? `daily loss limit ₹${inr.format(r.loss_limit)}` : "no daily loss limit set");
+    const live = state.mode === "live";
+    $("#pnl-about").textContent = `${live ? "LIVE account (real money)" : "Paper account (practice money)"} · switch with Paper / Live at the top`;
     const tile = (k, v, sub, cls) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v " + (cls || ""), text: v }), sub ? h("div", { class: "s", text: sub }) : null);
     const money = (v) => (v == null ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + "₹" + inr.format(Math.abs(v)));
-    const used = r.loss_limit && r.today_total < 0 ? ` · ${Math.min(100, Math.round((-r.today_total / r.loss_limit) * 100))}% of limit used` : "";
+    const plain = (v) => "₹" + inr.format(Math.abs(v || 0));
+    const word = (v) => (v > 0 ? "profit" : v < 0 ? "loss" : "profit/loss");
+    const total = r.realized + r.unrealized;
+    const plural = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+    $("#pnl-sentence").textContent = !r.trades && !r.open.length
+      ? "Nothing traded on this account yet. Profit and loss shows here once an order fills."
+      : `Booked ${word(r.realized)} of ${plain(r.realized)} on ${plural(r.trades, "closed trade")}`
+        + (r.open.length ? `; ${plural(r.open.length, "position")} still held, ${r.unrealized >= 0 ? "up" : "down"} ${plain(r.unrealized)} at current prices.` : ".")
+        + (r.today_total ? ` Today: ${money(r.today_total)}.` : "");
+    const used = r.loss_limit && r.today_total < 0 ? `${Math.min(100, Math.round((-r.today_total / r.loss_limit) * 100))}% of your daily loss limit used` : null;
     $("#pnl-tiles").replaceChildren(
-      tile("Today", money(r.today_total), `realized ${money(r.today_realized)}, open ${money(r.today_unrealized)}${used}`, tone(r.today_total)),
-      tile("Realized, all time", money(r.realized), `${r.trades} closed trade${r.trades === 1 ? "" : "s"}`, tone(r.realized)),
-      tile("Open positions", money(r.unrealized), `${r.open.length} held`, tone(r.unrealized)),
-      tile("Win rate", r.win_rate == null ? "–" : r.win_rate + "%", r.best_day == null ? null : `best day ${money(r.best_day)}, worst ${money(r.worst_day)}`),
-      tile("Max drawdown", money(r.max_drawdown), "largest fall from a peak", tone(r.max_drawdown)),
-      tile("Charges paid", "₹" + inr.format(r.charges), "brokerage, STT, stamp, GST"));
+      tile("Total profit/loss", money(total), "booked + still holding", tone(total)),
+      tile("Booked (closed trades)", money(r.realized), `${plural(r.trades, "trade")}, after charges`, tone(r.realized)),
+      tile("Still holding", money(r.unrealized), `${plural(r.open.length, "position")}, at current price`, tone(r.unrealized)),
+      tile("Today", money(r.today_total), used || `booked ${money(r.today_realized)}, holding ${money(r.today_unrealized)}`, tone(r.today_total)));
+    $("#pnl-stats").replaceChildren(
+      tile("Win rate", r.win_rate == null ? "–" : r.win_rate + "%", "closed trades in profit"),
+      tile("Best day", money(r.best_day), null, tone(r.best_day)), tile("Worst day", money(r.worst_day), null, tone(r.worst_day)),
+      tile("Largest fall", money(r.max_drawdown), "from a peak (max drawdown)", tone(r.max_drawdown)),
+      tile("Charges paid", "₹" + inr.format(r.charges), "brokerage, STT, stamp duty, GST"),
+      tile("Daily loss limit", r.loss_limit ? "₹" + inr.format(r.loss_limit) : "Not set", r.loss_limit ? "the kill switch turns on at this loss" : "set one in Settings"));
     const host = $("#pnl-chart");
     $("#pnl-empty").hidden = r.curve.length > 0; host.hidden = r.curve.length === 0;
     if (pnlView.chart) { pnlView.chart.remove(); pnlView.chart = null; }
@@ -1500,20 +1713,22 @@
       pnlView.series.setData(r.curve.map((p) => ({ time: p.time, value: p.value })));
       pnlView.chart.timeScale().fitContent();
     }
-    $("#pnl-sources").replaceChildren(table([
-      { label: "Source", get: (x) => x.source.replace(/^algo:/, "Algo: ") }, { label: "Realized", num: true, get: (x) => money(x.realized), tone: (x) => tone(x.realized) },
-      { label: "Open P&L", num: true, get: (x) => (x.open ? money(x.unrealized) : "–"), tone: (x) => tone(x.unrealized) },
-      { label: "Trades", num: true, get: (x) => x.trades }, { label: "Win rate", num: true, get: (x) => (x.win_rate == null ? "–" : x.win_rate + "%") },
-      { label: "Charges", num: true, get: (x) => "₹" + inr.format(x.charges) }], r.sources, "No fills recorded on this account yet."));
     $("#pnl-open").replaceChildren(table([
-      { label: "Stock", get: (x) => x.symbol }, { label: "Source", get: (x) => x.source.replace(/^algo:/, "") }, { label: "Qty", num: true, get: (x) => x.quantity },
-      { label: "Avg cost ₹", num: true, get: (x) => inr2.format(x.average) }, { label: "Last ₹", num: true, get: (x) => (x.last ? inr2.format(x.last) : "–") },
-      { label: "P&L", num: true, get: (x) => money(x.unrealized), tone: (x) => tone(x.unrealized) }], r.open, "Nothing held."));
+      { label: "Stock / contract", get: (x) => x.symbol }, { label: "From", get: (x) => sourceLabel(x.source) },
+      { label: "Bought / Sold", get: (x) => (x.quantity < 0 ? "Sold" : "Bought") }, { label: "Qty", num: true, get: (x) => Math.abs(x.quantity) },
+      { label: "Entry price ₹", num: true, get: (x) => inr2.format(x.average) }, { label: "Current price ₹", num: true, get: (x) => (x.last ? inr2.format(x.last) : "–") },
+      { label: "Profit/Loss", num: true, get: (x) => money(x.unrealized), tone: (x) => tone(x.unrealized) }], r.open, "Nothing held."));
     $("#pnl-closed").replaceChildren(table([
-      { label: "Sold (IST)", get: (x) => x.time_ist }, { label: "Stock", get: (x) => x.symbol }, { label: "Source", get: (x) => x.source.replace(/^algo:/, "") },
-      { label: "Qty", num: true, get: (x) => x.quantity }, { label: "Bought ₹", num: true, get: (x) => inr2.format(x.buy_price) },
-      { label: "Sold ₹", num: true, get: (x) => inr2.format(x.sell_price) }, { label: "P&L", num: true, get: (x) => money(x.pnl), tone: (x) => tone(x.pnl) },
+      { label: "Closed on (IST)", get: (x) => x.time_ist }, { label: "Stock / contract", get: (x) => x.symbol }, { label: "From", get: (x) => sourceLabel(x.source) },
+      { label: "Qty", num: true, get: (x) => x.quantity }, { label: "Buy price ₹", num: true, get: (x) => inr2.format(x.buy_price) },
+      { label: "Sell price ₹", num: true, get: (x) => inr2.format(x.sell_price) }, { label: "Profit/Loss", num: true, get: (x) => money(x.pnl), tone: (x) => tone(x.pnl) },
       { label: "Return", num: true, get: (x) => pct(x.return_pct), tone: (x) => tone(x.pnl) }], r.closed, "No closed trades yet."));
+    $("#pnl-sources").replaceChildren(table([
+      { label: "Algo / source", get: (x) => sourceLabel(x.source) }, { label: "Booked", num: true, get: (x) => money(x.realized), tone: (x) => tone(x.realized) },
+      { label: "Still holding", num: true, get: (x) => (x.open ? money(x.unrealized) : "–"), tone: (x) => tone(x.unrealized) },
+      { label: "Total", num: true, get: (x) => money(x.realized + x.unrealized), tone: (x) => tone(x.realized + x.unrealized) },
+      { label: "Closed trades", num: true, get: (x) => x.trades }, { label: "Win rate", num: true, get: (x) => (x.win_rate == null ? "–" : x.win_rate + "%") }],
+      r.sources, "No fills recorded on this account yet."));
     const s = state.app.settings, on = s.alerts_enabled && s.api_keys.TELEGRAM_BOT_TOKEN && s.telegram_chat_id;
     $("#alerts-state").textContent = feed.last_error ? `Telegram delivery failed: ${feed.last_error}` : on ? "Also sent to Telegram" : "Shown here only. Set up Telegram in Settings to get these on your phone.";
     $("#alerts-list").replaceChildren(...(feed.alerts.length ? feed.alerts.map((a) => h("div", { class: "alert-row" },
@@ -1521,6 +1736,14 @@
       : [h("p", { class: "hint", text: "No alerts yet." })]));
   }
   setInterval(() => { if (!$("#tab-pnl").hidden && !document.hidden) refreshPnl(); }, 30000);
+
+  $$("[data-export]").forEach((button) => button.addEventListener("click", async () => {
+    const kind = button.dataset.export, mode = state.mode;
+    showError("#export-error", null); busy(button, true, "Downloading…");
+    try { await download(`/export/${kind}.csv?mode=${mode}`, `${kind}-${mode}.csv`); }
+    catch (err) { showError("#export-error", err); }
+    busy(button, false);
+  }));
 
   $("#alerts-test").addEventListener("click", async (event) => {
     const out = $("#alerts-test-out"); busy(event.target, true, "Sending…");
@@ -2759,7 +2982,6 @@
 
   async function refreshTax() {
     const mode = state.mode;
-    $("#dl-journal").href = `/api/export/journal.csv?mode=${mode}`; $("#dl-fills").href = `/api/export/fills.csv?mode=${mode}`; $("#dl-lots").href = `/api/export/tax-lots.csv?mode=${mode}`;
     let r; try { r = await api("/tax?mode=" + mode); } catch (err) { $("#tax-years").replaceChildren(h("p", { class: "hint", text: err.message })); return; }
     const money = (v) => (v == null ? "–" : (v < 0 ? "−" : "") + "₹" + inr.format(Math.abs(Math.round(v))));
     $("#tax-years").replaceChildren(table([

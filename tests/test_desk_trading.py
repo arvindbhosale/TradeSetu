@@ -13,7 +13,7 @@ pytest.importorskip("mcp")
 
 import tradingagents.dataflows.config as config_module
 from desk import custom, indicators as ind, market, scanner as scanner_module
-from desk.algo import AlgoEngine
+from desk.algo import AlgoEngine, AlgoError
 from desk.backtest import BacktestParams, run_strategy
 from desk.broker import Desk, Gtt, OrderRejected, PaperBook
 from desk.custom import CustomStrategies
@@ -645,3 +645,58 @@ def test_a_daily_algo_moves_its_gtt_stoploss_to_cost(tmp_path):
     algo = engine.get(algo_id)
     assert engine.desk.paper.gtt(algo["protect"])["trigger"] == pytest.approx(121.0)
     assert algo["stop_kind"] == "stoploss at cost"
+
+
+def test_editing_a_stock_algo_keeps_its_position_safe(tmp_path):
+    clock, feed = Clock("2026-11-16 16:00"), {"bars": flat(DOWN, "2026-11-16")}
+    engine, prices = algo_engine(tmp_path, feed, clock)
+    base = {"name": "Rel", "symbol": "RELIANCE", "strategy": "sma_cross", "strategy_params": {"fast": 3, "slow": 10},
+            "budget": 25_000, "mode": "paper", "exits": {"unit": "pct", "stop_loss": 5, "target": 10}}
+    algo_id = engine.create(base)["id"]
+    engine.set_enabled(algo_id, True)
+    engine.tick()
+    # Flat: anything but the name can change, and a new stock or strategy waits for a fresh signal.
+    edited = engine.update(algo_id, {**base, "name": "Other", "symbol": "TCS", "budget": 30_000})
+    assert edited["name"] == "Rel" and edited["symbol"] == "TCS.NS" and edited["budget"] == 30_000
+    assert edited["enabled"] and edited["last_bar"] is None and not edited["seen_flat"]
+    engine.update(algo_id, base)
+    engine.tick()
+    clock.set("2026-11-20 16:00")
+    feed["bars"], prices["p"] = flat(UP, "2026-11-20"), 120.0
+    engine.tick()
+    clock.set("2026-11-23 09:30")
+    prices["p"] = 121.0
+    engine.tick()
+    algo = engine.get(algo_id)
+    held, gtt = algo["position"], algo["protect"]
+    assert held and gtt
+    # Holding: the stock, strategy, candle and mode are tied to the position.
+    for change in ({"symbol": "TCS"}, {"interval": "15m"}, {"strategy_params": {"fast": 4, "slow": 10}},
+                   {"mode": "live"}):
+        with pytest.raises(AlgoError, match="holds"):
+            engine.update(algo_id, {**base, **change})
+    # The budget and the exit rules can change; the paper GTT is replaced at the new levels.
+    edited = engine.update(algo_id, {**base, "budget": 40_000, "exits": {"unit": "pct", "stop_loss": 8, "target": 20}})
+    assert edited["position"] == held and edited["average_price"] == 121.0 and edited["budget"] == 40_000
+    assert edited["protect"] and edited["protect"] != gtt
+    protect = engine.desk.paper.gtt(edited["protect"])
+    assert protect["target"] == pytest.approx(145.2) and protect["stop"] == pytest.approx(111.3)
+    assert engine.desk.paper.gtt(gtt)["status"] != "active"
+    assert any("Edited" in e["message"] for e in edited["log"])
+
+
+def test_a_live_running_stock_algo_cannot_be_edited(tmp_path):
+    clock, feed = Clock("2026-11-16 16:00"), {"bars": flat(DOWN, "2026-11-16")}
+    engine, _ = algo_engine(tmp_path, feed, clock, live_enabled=True)
+    base = {"name": "Live one", "symbol": "RELIANCE", "strategy": "sma_cross", "strategy_params": {"fast": 3, "slow": 10},
+            "budget": 25_000, "mode": "live"}
+    algo_id = engine.create(base)["id"]
+    engine.set_enabled(algo_id, True, "ARM LIVE LIVE ONE")
+    with pytest.raises(AlgoError, match="trading live"):
+        engine.update(algo_id, {**base, "budget": 30_000})
+    engine.set_enabled(algo_id, False)
+    assert engine.update(algo_id, {**base, "budget": 30_000})["budget"] == 30_000
+    paper_id = engine.create({**base, "name": "Paper one", "mode": "paper"})["id"]
+    engine.set_enabled(paper_id, True)
+    moved = engine.update(paper_id, {**base, "mode": "live"})
+    assert moved["mode"] == "live" and not moved["enabled"]

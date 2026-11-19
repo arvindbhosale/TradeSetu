@@ -561,6 +561,9 @@ def test_api_options_backtest_optimiser_and_exports(client):
     journal = client.get("/api/export/journal.csv?mode=paper")
     assert journal.headers["content-type"].startswith("text/csv") and "attachment" in journal.headers["content-disposition"]
     assert journal.text.count("\n") == 3 and "TCS" in journal.text
+    closed = client.get("/api/export/pnl.csv?mode=paper").text.splitlines()
+    assert closed[0].startswith("time_ist,source,symbol,side,quantity,buy_price,sell_price,pnl") and len(closed) == 2
+    assert ",manual,TCS,LONG,2," in closed[1]
     lots = client.get("/api/export/tax-lots.csv?mode=paper").text.splitlines()
     assert len(lots) == 2 and lots[1].split(",")[1] == "STCG"
     years = client.get("/api/tax?mode=paper").json()["years"]

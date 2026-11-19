@@ -1,6 +1,7 @@
 """F&O algos: option strategies and index futures run by themselves, paper and live, through the desk's order path."""
 
 import copy
+import json
 from datetime import datetime
 
 import numpy as np
@@ -565,3 +566,51 @@ def test_bad_leg_exit_rules_are_refused(tmp_path):
         engine.create({**CONDOR, "name": "Bad", "leg_exits": {"reentry": 2}})
     with pytest.raises(AlgoError, match="sold legs, bought legs or all legs"):
         engine.create({**CONDOR, "name": "Bad", "leg_scope": "wings"})
+
+
+# -- editing and the per-leg detail ---------------------------------------------------------------------------------
+
+def test_an_algo_not_trading_live_can_be_edited_without_touching_its_open_legs(tmp_path):
+    clock = Clock("2026-11-17 09:35")
+    engine, desk, prices = setup(tmp_path, clock)
+    algo = engine.create(CONDOR)
+    edited = engine.update(algo["id"], {**CONDOR, "name": "Renamed", "k": 3, "lots": 2, "entry_time": "09:40"})
+    assert edited["name"] == "Nifty condor" and edited["k"] == 3 and edited["lots"] == 2      # the name is fixed
+    engine.set_enabled(algo["id"], True)
+    clock.set("2026-11-17 09:40")
+    book = engine.evaluate(algo["id"])["algo"]["book"]
+    assert book["phase"] == "open"
+    with pytest.raises(AlgoError, match="open legs"):
+        engine.update(algo["id"], {**CONDOR, "k": 3, "lots": 1, "entry_time": "09:40"})
+    with pytest.raises(AlgoError, match="open legs"):
+        engine.update(algo["id"], {**CONDOR, "k": 3, "lots": 2, "entry_time": "09:40", "mode": "live", "max_loss": 9000})
+    legs_before = json.dumps(engine.get(algo["id"])["book"])
+    edited = engine.update(algo["id"], {**CONDOR, "k": 3, "lots": 2, "entry_time": "09:40", "max_loss": 7000, "target": 900})
+    assert edited["max_loss"] == 7000 and edited["target"] == 900 and edited["enabled"]
+    assert json.dumps(engine.get(algo["id"])["book"]) == legs_before                          # legs untouched
+    # Per-leg detail from the ledger: bought and sold prices, booked and open P&L, active or closed.
+    legs = desk.ledger.legs("fno:Nifty condor", lambda i: prices.price(i))
+    assert len(legs) == 4 and all(g["status"] == "Active" and g["realized"] == 0 for g in legs)
+    sold = [g for g in legs if g["sold"]]
+    assert len(sold) == 2 and all(g["open_quantity"] == -130 and g["sell_price"] and g["buy_price"] is None for g in sold)
+    clock.set("2026-11-17 14:55")
+    engine.evaluate(algo["id"])
+    legs = desk.ledger.legs("fno:Nifty condor", lambda i: prices.price(i))
+    assert all(g["status"] == "Closed" and g["unrealized"] == 0 and g["buy_price"] and g["sell_price"] for g in legs)
+    assert sum(g["realized"] for g in legs) == pytest.approx(engine.get(algo["id"])["history"][-1]["pnl"], abs=0.05)
+
+
+def test_a_live_running_algo_cannot_be_edited_and_a_mode_change_stops_it(tmp_path):
+    clock = Clock("2026-11-17 09:00")
+    engine, desk, _ = setup(tmp_path, clock, kite=StubKite(Market()))
+    desk.settings.update({"live_enabled": True})
+    algo = engine.create({**CONDOR, "mode": "live", "max_loss": 3000})
+    engine.set_enabled(algo["id"], True, arm_phrase(algo["name"]))
+    with pytest.raises(AlgoError, match="trading live"):
+        engine.update(algo["id"], {**CONDOR, "mode": "live", "max_loss": 4000})
+    engine.set_enabled(algo["id"], False)
+    assert engine.update(algo["id"], {**CONDOR, "mode": "live", "max_loss": 4000})["max_loss"] == 4000
+    paper = engine.create({**CONDOR, "name": "Paper one"})
+    engine.set_enabled(paper["id"], True)
+    moved = engine.update(paper["id"], {**CONDOR, "mode": "live", "max_loss": 3000})
+    assert moved["mode"] == "live" and not moved["enabled"]                                    # Start and the phrase again
