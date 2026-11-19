@@ -291,6 +291,7 @@ def test_peers_are_the_same_industry_biggest_first():
 
 
 def test_financials_api_says_why_when_nse_cannot_be_reached(tmp_path, monkeypatch):
+    pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
     from desk.server import create_app
