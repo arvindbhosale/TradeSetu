@@ -78,6 +78,7 @@ main { width: 100%; max-width: 1480px; margin: 0 auto; padding: 20px 24px 40px; 
 #mode button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 #mode button[data-mode="live"][aria-pressed="true"] { background: var(--bad); color: #fff; }
 .sub-seg { margin-bottom: 14px; }
+.fin-tabs { flex-wrap: wrap; margin: 4px 0 10px; }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 14px; box-shadow: var(--shadow); }
 .panel.note { color: var(--text2); font-size: 13px; background: var(--surface-2); box-shadow: none; }
 .hint { color: var(--muted); font-size: 12.5px; margin: 4px 0 10px; }

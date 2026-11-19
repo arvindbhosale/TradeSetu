@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> None:
 def _start_indices(app) -> None:
     """Keep the index board fresh: constituent lists daily, levels and live quotes through the day."""
     indices = app.state.indices
+    app.state.financials.start()
 
     def loop():
         while True:
@@ -95,6 +96,8 @@ def _start_indices(app) -> None:
                     tools.tick()
                 broad = {r["symbol"] for r in indices.constituents("nifty500")} | wanted | set(app.state.sectors.symbols())
                 wanted |= set(tools.result_symbols(broad))        # stocks that reported, for Results Drift
+                with contextlib.suppress(Exception):
+                    app.state.financials.want_results(tools.drift_wants())   # their quarter's sales and profit
                 app.state.sectors.extra = sorted(wanted)
             except Exception:  # noqa: BLE001 - try again next round
                 logging.getLogger(__name__).exception("index refresh failed")
