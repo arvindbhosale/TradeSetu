@@ -2018,15 +2018,19 @@
   function renderDrift() {
     const d = toolState.drift; if (!d) return;
     const only = $("#form-drift").only.value;
-    const rows = d.rows.filter((r) => only === "all" || r.signal !== "No edge");
+    const rows = d.rows.filter((r) => only === "all" || (only === "agree" ? r.agrees === true : r.signal !== "No edge"));
     sortableTable($("#drift-table"), [
       { key: "symbol", label: "Stock", cell: (r) => stockLink(r.symbol) }, { key: "company", label: "Company" },
       { key: "result_date", label: "Results" }, { key: "reaction", label: "Reaction", num: true, cell: (r) => pct(r.reaction), tone: (r) => r.reaction },
       { key: "volume_times", label: "Volume ×", num: true, cell: (r) => (r.volume_times == null ? "–" : r.volume_times + "×") },
       { key: "since", label: "Since reaction", num: true, cell: (r) => pct(r.since), tone: (r) => r.since },
       { key: "sessions", label: "Sessions", num: true }, { key: "price", label: "Price ₹", num: true, cell: (r) => inr2.format(r.price) },
-      { key: "signal", label: "Signal", cell: (r) => h("span", { class: "trend " + (r.signal.endsWith("up") ? "up" : r.signal.endsWith("down") ? "down" : "side"), text: r.signal }) }], rows, toolState.sorts.drift);
-    $("#tool-updated").textContent = d.note || `${d.calendar} results in BSE's calendar (last 60 days), ${d.priced} priced by the desk.`;
+      { key: "signal", label: "Signal", cell: (r) => h("span", { class: "trend " + (r.signal.endsWith("up") ? "up" : r.signal.endsWith("down") ? "down" : "flat"), text: r.signal }) },
+      { key: "sales_yoy", label: "Sales vs year ago", num: true, cell: (r) => (r.sales_yoy == null ? "–" : pct(r.sales_yoy)), tone: (r) => r.sales_yoy },
+      { key: "profit_yoy", label: "Profit vs year ago", num: true, cell: (r) => (r.profit_yoy == null ? "–" : pct(r.profit_yoy)), tone: (r) => r.profit_yoy },
+      { key: "verdict", label: "Results", cell: (r) => (r.verdict ? h("span", { class: "trend " + (r.verdict === "Strong" ? "up" : r.verdict === "Weak" ? "down" : "flat"), text: r.verdict, title: r.quarter ? `Quarter to ${r.quarter}` : "" }) : "–") },
+      { key: "agrees", label: "Results back the move", sort: (r) => (r.agrees == null ? null : r.agrees ? 1 : 0), cell: (r) => (r.agrees == null ? "–" : r.agrees ? "Yes" : "No"), tone: (r) => (r.agrees == null ? null : r.agrees ? 1 : -1) }], rows, toolState.sorts.drift);
+    $("#tool-updated").textContent = d.note || `${d.calendar} results in BSE's calendar (last 60 days), ${d.priced} priced by the desk, ${d.with_numbers} with the quarter's numbers from NSE so far.`;
   }
 
   function drawCompass() {
@@ -2278,7 +2282,10 @@
         ["3 months", t.return_3m != null ? pct(t.return_3m) : null], ["6 months", t.return_6m != null ? pct(t.return_6m) : null], ["1 year", t.return_1y != null ? pct(t.return_1y) : null]]),
       h("h3", { text: "Fundamentals (Yahoo Finance; Kite's API has none)" }),
       Object.keys(f).length ? facts(Object.entries(L).map(([k, label]) => [label, f[k] == null ? null : (k === "market_cap" || k === "revenue" ? crore(f[k]) : num(f[k]))]))
-        : h("p", { class: "hint", text: "No fundamentals available for this company from the feed." }));
+        : h("p", { class: "hint", text: "No fundamentals available for this company from the feed." }),
+      h("h3", { text: "Financial statements (company filings on NSE)" }),
+      h("div", { id: "fin-box" }, h("p", { class: "hint", text: "Loading…" })));
+    loadFinancials(symbol, "");
     if (sd.chart) sd.chart.remove();
     sd.chart = LightweightCharts.createChart(chartBox, { ...chartOptions(280), timeScale: { borderColor: cssVar("--line"), timeVisible: false } });
     try {
@@ -2287,6 +2294,76 @@
       sd.chart.timeScale().setVisibleLogicalRange({ from: r.candles.length - 120, to: r.candles.length + 2 });
     } catch (err) { chartBox.replaceChildren(h("p", { class: "hint", text: err.message })); }
   }
+  // -- one stock: financial statements from the exchange filings ------------------------------
+
+  const fin = { tab: "quarterly", timer: null, data: null, sort: { key: "market_cap", dir: -1 } };
+  const FIN_TABS = [["quarterly", "Quarterly results"], ["profit_loss", "Profit & loss"], ["balance_sheet", "Balance sheet"],
+    ["cash_flow", "Cash flow"], ["ratios", "Ratios"], ["peers", "Peers"]];
+  function finValue(v, kind) {
+    if (v == null) return "–";
+    if (kind === "money") return Math.abs(v) >= 100 ? inr.format(Math.round(v)) : inr2.format(v);
+    if (kind === "days") return inr.format(Math.round(v));
+    if (kind === "pct") return v.toFixed(1);
+    return inr2.format(v);
+  }
+  function finTable(t) {
+    if (!t || !t.columns.length) return h("p", { class: "hint", text: "Not in the filings read so far." });
+    return h("div", { class: "scroll" }, h("table", {},
+      h("thead", {}, h("tr", {}, h("th", { text: t.rows.some((r) => r.kind === "money") ? "₹ crore" : "" }), t.columns.map((c) => h("th", { class: "num", text: c })))),
+      h("tbody", {}, t.rows.map((r) => h("tr", {}, h("td", { text: r.label }),
+        r.values.map((v) => h("td", { class: "num" + (r.kind === "pct" && r.key.endsWith("growth") ? " " + tone(v) : ""), text: finValue(v, r.kind) })))))));
+  }
+  function finPeers(p) {
+    const box = h("div", {});
+    if (!p || !p.rows.length) return h("p", { class: "hint", text: "No industry for this stock in the NSE index lists the desk reads, so no peers." });
+    box.append(h("p", { class: "hint", text: `${p.industry}: ${p.count} companies in the desk's index lists, the biggest ${Math.min(p.rows.length, 12)} shown. Figures are Yahoo Finance's trailing twelve months, the same source for every company so they compare fairly.` }));
+    const grid = h("div", { class: "scroll" }); box.append(grid);
+    sortableTable(grid, [
+      { key: "symbol", label: "Stock", cell: (r) => (r.this ? h("b", { text: r.symbol.replace(/\.(NS|BO)$/, "") }) : stockLink(r.symbol)) },
+      { key: "name", label: "Company" }, { key: "price", label: "Price ₹", num: true, cell: (r) => (r.price == null ? "–" : inr2.format(r.price)) },
+      { key: "market_cap", label: "Market cap", num: true, cell: (r) => crore(r.market_cap) }, { key: "pe", label: "P/E", num: true, cell: (r) => num(r.pe, 1) },
+      { key: "pb", label: "P/B", num: true, cell: (r) => num(r.pb, 1) }, { key: "roe", label: "ROE %", num: true, cell: (r) => num(r.roe, 1) },
+      { key: "net_margin", label: "Net margin %", num: true, cell: (r) => num(r.net_margin, 1) },
+      { key: "sales_growth", label: "Sales growth %", num: true, cell: (r) => num(r.sales_growth, 1), tone: (r) => r.sales_growth },
+      { key: "profit_growth", label: "Profit growth %", num: true, cell: (r) => num(r.profit_growth, 1), tone: (r) => r.profit_growth },
+      { key: "dividend_yield", label: "Dividend yield %", num: true, cell: (r) => num(r.dividend_yield, 2) }], p.rows, fin.sort);
+    return box;
+  }
+  function renderFinancials(symbol) {
+    const box = $("#fin-box"), d = fin.data; if (!box || !d || sd.symbol !== symbol) return;
+    const s = d.summary || {};
+    const status = d.state === "loading" ? `Reading the company's results filings from NSE${d.total ? ` (${d.done} of ${d.total})` : ""}… a company seen for the first time takes about half a minute.`
+      : d.note || (d.available ? `From the quarterly results filed on NSE. Latest quarter ${s.latest_quarter}${s.audited ? ` (${s.audited.toLowerCase()})` : ""}.` : "");
+    const basis = h("select", { "aria-label": "Results basis", onchange: (e) => { fin.data = null; loadFinancials(symbol, e.target.value); } },
+      (d.bases && d.bases.length ? d.bases : [d.basis || "consolidated"]).map((b) => h("option", { value: b, text: b === "consolidated" ? "Consolidated (group)" : "Standalone (company only)", selected: b === d.basis })));
+    const refresh = h("button", { type: "button", text: "Refresh", title: "Read NSE's list of filings again",
+      onclick: async () => { try { await api("/financials/refresh", { method: "POST", body: { symbol, basis: d.basis || "" } }); } catch (err) { /* shown on next load */ } loadFinancials(symbol, d.basis || ""); } });
+    const tabs = h("div", { class: "seg fin-tabs", role: "group", "aria-label": "Statement" }, FIN_TABS.map(([key, name]) =>
+      h("button", { type: "button", "aria-pressed": String(fin.tab === key), text: name, onclick: () => { fin.tab = key; renderFinancials(symbol); } })));
+    const tile = (k, v, sub) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v", text: v }), sub ? h("div", { class: "s", text: sub }) : null);
+    const pc = (v) => (v == null ? "–" : pct(v));
+    const tiles = d.available ? h("div", { class: "tiles" },
+      tile("Market cap", crore(s.market_cap), s.price ? `at ₹${inr2.format(s.price)}` : "no price yet"),
+      tile("P/E", num(s.pe, 1), "on last 4 quarters' profit"), tile("Price / book", num(s.pb, 2)),
+      tile("ROE %", num(s.roe, 1), "last full year"),
+      d.bank ? tile("ROA %", num(s.roa, 2)) : tile("ROCE %", num(s.roce, 1), "last full year"),
+      d.bank ? tile("Net NPA %", num(s.net_npa_pct, 2), s.gross_npa_pct != null ? `gross ${num(s.gross_npa_pct, 2)}%` : "") : tile("Debt / equity", num(s.debt_equity, 2)),
+      tile(d.bank ? "Revenue (4 quarters)" : "Sales (4 quarters)", crore(s.sales_ttm)), tile("Profit (4 quarters)", crore(s.profit_ttm)),
+      tile(`${s.latest_quarter || "Latest"} ${d.bank ? "revenue" : "sales"} vs year ago`, pc(s.quarter_sales_yoy)), tile(`${s.latest_quarter || "Latest"} profit vs year ago`, pc(s.quarter_profit_yoy))) : null;
+    const body = fin.tab === "peers" ? finPeers(d.peers) : d.available ? finTable(d[fin.tab])
+      : h("p", { class: "hint", text: d.state === "loading" ? "" : "No statements yet." });
+    box.replaceChildren(h("div", { class: "row inline" }, basis, refresh), h("p", { class: "hint", text: status }), tiles || "", tabs, body,
+      fin.tab === "ratios" || fin.tab === "balance_sheet" || fin.tab === "cash_flow" ? h("p", { class: "hint", text:
+        "Years end in March. The balance sheet is filed every six months (March and September), the cash flow with it. Ratios are worked out from these filings: return on equity on average shareholders' equity, return on capital employed is profit before interest and tax on equity plus borrowings." }) : "");
+  }
+  async function loadFinancials(symbol, basis) {
+    clearTimeout(fin.timer);
+    try { fin.data = await api(`/financials?symbol=${encodeURIComponent(symbol)}&basis=${encodeURIComponent(basis || "")}`); }
+    catch (err) { const box = $("#fin-box"); if (box && sd.symbol === symbol) box.replaceChildren(h("div", { class: "error", text: err.message })); return; }
+    renderFinancials(symbol);
+    if (fin.data.state === "loading" && $("#stock-dialog").open && sd.symbol === symbol) fin.timer = setTimeout(() => loadFinancials(symbol, fin.data.basis || basis), 2500);
+  }
+
   $("#sd-close").addEventListener("click", () => $("#stock-dialog").close());
   $("#stock-dialog").addEventListener("click", (event) => { if (event.target.id === "stock-dialog") event.target.close(); });
   $("#sd-chart").addEventListener("click", () => { $("#stock-dialog").close(); $("#form-chart").symbol.value = sd.symbol.replace(/\.NS$/, ""); selectTab("charts"); loadChart(true); });

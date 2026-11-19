@@ -46,12 +46,14 @@ from .backtest import BacktestParams, run_strategy
 from .broker import Desk, OrderRejected
 from .brokers import Switch, catalog as broker_catalog
 from .custom import OPS as RULE_OPS, TIME_OPS as RULE_TIME_OPS, CustomStrategies
+from .financials import Financials, peer_rows
 from .fno import BSE_INDICES, Derivatives, exchange_of
 from .fnoalgo import FnoAlgoEngine, arm_phrase as fno_arm_phrase
 from .fundamentals import LABELS as FUNDAMENTAL_LABELS, Fundamentals
 from .indices import Indices
 from .kite import KiteError, KiteMCP
 from .markettools import MarketTools, finite
+from .nse import NseClient
 from .optimiser import OBJECTIVES, optimise
 from .passkeys import PasskeyError, Passkeys, relying_party
 from .scanner import Scanner
@@ -97,8 +99,11 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     indices = Indices(sectors, fundamentals, kite, fetch=fetch,
                       download=(lambda url: (_ for _ in ()).throw(OSError("offline"))) if fetch is not None else None,
                       get_json=offline_json)
+    financials = Financials(NseClient(get_json=offline_json, download=lambda url: (_ for _ in ()).throw(OSError("offline")))
+                            if fetch is not None else None)
     tools = MarketTools(sectors, indices, fundamentals, fetch=fetch, get_json=offline_json,
-                        download=(lambda url: (_ for _ in ()).throw(OSError("offline"))) if fetch is not None else None)
+                        download=(lambda url: (_ for _ in ()).throw(OSError("offline"))) if fetch is not None else None,
+                        results=financials.results)
     sectors.extra = []                      # filled from index lists so contributor prices stay warm
     first_oi: dict = {"day": None, "values": {}}
     algos.extra_ticks.append(derivatives.tick)
@@ -138,6 +143,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     app.state.sectors, app.state.indices, app.state.fundamentals = sectors, indices, fundamentals
     app.state.derivatives = derivatives
     app.state.tools = tools
+    app.state.financials = financials
     app.state.fno_algos = fno_algos
 
     @app.middleware("http")
@@ -1104,6 +1110,39 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     @app.get("/api/tools/radar")
     def tool_radar():
         return finite(tools.radar())
+
+    def last_price(symbol: str) -> float | None:
+        frame = sectors.bars(symbol)
+        if frame is not None and len(frame):
+            return round(float(frame["Close"].iloc[-1]), 2)
+        return None
+
+    @app.get("/api/financials")
+    def stock_financials(symbol: str, basis: str = ""):
+        """Quarterly results, profit and loss, balance sheet, cash flow, ratios (NSE filings) and peers."""
+        canonical = symbol_of(symbol)
+        if not kite_instrument(canonical):
+            raise ValueError(f"{canonical} is not an NSE/BSE stock")
+        price = last_price(canonical)
+        if price is None:
+            with contextlib.suppress(Exception):
+                price = data.last_close(canonical, fetch=fetch)
+        out = financials.view(canonical, basis or None, price)
+        peers = peer_rows(canonical, indices.industry_of(), tools._names(), fundamentals.get, last_price)
+        if peers["missing"]:
+            fundamentals.queue(peers["missing"])
+        out["peers"] = peers
+        return finite(out)
+
+    @app.post("/api/financials/refresh")
+    def refresh_financials(payload: dict):
+        body = body_of(payload)
+        canonical = symbol_of(str(body.get("symbol", "")))
+        if not kite_instrument(canonical):
+            raise ValueError(f"{canonical} is not an NSE/BSE stock")
+        financials.forget_listing(canonical)
+        financials.request(canonical, str(body.get("basis") or "") or None)
+        return {"queued": True}
 
     @app.get("/api/indices/{index_id}")
     def index_detail(index_id: str):
