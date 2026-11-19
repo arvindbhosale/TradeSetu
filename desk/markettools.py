@@ -7,7 +7,8 @@
   and stocks trading far above their usual volume today.
 - **Results Drift**: post-earnings announcement drift. Stocks that reported
   results in the last 60 days (BSE's results calendar), how hard the price
-  reacted, and whether it has kept moving the same way since.
+  reacted, whether it has kept moving the same way since, and the quarter's
+  sales and profit against a year before (NSE filings, :mod:`desk.financials`).
 - **Sector Compass**: a relative rotation map of the sector indices against
   the Nifty 50 (strength and its momentum, four quadrants, weekly tails).
 - **Stock Radar**: one table of every tracked stock with returns, distance from
@@ -15,7 +16,8 @@
 
 Every measure works on daily candles the desk already keeps (``Sectors`` for
 stocks, ``Indices`` for indices); only the deals and the results calendar are
-downloaded, once a day, from NSE and BSE.
+downloaded, once a day, from NSE and BSE, and each result's sales and profit
+once per company from NSE (``results``).
 """
 
 from __future__ import annotations
@@ -297,6 +299,23 @@ def drift_row(frame: pd.DataFrame, result_day: str, volume: pd.Series | None = N
             "price": round(last, 2), "signal": signal}
 
 
+def results_columns(numbers: dict | None, signal: str) -> dict:
+    """The quarter's numbers for a Results Drift row, and whether they back the price move.
+
+    ``agrees`` is True when the move and the results point the same way (up on Strong, down on Weak), False when
+    they disagree, None when either is unclear.
+    """
+    if not numbers:
+        return {"quarter": None, "sales_yoy": None, "profit_yoy": None, "profit": None, "verdict": None, "agrees": None}
+    verdict = numbers.get("verdict")
+    up, down = signal.endswith("up"), signal.endswith("down")
+    agrees = None
+    if verdict in ("Strong", "Weak") and (up or down):
+        agrees = (verdict == "Strong") == up
+    return {"quarter": numbers.get("quarter"), "sales_yoy": numbers.get("sales_yoy"),
+            "profit_yoy": numbers.get("profit_yoy"), "profit": numbers.get("profit"), "verdict": verdict, "agrees": agrees}
+
+
 # -- Sector Compass ------------------------------------------------------------------------------
 
 def rotation(series: dict[str, pd.Series], bench: pd.Series, tail: int = 6, length: int = 10,
@@ -390,8 +409,9 @@ class MarketTools:
     """Holds the downloaded deals and results calendar and answers the five tools from the desk's candles."""
 
     def __init__(self, sectors, indices, fundamentals, path: Path | None = None, download=None, get_json=None,
-                 fetch=None, now=market.now_ist):
+                 fetch=None, now=market.now_ist, results=None):
         self.sectors, self.indices, self.fundamentals = sectors, indices, fundamentals
+        self.results = results              # (symbol, result date) -> latest quarter against a year before, or None
         self._download, self._get_json, self.fetch, self._now = download, get_json, fetch, now
         self.path = path or home() / "market_tools.json"
         self._lock = threading.RLock()
@@ -534,11 +554,27 @@ class MarketTools:
             volume, _ = self.sectors.volume(row["symbol"])
             found = drift_row(frame, row["date"], volume, min_move)
             if found:
-                out.append({"symbol": row["symbol"], "company": row.get("company", ""), **found})
+                found = {"symbol": row["symbol"], "company": row.get("company", ""), **found}
+                found.update(results_columns(self.results(row["symbol"], row["date"]) if self.results else None,
+                                             found["signal"]))
+                out.append(found)
         out.sort(key=lambda r: (r["signal"] == "No edge", -abs(r["reaction"])))
         listed = len(self._state["results"])
         return {"rows": out, "note": self._state.get("results_note"), "fetched": self._state["results_at"],
-                "calendar": listed, "priced": len(out), "min_move": min_move}
+                "calendar": listed, "priced": len(out), "min_move": min_move,
+                "with_numbers": sum(1 for r in out if r.get("verdict") or r.get("profit") is not None)}
+
+    def drift_wants(self) -> list[tuple[str, str]]:
+        """(symbol, result date) for the priced Results Drift stocks, the ones with a signal first."""
+        rows = []
+        for row in self._state["results"]:
+            frame = self.sectors.bars(row["symbol"])
+            if frame is None or len(frame) < 25:
+                continue
+            found = drift_row(frame, row["date"])
+            if found:
+                rows.append((found["signal"] == "No edge", -abs(found["reaction"]), row["symbol"], row["date"]))
+        return [(symbol, day) for _, _, symbol, day in sorted(rows)]
 
     def rotation(self, weekly: bool = True) -> dict:
         bench = self._nifty()
