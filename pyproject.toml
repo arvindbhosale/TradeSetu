@@ -72,7 +72,7 @@ include = ["tradingagents*", "cli*", "desk*"]
 [tool.setuptools.package-data]
 cli = ["static/*"]
 tradingagents = ["assets/*.svg"]
-desk = ["static/*", "static/manual/*", "static/manual/img/*", "*.json"]
+desk = ["static/*", "static/manual/*", "static/manual/img/*", "static/notes/*", "static/notes/img/*", "*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

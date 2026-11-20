@@ -271,7 +271,7 @@ At the top of **F&O expiries**. Pick the index (NIFTY, BANKNIFTY, FINNIFTY, MIDC
 **Trade a contract.** Click a price (LTP). Its Kite candle chart opens with an order form below:
 
 1. Choose **Side**, **Lots** (the quantity is lots × lot size), **Limit price** and **Product** (NRML to carry over, MIS for intraday).
-2. **Review order** shows the premium, last price and estimated charges (₹20 brokerage, STT 0.1% on sell premium, exchange fees, stamp duty, GST).
+2. **Review order** shows the premium, last price and estimated charges (₹20 brokerage, STT 0.15% on sell premium, exchange fees, stamp duty, GST).
 3. Type the confirmation and place it. Paper or Live follows the switch at the top; live needs live trading on in Settings.
 
 Rules the desk enforces: LIMIT orders only (no market orders on options), whole lots, at most the exchange freeze quantity per order, no orders on expired contracts, and **no writing**: you can sell only what you hold.
@@ -829,7 +829,7 @@ Settings: index, dates, candle, signal strategy, **Buy** (calls / puts / both), 
 - **Direction**: *Buy only*; *Sell only* (sell while the strategy is out, buy back when it says buy); *Buy and sell* (always in: bought on the signal, sold otherwise). Nothing is shorted before the strategy's first signal.
 - **Lots**, **Margin %** (SPAN + exposure for index futures is about 11-14% of the contract value; an entry the equity cannot margin is skipped and counted), **Stoploss / Target %** of the futures price (checked against each candle's high and low; if both are inside one candle the stop is assumed first), **Slippage %**, **Cost of carry % a year**.
 - **Prices.** With Kite logged in, day candles are Kite's continuous futures. At every monthly expiry the series jumps to the next contract. That jump is not profit, so the desk takes out an estimate of the basis (cost of carry × days to the next expiry) and charges a round trip as if you rolled. Intraday runs use the live contract's own candles when they reach back far enough, otherwise the index as a proxy. Without Kite the index from Yahoo stands in, and the note says so.
-- **Charges**: Zerodha futures schedule (0.03% or ₹20 brokerage, 0.02% STT on sells, exchange fees, stamp duty, GST).
+- **Charges**: Zerodha futures schedule (0.03% or ₹20 brokerage, 0.05% STT on sells from 1 April 2026 (0.02% before), exchange fees, stamp duty, GST).
 - Returns are on your capital. Futures are leveraged: one NIFTY lot controls about ₹16 lakh, so a 1% move is about ₹16,000. Buy & hold is the index without leverage.
 - Monthly expiry is the last Thursday until August 2025 and the last Tuesday from September 2025 (NSE), moved earlier for holidays you have listed.
 
