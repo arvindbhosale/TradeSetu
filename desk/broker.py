@@ -469,6 +469,7 @@ class Desk:
         self._loss_state: dict[str, str] = {}       # mode -> the day its loss limit last tripped
         self.contract_lookup = contract_lookup      # (exchange, tradingsymbol) -> option contract, for F&O orders
         self.algo_instruments = None                # () -> instruments F&O algos hold (they manage their own exits)
+        self.algo_claims = None                     # (instrument, source) -> signed quantity the OTHER F&O algos hold
         self.flatten_day: str | None = None         # intraday algos close out on this day
         self.paper = paper or PaperBook(settings.get("paper_capital"))
         self.journal = journal or home() / "orders.jsonl"
@@ -530,11 +531,13 @@ class Desk:
 
     # -- the order path ----------------------------------------------------
 
-    def preview(self, raw: dict, mode: str, allow_short: bool = False) -> dict:
+    def preview(self, raw: dict, mode: str, allow_short: bool = False, source: str = "") -> dict:
         """Check an order and, if it passes, issue the token that places it.
 
         ``allow_short`` lets an F&O order with intent "open" sell: write an option or short a future. Only the F&O
         algo engine passes it, for a leg of a structure the user armed; a manual order never opens a short.
+        ``source`` names the algo placing the order: a closing order from an F&O algo is checked against that
+        algo's share of the account's position, not the account's net, which other algos' legs also make up.
         """
         if mode not in ("paper", "live"):
             raise OrderRejected(["mode must be paper or live"])
@@ -623,6 +626,8 @@ class Desk:
                                   "armed F&O algo, never by a single order.")
             elif order.side == "SELL" or order.intent == "close":
                 held = self.paper.quantity(order.instrument) if mode == "paper" else self.live_position(order)
+                if held is not None and source.startswith("fno:") and order.intent == "close" and self.algo_claims:
+                    held -= self.algo_claims(order.instrument, source)
                 if held is None:
                     errors.append("Could not read your positions to check this order.")
                 elif order.side == "SELL" and order.quantity > held:
@@ -965,7 +970,7 @@ class Desk:
         The typed confirmation is given once, when the algo is armed; this is
         the only path that skips it, and the journal records who used it.
         """
-        review = self.preview(raw, mode, allow_short=allow_short)
+        review = self.preview(raw, mode, allow_short=allow_short, source=source)
         if not review["ok"]:
             raise OrderRejected(review["errors"])
         return self._execute(self._take(review["token"]), source)

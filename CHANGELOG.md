@@ -21,6 +21,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - New TradeSetu logo in the README, the desk sidebar, the sign-in page, the browser tab icon, the installed-app icons and the social preview.
 
 ### Fixed
+- F&O algos: an algo could not close its own leg when another algo held the same contract the other way (a condor's sold call that is an iron butterfly's bought wing): the account nets to 0 and the closing buy was refused with "You are short 0". A closing order from an F&O algo is now checked against that algo's own share of the position.
+- F&O algos: a block for want of prices said "Log in to Kite" whatever went wrong. It now names what the broker answered (a login needed, too many requests, a timeout), and the blocked alert no longer repeats its reason.
 - Option chain: says every listed expiry has passed (refresh the contract list) instead of failing with a server error.
 - CI installs the desk extras, so the ~220 desk API tests run instead of skipping. The F&O API tests read contracts on the fake Kite's anchor day, so they no longer fail once the real date passes it.
 - A "No edge" badge in Results Drift took the sidebar's style and stretched down the page.
