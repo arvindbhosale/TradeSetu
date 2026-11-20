@@ -21,6 +21,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - New TradeSetu logo in the README, the desk sidebar, the sign-in page, the browser tab icon, the installed-app icons and the social preview.
 
 ### Fixed
+- Stock algos: a sell went ahead when cancelling the algo's target/stoploss GTT failed (the error was ignored), so the GTT could fire later and sell shares that were no longer the algo's. The sell now waits until the GTT is gone; if it has fired, nothing more is sold. A trailing or at-cost stoploss is not moved while the old GTT cannot be cancelled.
+- Background jobs (paper GTT check, live fill sync, daily loss limit, F&O algos, paper expiry settlement, MCX square-off, scanner) failed silently. A failure is now logged and alerted, once an hour; an algo that hits an unexpected error says so.
+- Daily loss limit: warns which positions it has no price for, instead of leaving them out without a word.
+- Paper MCX delivery cut-off: closes the part of a contract held by hand and leaves an algo's lots to the algo (it skipped the whole contract). F&O algo positions are counted per account (paper or live).
+- A blocked stock algo's alert no longer repeats its reason.
 - F&O algos: an algo could not close its own leg when another algo held the same contract the other way (a condor's sold call that is an iron butterfly's bought wing): the account nets to 0 and the closing buy was refused with "You are short 0". A closing order from an F&O algo is now checked against that algo's own share of the position.
 - F&O algos: a block for want of prices said "Log in to Kite" whatever went wrong. It now names what the broker answered (a login needed, too many requests, a timeout), and the blocked alert no longer repeats its reason.
 - Option chain: says every listed expiry has passed (refresh the contract list) instead of failing with a server error.

@@ -50,6 +50,13 @@ RETRY = timedelta(minutes=10)
 FRESH_SECONDS = 300
 UNFILLED_AFTER = timedelta(minutes=3)      # an intraday limit order still open after this is cancelled
 TICK_SECONDS = 20
+JOB_NAMES = {                               # the engines the server drives from this clock, in plain words
+    "Scanner.tick": "Scanner",
+    "Derivatives.tick": "F&O contract refresh",
+    "FnoAlgoEngine.tick": "F&O algos",
+    "Desk.close_paper_mcx": "Paper MCX square-off",
+    "create_app.<locals>.settle_paper_options": "Paper option expiry settlement",
+}
 
 
 class AlgoError(ValueError):
@@ -295,6 +302,7 @@ class AlgoEngine:
         """Run one algo now. Returns what it did."""
         with self._lock:
             algo = self.get(algo_id)
+            tail = algo["log"][-1] if algo["log"] else None
             try:
                 outcome = self._step(algo, force)
             except AlgoError as exc:
@@ -302,8 +310,10 @@ class AlgoEngine:
             before = algo["status"]
             algo["status"] = outcome["status"]
             if outcome["status"].startswith("Blocked") and outcome["status"] != before:
-                last = algo["log"][-1]["message"] if algo["log"] else ""
-                self.desk.notifier.notify(f"Algo “{algo['name']}” is blocked", f"{outcome['status']}. {last}", "bad",
+                # The status, and the reason logged by this run when it adds to it.
+                last = algo["log"][-1]["message"] if algo["log"] and algo["log"][-1] is not tail else ""
+                body = outcome["status"] if not last or last in outcome["status"] else f"{outcome['status']}. {last}"
+                self.desk.notifier.notify(f"Algo “{algo['name']}” is blocked", body, "bad",
                                           key=f"blocked:{algo['id']}:{outcome['status']}")
             self._save()
             return {**outcome, "algo": json.loads(json.dumps(algo))}
@@ -582,9 +592,20 @@ class AlgoEngine:
             return self._result(algo, "Running: budget too small", True,
                                 f"{side} ({reason}): ₹{algo['budget']:,.0f} does not buy one share at ₹{price:,.2f}.")
         if side == "SELL" and algo["protect"]:
-            with contextlib.suppress(KiteError):
-                self.desk.cancel_gtt(algo["mode"], algo["protect"])
-            algo["protect"] = None
+            # The GTT must go before the sell: left active, it could fire later and sell shares that are no longer
+            # this algo's (another algo's, or your own, in the same stock).
+            problem = self._drop_protection(algo)
+            if problem == "triggered":
+                self._check_protection(algo)                # the GTT has sold the position already
+                algo["queued"] = None
+                return self._result(algo, f"Running: {self._holding(algo)}", True)
+            if problem:
+                self._retry_at[algo["id"]] = self._now() + (RETRY if algo["interval"] == "1d" else timedelta(minutes=1))
+                if algo["interval"] == "1d":
+                    algo["queued"] = {"side": side, "reason": reason}
+                return self._result(algo, "Blocked: target/stoploss GTT not cancelled", False,
+                                    f"SELL ({reason}) held back: could not cancel GTT {algo['protect']} first "
+                                    f"({problem}). Trying again.")
         session_open = market.session_status(self._now())["open"]
         order = {"exchange": exchange, "tradingsymbol": tradingsymbol, "side": side, "quantity": quantity,
                  "product": algo["product"], "order_type": "LIMIT", "price": price,
@@ -655,12 +676,34 @@ class AlgoEngine:
         if wanted <= current + market.TICK:
             return
         if algo["protect"]:
-            with contextlib.suppress(KiteError):
-                self.desk.cancel_gtt(algo["mode"], algo["protect"])
-            algo["protect"] = None
+            problem = self._drop_protection(algo)
+            if problem:
+                # A second GTT next to the old one could sell the shares twice: keep the old one for now.
+                self._log(algo, f"Stoploss not raised to ₹{wanted:,.2f}: GTT {algo['protect']} "
+                                f"{'has triggered' if problem == 'triggered' else f'could not be cancelled ({problem})'}. "
+                                f"Tried again with the next close.")
+                return
         algo["trail_stop"] = wanted
         self._log(algo, f"Stoploss raised to ₹{wanted:,.2f} ({kind}; highest close ₹{algo['peak']:,.2f}).")
         self._protect(algo)
+
+    def _drop_protection(self, algo: dict) -> str:
+        """Cancel the algo's target/stoploss GTT. Returns "" once it is gone (cancelled now, or no longer listed or
+        active), "triggered" when it has fired, else why it could not be cancelled; ``protect`` is cleared only
+        when it is gone."""
+        try:
+            self.desk.cancel_gtt(algo["mode"], algo["protect"])
+        except KiteError as exc:
+            try:
+                state = (self.desk.gtt_status(algo["mode"], algo["protect"]) or {}).get("status", "gone")
+            except KiteError:
+                return str(exc)
+            if state == "triggered":
+                return "triggered"
+            if state == "active":
+                return str(exc)
+        algo["protect"] = None
+        return ""
 
     def _check_protection(self, algo: dict) -> None:
         try:
@@ -765,20 +808,31 @@ class AlgoEngine:
                     out.append(algo["id"])
         return out
 
+    def _job(self, name: str, job) -> None:
+        """Run one background job. A failure must not stop the others, and must not pass unseen: it is logged and
+        the user is told, at most once an hour for the same job and error."""
+        try:
+            job()
+        except Exception as exc:  # noqa: BLE001 - one job's failure must not stop the others
+            logger.exception("desk job %s failed", name)
+            self.desk.notifier.notify(f"{name} failed", f"{type(exc).__name__}: {exc}. It is tried again on the next "
+                                      f"tick; until it works, it is not being done.", "bad",
+                                      key=f"job-failed:{name}:{self._now():%Y-%m-%d %H}")
+
     def tick(self) -> None:
-        with contextlib.suppress(Exception):
-            self.desk.check_paper_gtts()
-        with contextlib.suppress(Exception):
-            self.desk.sync_live_fills()
-        with contextlib.suppress(Exception):
-            self.desk.check_loss_limit()
-        with contextlib.suppress(Exception):
-            self._watch_kite()
+        self._job("Paper GTT check", self.desk.check_paper_gtts)
+        self._job("Live fill sync", self.desk.sync_live_fills)
+        self._job("Daily loss limit check", self.desk.check_loss_limit)
+        self._job("Broker login check", self._watch_kite)
         for algo_id in self.due():
             try:
                 outcome = self.evaluate(algo_id)
-            except Exception:  # noqa: BLE001 - one algo's failure must not stop the others
+            except Exception as exc:  # noqa: BLE001 - one algo's failure must not stop the others
                 logger.exception("algo %s failed", algo_id)
+                name = self._algos.get(algo_id, {}).get("name", algo_id)
+                self.desk.notifier.notify(f"Algo “{name}” hit an error", f"{type(exc).__name__}: {exc}. It is tried "
+                                          f"again; check the algo and its position.", "bad",
+                                          key=f"algo-error:{algo_id}:{self._now():%Y-%m-%d %H}")
                 outcome = {"done": False}
             if not outcome["done"] and algo_id not in self._retry_at:
                 daily = self._algos.get(algo_id, {}).get("interval") == "1d"
@@ -786,8 +840,7 @@ class AlgoEngine:
             elif outcome["done"] and self._retry_at.get(algo_id, self._now()) <= self._now():
                 self._retry_at.pop(algo_id, None)
         for extra in self.extra_ticks:
-            with contextlib.suppress(Exception):
-                extra()
+            self._job(JOB_NAMES.get(getattr(extra, "__qualname__", ""), "A background job"), extra)
 
     def _watch_kite(self) -> None:
         """Tell the user, once a morning, that Kite has signed them out while live work is waiting on it."""
@@ -821,8 +874,10 @@ class AlgoEngine:
 
         def loop():
             while not self._stop.wait(TICK_SECONDS):
-                with contextlib.suppress(Exception):
+                try:
                     self.tick()
+                except Exception:  # noqa: BLE001 - the clock must keep running
+                    logger.exception("desk tick failed")
 
         self._thread = threading.Thread(target=loop, name="desk-algos", daemon=True)
         self._thread.start()

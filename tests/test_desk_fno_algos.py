@@ -308,7 +308,8 @@ def test_an_algo_closes_its_own_leg_when_another_algo_holds_the_opposite_side(tm
         engine.evaluate(a["id"])
     call = f"NFO:{symbol(NEAR, 25200, 'CE')}"
     assert desk.paper.quantity(call) == 0
-    assert engine.claimed(call, "fno:Fly") == -65 and engine.claimed(call, "fno:Nifty condor") == 65
+    assert engine.claimed(call, "fno:Fly", "paper") == -65 and engine.claimed(call, "fno:Nifty condor", "paper") == 65
+    assert engine.claimed(call, "", "live") == 0                 # a paper leg is not part of the live account
     out = engine.request_exit(condor["id"])
     assert out["book"] is None, out["log"][-3:]
     assert desk.paper.quantity(call) == 65                       # the butterfly's wing is still there

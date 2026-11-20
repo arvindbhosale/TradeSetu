@@ -468,8 +468,7 @@ class Desk:
         self.notifier = notifier or Notifier(settings, (journal.parent / "alerts.jsonl") if journal else None, now=now)
         self._loss_state: dict[str, str] = {}       # mode -> the day its loss limit last tripped
         self.contract_lookup = contract_lookup      # (exchange, tradingsymbol) -> option contract, for F&O orders
-        self.algo_instruments = None                # () -> instruments F&O algos hold (they manage their own exits)
-        self.algo_claims = None                     # (instrument, source) -> signed quantity the OTHER F&O algos hold
+        self.algo_claims = None                     # (instrument, source, mode) -> signed quantity the OTHER F&O algos hold
         self.flatten_day: str | None = None         # intraday algos close out on this day
         self.paper = paper or PaperBook(settings.get("paper_capital"))
         self.journal = journal or home() / "orders.jsonl"
@@ -627,7 +626,7 @@ class Desk:
             elif order.side == "SELL" or order.intent == "close":
                 held = self.paper.quantity(order.instrument) if mode == "paper" else self.live_position(order)
                 if held is not None and source.startswith("fno:") and order.intent == "close" and self.algo_claims:
-                    held -= self.algo_claims(order.instrument, source)
+                    held -= self.algo_claims(order.instrument, source, mode)
                 if held is None:
                     errors.append("Could not read your positions to check this order.")
                 elif order.side == "SELL" and order.quantity > held:
@@ -911,12 +910,15 @@ class Desk:
         if not self.contract_lookup or not mcx.session_status(self._now())["open"]:
             return []
         cfg = self.settings.all()
-        held_by_algos = set(self.algo_instruments() if self.algo_instruments else [])
         closed = []
         for instrument, held in self.paper.snapshot()["positions"].items():
             exchange, symbol = instrument.split(":", 1)
-            quantity = int(held["quantity"])
-            if exchange != mcx.EXCHANGE or not quantity or instrument in held_by_algos:
+            if exchange != mcx.EXCHANGE:
+                continue
+            # Only the part no algo holds: an algo's legs are its own to close, and a contract can be held by an
+            # algo and by hand at once.
+            quantity = int(held["quantity"]) - (self.algo_claims(instrument, "", "paper") if self.algo_claims else 0)
+            if not quantity:
                 continue
             contract = self.contract_lookup(exchange, symbol)
             if contract is None or not mcx.in_delivery_window(contract["expiry"], self._now(), cfg["mcx_exit_days"]):
@@ -1074,6 +1076,13 @@ class Desk:
             if self._loss_state.get(mode) == today:
                 continue                     # once a day: switching the kill switch off again is the user's call
             report = self.ledger.report(mode, lambda instrument: self.last_price(instrument)[0])
+            blind = sorted({r["symbol"] for r in report["open"] if r["last"] is None and r["opened"] == today})
+            if blind:
+                # A loss the limit cannot see is not a loss under the limit: say so rather than stay quiet.
+                self.notifier.notify(f"Daily loss limit cannot see every {mode} position",
+                                     f"No price for {', '.join(blind)}: their loss today is left out of the "
+                                     f"₹{limit:,.0f} limit until prices are back. Check the broker connection.", "warn",
+                                     key=f"loss-blind:{mode}:{today}:{','.join(blind)}")
             if report["today_total"] <= -limit:
                 self._loss_state[mode] = today
                 self.flatten_day = today

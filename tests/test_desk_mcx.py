@@ -132,7 +132,7 @@ def setup(tmp_path, clock, kite=None, **settings):
                 ledger=Ledger(tmp_path / "fills.jsonl", now=clock))
     desk.last_price = lambda instrument: (prices(getattr(instrument, "instrument", instrument)), "test")
     engine = FnoAlgoEngine(desk, metals, path=tmp_path / "fno.json", now=clock)
-    desk.algo_instruments = engine.held_instruments
+    desk.algo_claims = engine.claimed
     return engine, desk, prices
 
 
@@ -336,6 +336,18 @@ def test_paper_positions_are_closed_at_the_delivery_cut_off_like_zerodha_would(t
     assert len(closed) == 1 and desk.paper.quantity(f"MCX:{FUT_DEC}") == 0
     assert desk.pnl("paper")["realized"] < 0                          # -₹200 x 2 lots x 10, less charges
     assert any(r.get("source") == "mcx-delivery-cutoff" for r in desk.journal_rows(10))
+
+
+def test_the_delivery_cut_off_closes_only_the_part_no_algo_holds(tmp_path):
+    clock = Clock("2026-11-17 20:30")
+    engine, desk, prices = setup(tmp_path, clock)
+    review = desk.preview(order(), "paper")
+    desk.place(review["token"], review["phrase"])                          # 2 lots bought by hand
+    desk.algo_claims = lambda instrument, source, mode: 1 if mode == "paper" else 0   # an algo holds 1 of them
+    clock.set("2026-11-26 10:00")
+    closed = desk.close_paper_mcx()
+    assert len(closed) == 1 and closed[0]["quantity"] == 1
+    assert desk.paper.quantity(f"MCX:{FUT_DEC}") == 1                     # the algo's lot is left to the algo
 
 
 # -- algos ---------------------------------------------------------------------------------------------------------
