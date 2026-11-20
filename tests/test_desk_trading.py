@@ -17,7 +17,7 @@ from desk.algo import AlgoEngine, AlgoError
 from desk.backtest import BacktestParams, run_strategy
 from desk.broker import Desk, Gtt, OrderRejected, PaperBook
 from desk.custom import CustomStrategies
-from desk.kite import KiteMCP
+from desk.kite import KiteError, KiteMCP
 from desk.scanner import Scanner, find_setup
 from desk.settings import Settings
 from desk.strategies import STRATEGIES
@@ -647,6 +647,88 @@ def test_a_daily_algo_moves_its_gtt_stoploss_to_cost(tmp_path):
     assert algo["stop_kind"] == "stoploss at cost"
 
 
+def _bought_and_protected(tmp_path):
+    clock, feed = Clock("2026-11-16 16:00"), {"bars": flat(DOWN, "2026-11-16")}
+    engine, prices = algo_engine(tmp_path, feed, clock)
+    algo_id = engine.create({"name": "Guard", "symbol": "RELIANCE", "strategy": "sma_cross",
+                             "strategy_params": {"fast": 3, "slow": 10}, "budget": 25_000, "mode": "paper",
+                             "exits": {"unit": "pct", "stop_loss": 5, "cost_after": 5}})["id"]
+    engine.set_enabled(algo_id, True)
+    engine.tick()
+    clock.set("2026-11-20 16:00")
+    feed["bars"] = flat(UP, "2026-11-20")
+    prices["p"] = 120.0
+    engine.tick()
+    clock.set("2026-11-23 09:30")
+    prices["p"] = 121.0
+    engine.tick()
+    algo = engine.get(algo_id)
+    assert algo["position"] and algo["protect"]
+    return engine, prices, clock, feed, algo_id
+
+
+def test_a_stock_algo_never_sells_while_its_gtt_may_still_fire(tmp_path):
+    # Left active after the algo's own sell, the GTT could later sell shares that are not this algo's.
+    engine, prices, clock, _, algo_id = _bought_and_protected(tmp_path)
+    desk, held = engine.desk, engine.get(algo_id)["position"]
+
+    def refuse(mode, gtt_id):
+        raise KiteError("network is unreachable")
+    desk.cancel_gtt = refuse
+    with engine._lock:
+        out = engine._send(engine._algos[algo_id], "SELL", "test exit")
+    algo = engine.get(algo_id)
+    assert out["status"] == "Blocked: target/stoploss GTT not cancelled" and algo["protect"]
+    assert algo["position"] == held and desk.paper.quantity("NSE:RELIANCE") == held   # nothing sold
+    assert "network is unreachable" in algo["log"][-1]["message"]
+    # It has fired meanwhile: the GTT sold the shares, so the algo sends nothing and is flat.
+    desk.gtt_status = lambda mode, gtt_id: {"status": "triggered", "leg": "stop", "fill_price": 115.0}
+    sent = len(desk.journal_rows())
+    with engine._lock:
+        out = engine._send(engine._algos[algo_id], "SELL", "test exit")
+    assert out["status"].startswith("Running") and engine.get(algo_id)["position"] == 0
+    assert len(desk.journal_rows()) == sent
+    # Already gone (deleted at the broker): the sell goes ahead.
+    (tmp_path / "again").mkdir()
+    engine, prices, clock, _, algo_id = _bought_and_protected(tmp_path / "again")
+    engine.desk.cancel_gtt = refuse
+    engine.desk.gtt_status = lambda mode, gtt_id: None
+    with engine._lock:
+        out = engine._send(engine._algos[algo_id], "SELL", "test exit")
+    assert engine.get(algo_id)["position"] == 0 and engine.desk.paper.quantity("NSE:RELIANCE") == 0
+
+
+def test_a_stoploss_is_not_moved_when_the_old_gtt_cannot_be_cancelled(tmp_path):
+    engine, prices, clock, feed, algo_id = _bought_and_protected(tmp_path)
+    desk = engine.desk
+    first = engine.get(algo_id)["protect"]
+
+    def refuse(mode, gtt_id):
+        raise KiteError("timed out")
+    desk.cancel_gtt = refuse
+    clock.set("2026-11-23 16:00")
+    feed["bars"] = flat(UP + [128.0], "2026-11-23")
+    prices["p"] = 128.0
+    engine.tick()
+    algo = engine.get(algo_id)
+    assert algo["protect"] == first and desk.paper.gtt(first)["status"] == "active"
+    assert [g["status"] for g in desk.paper.gtts()].count("active") == 1          # no second GTT for the same shares
+    assert any("Stoploss not raised" in e["message"] for e in algo["log"])
+
+
+def test_a_failing_background_job_is_reported_not_swallowed(tmp_path):
+    clock, feed = Clock("2026-11-16 10:00"), {"bars": flat(DOWN, "2026-11-16")}
+    engine, _ = algo_engine(tmp_path, feed, clock)
+
+    def broken():
+        raise RuntimeError("disk full")
+    engine.desk.check_loss_limit = broken
+    engine.tick()
+    engine.tick()
+    alerts = [a for a in engine.desk.notifier.recent() if a["title"] == "Daily loss limit check failed"]
+    assert len(alerts) == 1 and "disk full" in alerts[0]["body"]                   # told once, not every tick
+
+
 def test_editing_a_stock_algo_keeps_its_position_safe(tmp_path):
     clock, feed = Clock("2026-11-16 16:00"), {"bars": flat(DOWN, "2026-11-16")}
     engine, prices = algo_engine(tmp_path, feed, clock)
@@ -700,3 +782,12 @@ def test_a_live_running_stock_algo_cannot_be_edited(tmp_path):
     engine.set_enabled(paper_id, True)
     moved = engine.update(paper_id, {**base, "mode": "live"})
     assert moved["mode"] == "live" and not moved["enabled"]
+
+
+def test_the_daily_loss_limit_says_when_it_cannot_price_a_position(tmp_path):
+    desk, prices = make_desk(tmp_path, Clock("2026-11-16 11:00"), daily_loss_limit=1000.0)
+    desk.ledger.add("paper", "algo:Rel", "NSE", "RELIANCE", "BUY", 10, 100.0, "CNC", 0.0)
+    prices["p"] = None                                                  # no price from anywhere
+    assert desk.check_loss_limit() == []
+    alerts = [a for a in desk.notifier.recent() if a["title"] == "Daily loss limit cannot see every paper position"]
+    assert len(alerts) == 1 and "RELIANCE" in alerts[0]["body"]

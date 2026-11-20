@@ -126,11 +126,13 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                     return float(day["Close"].iloc[-1])
         return None
 
-    algos.extra_ticks.append(lambda: desk.settle_paper_options(option_settlement_spot))
+    def settle_paper_options():
+        desk.settle_paper_options(option_settlement_spot)
+
+    algos.extra_ticks.append(settle_paper_options)
     fno_algos = FnoAlgoEngine(desk, derivatives, fetch=fetch, library=library)
     algos.extra_ticks.append(fno_algos.tick)
     algos.extra_live.append(fno_algos.live_names)
-    desk.algo_instruments = fno_algos.held_instruments
     desk.algo_claims = fno_algos.claimed
     algos.extra_ticks.append(desk.close_paper_mcx)
     hosted = auth is not None

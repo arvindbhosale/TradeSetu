@@ -1071,18 +1071,14 @@ class FnoAlgoEngine:
                     if (a["enabled"] or a["exit_requested"]) and self._retry_at.get(a["id"], now) <= now
                     and (metals if self._metal(a) else nse)]
 
-    def held_instruments(self) -> list[str]:
-        """Instruments the algos hold or are trading: the desk leaves their exits to the algo."""
-        with self._lock:
-            return [g["instrument"] for a in self._algos.values() if a["book"] for g in a["book"]["legs"]
-                    if g["open_qty"] or g["pending"]]
-
-    def claimed(self, instrument: str, source: str) -> int:
-        """The signed quantity of ``instrument`` that the F&O algos other than ``source`` (``fno:<name>``) hold: below
-        zero for a short. The account's position nets every algo's legs; this is the part that is not ``source``'s."""
+    def claimed(self, instrument: str, source: str, mode: str) -> int:
+        """The signed quantity of ``instrument`` that the ``mode`` (paper or live) F&O algos other than ``source``
+        (``fno:<name>``; "" for none) hold: below zero for a short. An account's position nets every algo's legs;
+        this is the part that is not ``source``'s."""
         with self._lock:
             return sum(g["open_qty"] * (1 if g["action"] > 0 else -1)
-                       for a in self._algos.values() if a["book"] and f"fno:{a['name']}" != source
+                       for a in self._algos.values()
+                       if a["book"] and a["mode"] == mode and f"fno:{a['name']}" != source
                        for g in a["book"]["legs"] if g["instrument"] == instrument and g["open_qty"])
 
     def live_names(self) -> list[str]:
@@ -1093,8 +1089,12 @@ class FnoAlgoEngine:
         for algo_id in self.due():
             try:
                 outcome = self.evaluate(algo_id)
-            except Exception:  # noqa: BLE001 - one algo's failure must not stop the others
+            except Exception as exc:  # noqa: BLE001 - one algo's failure must not stop the others
                 logger.exception("fno algo %s failed", algo_id)
+                name = self._algos.get(algo_id, {}).get("name", algo_id)
+                self.desk.notifier.notify(f"F&O algo “{name}” hit an error", f"{type(exc).__name__}: {exc}. It is tried "
+                                          f"again; check the algo and its legs.", "bad",
+                                          key=f"fno-error:{algo_id}:{self._now():%Y-%m-%d %H}")
                 outcome = {"done": False}
             if not outcome["done"]:
                 self._retry_at[algo_id] = self._now() + timedelta(seconds=40)
