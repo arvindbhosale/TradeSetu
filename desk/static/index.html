@@ -708,6 +708,7 @@
         <div id="bt-deploy-error" class="error" hidden></div>
       </div>
       <div class="tiles" id="bt-tiles"></div>
+      <div class="panel" id="bt-checks"></div>
       <div class="panel">
         <h3 id="bt-chart-title">Portfolio value</h3>
         <p class="hint" id="bt-note" hidden></p>
@@ -776,6 +777,22 @@
             <label>Trigger (₹) <input name="trigger_price" type="number" min="0" step="0.05"></label>
             <label>Variety <select name="variety"><option value="regular">Regular</option><option value="amo">AMO</option></select></label>
           </div>
+          <fieldset><legend>Size by risk</legend>
+            <div class="row">
+              <label>Stoploss ₹ <input name="stop_price" type="number" min="0" step="0.05" placeholder="price"></label>
+              <label>Target ₹ <input name="target_price" type="number" min="0" step="0.05" placeholder="optional"></label>
+              <label>Risk % of capital <input name="risk_pct" type="number" min="0.1" max="10" step="0.1"></label>
+              <button type="button" id="order-size">Work out quantity</button>
+            </div>
+            <div id="order-size-out" class="hint"></div>
+          </fieldset>
+          <fieldset><legend>Plan, for your trade journal</legend>
+            <div class="row">
+              <label>Setup <input name="setup" list="setup-list" maxlength="40" placeholder="e.g. Breakout"></label>
+              <label class="grow">Why this trade <input name="reason" maxlength="600" placeholder="What you see, in one line"></label>
+            </div>
+          </fieldset>
+          <datalist id="setup-list"></datalist>
           <div class="row">
             <label>Then target % <input name="target_pct" type="number" min="0" max="200" step="0.25" placeholder="none"></label>
             <label>Then stoploss % <input name="stop_loss_pct" type="number" min="0" max="50" step="0.25" placeholder="none"></label>
@@ -833,6 +850,22 @@
     <h2>Closed trades</h2>
     <p class="hint">Bought and sold. This profit/loss is booked, after all charges. The first price of each trade (the buy, or the sell for a short) includes its charges.</p>
     <div class="scroll" id="pnl-closed"></div>
+  </div>
+  <div class="panel" id="results-panel">
+    <div class="jobhead"><h2>Your results</h2>
+      <label>Group by <select id="results-group"></select></label></div>
+    <p class="hint">What your own closed trades on this account say. A trade is one position from buy to sell, after charges. Write the setup and the stoploss for each trade in the journal below to see which setups pay and your results in R (multiples of the planned risk).</p>
+    <p class="pnl-sentence" id="results-sentence"></p>
+    <div class="tiles" id="results-tiles"></div>
+    <div class="scroll" id="results-table"></div>
+    <p class="hint" id="results-other"></p>
+  </div>
+  <div class="panel" id="journal-panel">
+    <div class="jobhead"><h2>Trade journal</h2><span class="hint" id="journal-count"></span></div>
+    <p class="hint">Each trade with its plan and your review. Write a note for any trade: why you took it, the stoploss you planned, and afterwards whether you followed the plan and what went wrong. The review is what turns trades into lessons.</p>
+    <div id="journal-error" class="error" hidden></div>
+    <div class="scroll" id="journal-trades"></div>
+    <details id="journal-pending-box" hidden><summary>Plans waiting for a fill</summary><div class="scroll" id="journal-pending"></div></details>
   </div>
   <div class="panel">
     <h2>Profit/Loss by algo</h2>
@@ -1027,6 +1060,15 @@
           <label>Default product <select name="product"><option value="CNC">CNC · delivery</option><option value="MIS">MIS · intraday</option></select></label>
           <label>Paper capital (₹) <input name="paper_capital" type="number" min="1000" step="1000"></label>
         </div>
+        <fieldset><legend>Risk per trade</legend>
+          <div class="row">
+            <label>Capital for risk (₹, 0 = paper capital) <input name="risk_capital" type="number" min="0" step="1000"></label>
+            <label>Risk a trade, % <input name="risk_per_trade_pct" type="number" min="0.1" max="10" step="0.1"></label>
+            <label>Refuse above, % (0 = off) <input name="max_risk_pct" type="number" min="0" max="10" step="0.1"></label>
+          </div>
+          <label class="check"><input type="checkbox" name="require_stoploss"> Refuse a manual share buy without a stoploss</label>
+          <p class="hint">Work out quantity on the order ticket sizes a buy so that hitting its stoploss loses the risk % of this capital, charges included. A manual order whose stoploss would lose more than the refuse limit is not placed. A price that gaps through the stoploss loses more.</p>
+        </fieldset>
         <label>Daily loss limit (₹, 0 = off) <input name="daily_loss_limit" type="number" min="0" step="500"></label>
         <p class="hint">When today's loss on an account reaches this, the kill switch turns on by itself, intraday algos close their positions, and you get an alert. You switch it back off yourself.</p>
         <fieldset><legend>Trade window (IST)</legend>
@@ -1111,6 +1153,25 @@
 <dialog id="algo-dialog" aria-labelledby="ad-title">
   <div class="dialog-head"><h2 id="ad-title"></h2><span class="actions"><button type="button" id="ad-edit">Edit</button><button type="button" id="ad-refresh">Refresh</button><button type="button" id="ad-close" aria-label="Close">✕</button></span></div>
   <div id="ad-body"></div>
+</dialog>
+<dialog id="note-dialog" aria-labelledby="nd-title">
+  <div class="dialog-head"><h2 id="nd-title">Trade note</h2><span class="actions"><button type="button" id="nd-close" aria-label="Close">✕</button></span></div>
+  <form id="form-note" class="dialog-body">
+    <p class="hint" id="nd-trade"></p>
+    <h3>Plan</h3>
+    <div class="row">
+      <label>Setup <input name="setup" list="setup-list" maxlength="40"></label>
+      <label>Stoploss ₹ <input name="stop" type="number" min="0" step="0.05"></label>
+      <label>Target ₹ <input name="target" type="number" min="0" step="0.05"></label>
+    </div>
+    <label>Why this trade <textarea name="reason" rows="2" maxlength="600"></textarea></label>
+    <h3>Review</h3>
+    <label>Did you follow the plan? <select name="followed_plan"><option value="">Not reviewed</option><option value="yes">Yes</option><option value="no">No</option></select></label>
+    <fieldset><legend>Mistakes</legend><div class="checks" id="nd-mistakes"></div></fieldset>
+    <label>Lesson <textarea name="lesson" rows="2" maxlength="600" placeholder="What you will do the same or differently next time"></textarea></label>
+    <div id="nd-error" class="error" hidden></div>
+    <div class="row"><button class="primary" type="submit">Save note</button><button type="button" id="nd-delete" class="danger" hidden>Delete note</button></div>
+  </form>
 </dialog>
 <div id="tooltip" class="tooltip" hidden></div>
 <script src="/static/pwa.js"></script>

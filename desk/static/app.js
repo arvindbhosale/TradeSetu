@@ -487,6 +487,7 @@
       tile("Final value", rupees(m.final_value), `from ${rupees(r.params.capital)}`),
       tile("Charges paid", rupees(m.total_charges), "STT, stamp, GST, DP"),
       m.reentries ? tile("Re-entries", String(m.reentries), "after a stoploss") : null].filter(Boolean));
+    renderChecks(r);
     $("#bt-chart-title").textContent = `Portfolio value · ${r.symbol} · ${r.strategy.name} · ${state.app.intervals[r.interval]} candles · ${r.period.start} to ${r.period.end}`;
     $("#bt-note").textContent = r.data_note || ""; $("#bt-note").hidden = !r.data_note;
     const series = [{ name: r.strategy.name, color: "var(--s1)", points: r.equity },
@@ -743,7 +744,8 @@
       const review = await api("/order/preview", { method: "POST", body: { mode: state.mode, order: {
         exchange: resolved.kite.exchange, tradingsymbol: resolved.kite.tradingsymbol, side: form.side.value,
         quantity: Number(form.quantity.value), product: form.product.value, order_type: form.order_type.value,
-        price: Number(form.price.value || 0), trigger_price: Number(form.trigger_price.value || 0), variety: form.variety.value } } });
+        price: Number(form.price.value || 0), trigger_price: Number(form.trigger_price.value || 0), variety: form.variety.value },
+        stop: form.side.value === "BUY" ? ticketStop(form, Number(form.price.value || 0)) : null } });
       renderReview(review);
     } catch (err) {
       const reasons = err.payload && err.payload.errors;
@@ -761,7 +763,9 @@
         h("dt", { text: "Price" }), h("dd", { text: o.price ? rupees(o.price, 2) : "market" }),
         h("dt", { text: "Last price" }), h("dd", { text: review.last_price ? `${rupees(review.last_price, 2)} (${review.last_price_source})` : review.last_price_source }),
         h("dt", { text: "Order value" }), h("dd", { text: rupees(review.value, 2) }),
-        h("dt", { text: "Est. charges" }), h("dd", { text: review.charges ? `${rupees(review.charges.total, 2)} (STT ${rupees(review.charges.stt, 2)}, stamp ${rupees(review.charges.stamp_duty, 2)}, GST ${rupees(review.charges.gst, 2)}, DP ${rupees(review.charges.dp, 2)})` : "–" }))];
+        h("dt", { text: "Est. charges" }), h("dd", { text: review.charges ? `${rupees(review.charges.total, 2)} (STT ${rupees(review.charges.stt, 2)}, stamp ${rupees(review.charges.stamp_duty, 2)}, GST ${rupees(review.charges.gst, 2)}, DP ${rupees(review.charges.dp, 2)})` : "–" }),
+        review.risk ? h("dt", { text: "If the stoploss hits" }) : null,
+        review.risk ? h("dd", { text: `${rupees(review.risk.stop, 2)}: lose about ${rupees(review.risk.loss)}, ${review.risk.of_capital_pct}% of ${rupees(review.risk.capital)}${review.risk.limit_pct ? ` (limit ${review.risk.limit_pct}%)` : ""}` }) : null)];
     review.warnings.forEach((w) => parts.push(h("div", { class: "warnbox", text: w })));
     if (!review.ok) {
       parts.push(h("div", { class: "error", text: "This order cannot be placed:\n• " + review.errors.join("\n• ") }));
@@ -780,7 +784,10 @@
         result.replaceChildren(h("div", { class: "warnbox", text: live
           ? `Sent to Kite. Order id ${placed.order_id || "(not returned)"}. Check its status under Today's orders: sent is not the same as filled.`
           : `Paper order ${placed.order_id} filled at ${rupees(placed.fill_price, 2)}.` }));
-        protectAfter(o, placed.fill_price || o.price || review.last_price);
+        const entry = placed.fill_price || o.price || review.last_price;
+        try { if (await savePlan(o, review.mode, entry)) result.append(h("p", { class: "hint", text: "Plan saved to your trade journal (P&L tab)." })); }
+        catch (err) { result.append(h("div", { class: "error", text: "The order went through, but its plan was not saved to the journal: " + err.message })); }
+        protectAfter(o, entry);
       } catch (err) { result.replaceChildren(h("div", { class: "error", text: "Not placed: " + err.message })); }
       refreshJournal(); refreshPaper(); if (live && state.app.kite.connected) refreshKiteAccount();
     });
@@ -791,7 +798,7 @@
   // -- settings ----------------------------------------------------------------
 
   const TIMES = ["trade_start", "trade_end", "square_off", "mcx_trade_start", "mcx_trade_end"];
-  const NUMERIC = ["mcx_exit_days", "mcx_margin_pct", "daily_loss_limit", "max_debate_rounds", "max_risk_discuss_rounds", "max_order_value", "max_orders_per_day", "position_pct", "max_position_pct", "limit_buffer_pct", "paper_capital"];
+  const NUMERIC = ["risk_capital", "risk_per_trade_pct", "max_risk_pct", "mcx_exit_days", "mcx_margin_pct", "daily_loss_limit", "max_debate_rounds", "max_risk_discuss_rounds", "max_order_value", "max_orders_per_day", "position_pct", "max_position_pct", "limit_buffer_pct", "paper_capital"];
   const TEXT = ["deep_think_llm", "quick_think_llm", "backend_url", "default_exchange", "product", "mcp_server"];
 
   function fillSettings() {
@@ -800,7 +807,7 @@
     form.llm_provider.value = s.llm_provider;
     [...NUMERIC, ...TEXT].forEach((k) => { form[k].value = s[k]; });
     $$("input[name=analyst]", form).forEach((box) => { box.checked = s.analysts.includes(box.value); });
-    form.kill_switch.checked = s.kill_switch; form.live_enabled.checked = s.live_enabled; form.fno_naked_live.checked = s.fno_naked_live;
+    form.kill_switch.checked = s.kill_switch; form.live_enabled.checked = s.live_enabled; form.fno_naked_live.checked = s.fno_naked_live; form.require_stoploss.checked = s.require_stoploss;
     form.charts_enabled.checked = s.charts_enabled; form.enforce_trade_window.checked = s.enforce_trade_window;
     form.chart_yahoo.checked = s.chart_source === "kite_then_yahoo";
     form.alerts_enabled.checked = s.alerts_enabled; form.telegram_chat_id.value = s.telegram_chat_id; form.telegram_token.value = "";
@@ -864,7 +871,7 @@
       && !window.confirm("Allow live orders? Orders you confirm in Live mode will be sent to the exchange with real money.")) { form.live_enabled.checked = false; return; }
     if (form.fno_naked_live.checked && !state.app.settings.fno_naked_live
       && !window.confirm("Allow live F&O algos to sell options with no bought option to cover them? A gap move can lose far more than the algo's maximum loss.")) { form.fno_naked_live.checked = false; return; }
-    const changes = { llm_provider: form.llm_provider.value, mcp, kill_switch: form.kill_switch.checked, live_enabled: form.live_enabled.checked, fno_naked_live: form.fno_naked_live.checked, charts_enabled: form.charts_enabled.checked, enforce_trade_window: form.enforce_trade_window.checked,
+    const changes = { llm_provider: form.llm_provider.value, mcp, kill_switch: form.kill_switch.checked, live_enabled: form.live_enabled.checked, fno_naked_live: form.fno_naked_live.checked, require_stoploss: form.require_stoploss.checked, charts_enabled: form.charts_enabled.checked, enforce_trade_window: form.enforce_trade_window.checked,
       chart_source: form.chart_yahoo.checked ? "kite_then_yahoo" : "kite",
       alerts_enabled: form.alerts_enabled.checked, telegram_chat_id: form.telegram_chat_id.value, holidays: form.holidays.value,
       mcx_holidays: form.mcx_holidays.value, analysts: $$("input[name=analyst]:checked", form).map((b) => b.value) };
@@ -1671,7 +1678,7 @@
   const pnlView = { chart: null, series: null };
 
   async function refreshPnl() {
-    refreshTax();
+    refreshTax(); refreshJournalPanel();
     let r, feed;
     try { [r, feed] = await Promise.all([api("/pnl?mode=" + state.mode), api("/alerts")]); }
     catch (err) { showError("#pnl-error", err); return; }
@@ -3412,6 +3419,265 @@
     reviewGtt().then(() => $("#form-gtt").scrollIntoView({ behavior: "smooth", block: "center" }));
   }
 
+  // -- trade journal and your results ------------------------------------------------------
+
+  const signedInr = (v) => (v == null ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + "₹" + inr.format(Math.abs(v)));
+  const journalView = { data: null, group: "setup" };
+
+  async function refreshJournalPanel() {
+    let d;
+    try { d = await api("/journal?mode=" + state.mode); }
+    catch (err) { showError("#journal-error", err); return; }
+    showError("#journal-error", null);
+    journalView.data = d;
+    $("#setup-list").replaceChildren(...d.setups.map((s) => h("option", { value: s })));
+    renderResults(); renderJournal();
+  }
+
+  function renderResults() {
+    const d = journalView.data, o = d.results.overall, min = d.results.min_trades;
+    const tile = (k, v, sub, cls) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v " + (cls || ""), text: v }), sub ? h("div", { class: "s", text: sub }) : null);
+    let sentence;
+    if (!o.trades) sentence = "No closed trades on this account yet. Your results appear here once trades are bought and sold.";
+    else {
+      sentence = `${o.trades} closed trade${o.trades === 1 ? "" : "s"}: ${signedInr(o.expectancy)} a trade on average, ${o.win_rate}% of them winners.`;
+      const range = o.range95 ? `${signedInr(o.range95[0])} to ${signedInr(o.range95[1])}` : null;
+      if (o.trades < min) sentence += ` That is too few to tell skill from luck: ${min - o.trades} more before reading much into it.`;
+      else if (o.edge === "positive") sentence += ` The likely range of the average (95%), ${range}, is above zero: so far this looks like a real edge.`;
+      else if (o.edge === "negative") sentence += ` The likely range of the average (95%), ${range}, is below zero: on this record the way you trade loses money.`;
+      else if (range) sentence += ` The likely range of the average (95%), ${range}, includes zero: the trades so far cannot tell an edge from luck.`;
+    }
+    $("#results-sentence").textContent = sentence;
+    $("#results-tiles").replaceChildren(...(o.trades ? [
+      tile("Trades", String(o.trades), o.enough ? "closed" : `closed · ${min} needed to judge`),
+      tile("Win rate", o.win_rate + "%", "trades in profit"),
+      tile("Average win", signedInr(o.avg_win), null, "pos"),
+      tile("Average loss", signedInr(o.avg_loss), o.payoff ? `wins are ${o.payoff}× the losses` : null, "neg"),
+      tile("Expectancy", signedInr(o.expectancy), "average result a trade", tone(o.expectancy)),
+      tile("Profit factor", o.profit_factor == null ? "–" : o.profit_factor.toFixed(2), "won ÷ lost"),
+      tile("Expectancy in R", o.expectancy_r == null ? "–" : o.expectancy_r.toFixed(2) + "R", o.r_trades ? `${o.r_trades} trades with a planned stoploss` : "write stoplosses in the journal", tone(o.expectancy_r)),
+      tile("Worst losing streak", String(o.losing_streak), "losses in a row"),
+      tile("Largest fall", signedInr(o.max_drawdown), "from a peak, trade by trade", tone(o.max_drawdown))] : []));
+    const select = $("#results-group");
+    if (!select.options.length) {
+      select.replaceChildren(...Object.entries(d.results.groups).map(([k, label]) => h("option", { value: k, text: label })));
+      select.value = journalView.group;
+    }
+    const rows = d.results.by[journalView.group] || [];
+    $("#results-table").replaceChildren(o.trades ? table([
+      { label: d.results.groups[journalView.group], get: (r) => (journalView.group === "source" ? sourceLabel(r.name) : r.name) },
+      { label: "Trades", num: true, get: (r) => r.trades }, { label: "Win rate", num: true, get: (r) => r.win_rate + "%" },
+      { label: "Average win", num: true, get: (r) => signedInr(r.avg_win) }, { label: "Average loss", num: true, get: (r) => signedInr(r.avg_loss) },
+      { label: "Expectancy", num: true, get: (r) => signedInr(r.expectancy), tone: (r) => tone(r.expectancy) },
+      { label: "Total", num: true, get: (r) => signedInr(r.total), tone: (r) => tone(r.total) },
+      { label: "Enough trades?", get: (r) => (r.enough ? "Yes" : `No, ${r.trades} of ${min}`), tone: (r) => (r.enough ? "" : "muted") }],
+      rows, "Nothing to group yet.") : h("p", { class: "hint", text: "" }));
+    const other = d.other, name = other.mode === "live" ? "Live" : "Paper";
+    $("#results-other").textContent = other.trades
+      ? `${name} account for comparison: ${other.trades} closed trades, ${other.win_rate}% winners, ${signedInr(other.expectancy)} a trade on average.`
+      : `No closed trades on the ${name.toLowerCase()} account to compare with.`;
+  }
+  $("#results-group").addEventListener("change", (event) => { journalView.group = event.target.value; renderResults(); });
+
+  function renderJournal() {
+    const d = journalView.data;
+    const review = (t) => {
+      const n = t.note;
+      if (!n) return h("span", { class: "pill", text: "No note" });
+      if (n.followed_plan || n.lesson || (n.mistakes || []).length) return h("span", { class: "pill " + (n.followed_plan === "no" || (n.mistakes || []).length ? "warn" : "good"), text: "Reviewed" });
+      return h("span", { class: "pill", text: t.status === "Open" ? "Plan written" : "Review it" });
+    };
+    const reviewed = d.trades.filter((t) => t.note && (t.note.followed_plan || t.note.lesson)).length;
+    $("#journal-count").textContent = d.trades.length ? `${reviewed} of ${d.trades.length} trades reviewed` : "";
+    $("#journal-trades").replaceChildren(table([
+      { label: "Opened (IST)", get: (t) => t.opened_at }, { label: "Stock / contract", get: (t) => t.symbol },
+      { label: "From", get: (t) => sourceLabel(t.source) }, { label: "Side", get: (t) => (t.side === "SHORT" ? "Short" : "Long") },
+      { label: "Qty", num: true, get: (t) => t.quantity }, { label: "Entry ₹", num: true, get: (t) => inr2.format(t.entry) },
+      { label: "Exit ₹", num: true, get: (t) => (t.exit == null ? "open" : inr2.format(t.exit)) },
+      { label: "Profit/Loss", num: true, get: (t) => signedInr(t.pnl), tone: (t) => tone(t.pnl) },
+      { label: "R", num: true, get: (t) => (t.r == null ? "–" : t.r.toFixed(2) + "R"), tone: (t) => tone(t.r) },
+      { label: "Setup", get: (t) => (t.note && t.note.setup) || "–" }, { label: "Review", get: review },
+      { label: "", get: (t) => h("button", { type: "button", text: t.note ? "Edit note" : "Write note", onclick: () => openNote(t) }) }],
+      d.trades, "No trades on this account yet."));
+    $("#journal-pending-box").hidden = !d.pending.length;
+    $("#journal-pending").replaceChildren(table([
+      { label: "Written (IST)", get: (n) => n.created }, { label: "Stock / contract", get: (n) => n.symbol }, { label: "Setup", get: (n) => n.setup || "–" },
+      { label: "Stoploss ₹", num: true, get: (n) => (n.stop ? inr2.format(n.stop) : "–") }, { label: "Why", get: (n) => n.reason || "–" },
+      { label: "", get: (n) => h("button", { type: "button", text: "Delete", onclick: async () => {
+        if (!window.confirm(`Delete the plan for ${n.symbol}?`)) return;
+        try { await api("/journal/" + encodeURIComponent(n.id), { method: "DELETE" }); refreshJournalPanel(); } catch (err) { showError("#journal-error", err); } } }) }],
+      d.pending, ""));
+  }
+
+  const noteView = { trade: null };
+  function openNote(trade) {
+    noteView.trade = trade;
+    const form = $("#form-note"), n = trade.note || {};
+    $("#nd-title").textContent = (n.id ? "Edit note: " : "Write a note: ") + trade.symbol;
+    $("#nd-trade").textContent = `${trade.side === "SHORT" ? "Sold" : "Bought"} ${trade.quantity} ${trade.symbol} at ₹${inr2.format(trade.entry)} on ${trade.opened_at}`
+      + (trade.exit != null ? `, closed at ₹${inr2.format(trade.exit)} for ${signedInr(trade.pnl)}.` : ". Still open.");
+    form.setup.value = n.setup || ""; form.reason.value = n.reason || ""; form.stop.value = n.stop || ""; form.target.value = n.target || "";
+    form.followed_plan.value = n.followed_plan || ""; form.lesson.value = n.lesson || "";
+    $("#nd-mistakes").replaceChildren(...journalView.data.mistakes.map((m) => h("label", { class: "check" },
+      h("input", { type: "checkbox", value: m, checked: (n.mistakes || []).includes(m) }), m)));
+    $("#nd-delete").hidden = !n.id; showError("#nd-error", null);
+    $("#note-dialog").showModal();
+  }
+  $("#nd-close").addEventListener("click", () => $("#note-dialog").close());
+  $("#form-note").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target, t = noteView.trade, n = t.note || {}, button = $("button[type=submit]", form);
+    const body = { setup: form.setup.value, reason: form.reason.value, stop: Number(form.stop.value || 0) || null,
+      target: Number(form.target.value || 0) || null, followed_plan: form.followed_plan.value, lesson: form.lesson.value,
+      mistakes: $$("#nd-mistakes input:checked").map((b) => b.value) };
+    busy(button, true, "Saving…");
+    try {
+      if (n.id) await api("/journal/" + encodeURIComponent(n.id), { method: "PUT", body });
+      else await api("/journal", { method: "POST", body: { ...body, mode: t.mode, exchange: t.exchange, symbol: t.symbol, source: t.source, key: t.key } });
+      $("#note-dialog").close(); refreshJournalPanel();
+    } catch (err) { showError("#nd-error", err); }
+    busy(button, false);
+  });
+  $("#nd-delete").addEventListener("click", async () => {
+    const n = noteView.trade.note;
+    if (!n || !window.confirm("Delete this note? The trade stays; only your note is removed.")) return;
+    try { await api("/journal/" + encodeURIComponent(n.id), { method: "DELETE" }); $("#note-dialog").close(); refreshJournalPanel(); }
+    catch (err) { showError("#nd-error", err); }
+  });
+
+  // -- size by risk on the order ticket ---------------------------------------------------------
+
+  async function ticketEntry(form) {
+    const price = Number(form.price.value || 0);
+    if (price) return price;
+    const q = await api("/quote?symbol=" + encodeURIComponent(form.symbol.value));
+    return q.last_price || null;
+  }
+
+  // The stoploss price the ticket plans: typed as a price, or worked out from "Then stoploss %".
+  function ticketStop(form, entry) {
+    const typed = Number(form.stop_price.value || 0);
+    if (typed) return typed;
+    const pctStop = Number(form.stop_loss_pct.value || 0);
+    return pctStop && entry ? Math.round(entry * (1 - pctStop / 100) / 0.05) * 0.05 : null;
+  }
+
+  $("#order-size").addEventListener("click", async (event) => {
+    const form = $("#form-order"), out = $("#order-size-out");
+    showError("#order-error", null); out.textContent = "Working it out…"; busy(event.target, true, "Working…");
+    try {
+      const resolved = await api("/symbol?q=" + encodeURIComponent(form.symbol.value));
+      if (!resolved.kite) throw new Error(`${resolved.symbol} is not an NSE/BSE equity that can be ordered.`);
+      const entry = await ticketEntry(form);
+      if (!entry) throw new Error("No price to size from. Enter a limit price.");
+      const r = await api("/order/size", { method: "POST", body: { entry, stop: Number(form.stop_price.value || 0) || null,
+        target: Number(form.target_price.value || 0) || null, risk_pct: Number(form.risk_pct.value || 0) || null, side: "BUY",
+        exchange: resolved.kite.exchange, tradingsymbol: resolved.kite.tradingsymbol, product: form.product.value } });
+      if (!r.quantity) { out.textContent = r.note; busy(event.target, false); return; }
+      form.side.value = "BUY"; form.quantity.value = r.quantity; form.stop_loss_pct.value = r.stop_loss_pct;
+      if (r.target_pct) form.target_pct.value = r.target_pct;
+      clearReview();
+      let text = `Buy ${inr.format(r.quantity)} at about ₹${inr2.format(entry)} (₹${inr.format(r.value)}). If the stoploss ₹${inr2.format(Number(form.stop_price.value))} is hit, you lose about ₹${inr.format(r.risk)}: ${r.risk_of_capital_pct}% of ₹${inr.format(r.capital)}, charges included.`;
+      if (r.limited_by.length) text += ` Fewer than the ${inr.format(r.by_risk)} the risk allows, because of ${r.limited_by.join(" and ")}.`;
+      if (r.reward != null) text += ` At the target you gain about ₹${inr.format(r.reward)}, ${r.reward_to_risk} times the risk: this pays over many trades only if more than ${r.breakeven_win_rate_pct}% of them reach the target.`;
+      out.textContent = text + " A price that gaps through the stoploss loses more.";
+    } catch (err) { out.textContent = ""; showError("#order-error", err); }
+    busy(event.target, false);
+  });
+
+  // After a confirmed buy from the ticket: keep its plan in the trade journal.
+  async function savePlan(order, mode, entry) {
+    const form = $("#form-order");
+    if (order.side !== "BUY") return null;
+    const stop = ticketStop(form, entry), targetPct = Number(form.target_pct.value || 0);
+    const target = Number(form.target_price.value || 0) || (targetPct && entry ? Math.round(entry * (1 + targetPct / 100) / 0.05) * 0.05 : null);
+    if (!form.setup.value.trim() && !form.reason.value.trim() && !stop) return null;
+    await api("/journal", { method: "POST", body: { mode, exchange: order.exchange, symbol: order.tradingsymbol, source: "manual",
+      setup: form.setup.value, reason: form.reason.value, stop, target } });
+    return true;
+  }
+
+  // -- explainers: a "?" on every tile the glossary knows -----------------------------------------
+
+  const tileNumber = (text) => { const v = parseFloat(String(text).replace(/[₹,%R×\s+]/g, "").replace("−", "-")); return Number.isFinite(v) ? v : null; };
+  const lakh = (v) => "₹" + inr.format(Math.round(v));
+  const MANUAL = { backtest: "/manual#reading-the-result", results: "/manual#learn-from-your-trades", pnl: "/manual#pl-and-alerts", risk: "/manual#risk-per-trade" };
+  const EXPLAIN = {
+    "total return": { t: (v) => `The gain or loss over the whole period, after charges: ${v}. Compare it with Buy & hold under it. If simply holding did better, the strategy added work, not money.`, link: MANUAL.backtest },
+    "cagr": { t: (v, n) => `Growth per year, compounded.` + (n != null && n > -100 ? ` At ${v} a year, ₹1,00,000 becomes ${lakh(100000 * Math.pow(1 + n / 100, 5))} in 5 years.` : ""), link: MANUAL.backtest },
+    "max drawdown": { t: (v, n) => `The worst fall from a peak to a low: ${v}.` + (n != null && Math.abs(n) < 100 ? ` To get back from a fall of ${Math.abs(n).toFixed(1)}% needs a gain of ${((1 / (1 - Math.abs(n) / 100) - 1) * 100).toFixed(1)}%. Ask yourself whether you would have kept trading through it.` : ""), link: MANUAL.backtest },
+    "sharpe": { t: (v, n) => `Return above the risk-free rate (Settings) for each unit of ups and downs, per year.` + (n == null ? "" : n < 0 ? ` ${v} is below 0: a safe deposit did better.` : n < 1 ? ` ${v}: some return, but a lot of swing for it.` : n < 2 ? ` ${v}: a good return for the swing.` : ` ${v} is unusually high: check for too few trades or settings fitted to this period.`) + " Sortino counts only the falls.", link: MANUAL.backtest },
+    "win rate": { t: (v) => `${v} of trades made money. On its own it says little: winning 40% of trades pays if the average win is well above the average loss, and winning 80% loses money if one loss wipes out many wins. Read it with Profit factor and the average win and loss.`, link: MANUAL.results },
+    "profit factor": { t: (v, n) => (n == null ? "Money won ÷ money lost." : `₹${n.toFixed(2)} won for every ₹1 lost.`) + " Under 1 loses money. About 1.5 or more after charges is healthy; very high values from a few trades are usually luck.", link: MANUAL.backtest },
+    "final value": { t: (v) => `What the capital grew (or shrank) to: ${v}, after every charge.`, link: MANUAL.backtest },
+    "charges paid": { t: (v) => `Brokerage, STT, stamp duty, exchange fees, SEBI fee, GST and DP charges: ${v}. They are certain, the profit is not. Many small trades make this large.`, link: MANUAL.backtest },
+    "re-entries": { t: () => "Buys made again after a stoploss closed the trade, as your exit rules allow.", link: "/manual#exit-rules-stoploss-target-trailing-re-entry" },
+    "trades": { t: (v, n) => `Closed trades counted: ${v}.` + (n != null && n < 30 ? " Under about 30 the averages can be luck: a few big trades decide them." : " Enough to read the averages, if they cover rising and falling markets."), link: MANUAL.results },
+    "average win": { t: (v) => `The average profit of a winning trade: ${v}. Compare it with the average loss: the bigger the gap, the lower the win rate you need.`, link: MANUAL.results },
+    "average loss": { t: (v) => `The average loss of a losing trade: ${v}. A stoploss that you keep holds this steady; a stoploss you move makes it grow.`, link: MANUAL.results },
+    "expectancy": { t: (v, n) => `The average result of one trade: ${v}.` + (n != null ? ` Over 100 such trades that is about ${signedInr(n * 100)}.` : "") + " It is the number that decides whether a way of trading pays: win rate × average win minus loss rate × average loss.", link: MANUAL.results },
+    "expectancy in r": { t: (v, n) => `The average result in units of the risk you planned (R: entry to stoploss).` + (n != null ? ` ${v} means each ₹1,000 risked came back as about ${signedInr(n * 1000)} on average.` : "") + " It compares trades of different sizes fairly.", link: MANUAL.results },
+    "worst losing streak": { t: (v) => `The most losses in a row: ${v}. Even with half your trades winning, a run of 6 or 7 losses somewhere in 100 trades is normal. Size each trade so that such a run does not stop you.`, link: MANUAL.risk },
+    "largest fall": { t: (v) => `The biggest drop from a high point of your booked profit/loss: ${v}. It is what you have to sit through.`, link: MANUAL.pnl },
+    "total profit/loss": { t: () => "Booked profit/loss from closed trades plus the open profit/loss of what you still hold, at current prices.", link: MANUAL.pnl },
+    "booked (closed trades)": { t: () => "Profit/loss of trades bought and sold, after all charges. This is money made or lost.", link: MANUAL.pnl },
+    "still holding": { t: () => "Profit/loss of positions not closed yet, at the current price. It changes until you sell.", link: MANUAL.pnl },
+    "today": { t: () => "Booked today plus the change today in positions opened today. The daily loss limit in Settings watches this number.", link: MANUAL.pnl },
+    "best day": { t: (v) => `The best single day of booked profit/loss: ${v}.`, link: MANUAL.pnl },
+    "worst day": { t: (v) => `The worst single day of booked profit/loss: ${v}. If one day can undo many good ones, trades are too big.`, link: MANUAL.pnl },
+    "daily loss limit": { t: () => "When today's loss on an account reaches this, the kill switch turns on and intraday algos close their positions. Set it in Settings.", link: "/manual#daily-loss-limit" },
+  };
+
+  const pop = h("div", { class: "xp-pop", id: "xp-pop", popover: "auto", role: "dialog" });
+  document.body.append(pop);
+  function showExplainer(button, entry, label, value) {
+    pop.replaceChildren(h("strong", { text: label }), h("div", { text: entry.t(value, tileNumber(value)) }),
+      entry.link ? h("a", { href: entry.link, target: "_blank", rel: "noopener", text: "Learn more in the manual" }) : null);
+    const r = button.getBoundingClientRect();
+    Object.assign(pop.style, { position: "fixed", margin: "0", inset: "auto", left: Math.max(16, Math.min(r.left, window.innerWidth - 436)) + "px", top: Math.min(r.bottom + 6, window.innerHeight - 200) + "px" });
+    if (pop.showPopover) { try { pop.showPopover(); } catch (err) { /* already open */ } } else pop.hidden = false;
+  }
+  function addExplainers() {
+    $$(".tile:not([data-xp])").forEach((tile) => {
+      tile.dataset.xp = "1";
+      const k = $(".k", tile);
+      if (!k) return;
+      const label = k.textContent.trim(), entry = EXPLAIN[label.toLowerCase()];
+      if (!entry) return;
+      k.append(h("button", { type: "button", class: "xp", text: "?", "aria-label": "What " + label + " means",
+        onclick: (event) => { event.stopPropagation(); showExplainer(event.currentTarget, entry, label, ($(".v", tile) || {}).textContent || ""); } }));
+    });
+  }
+  let xpQueued = false;
+  new MutationObserver(() => { if (!xpQueued) { xpQueued = true; requestAnimationFrame(() => { xpQueued = false; addExplainers(); }); } })
+    .observe(document.body, { childList: true, subtree: true });
+
+  // -- backtest: can you trust it? -------------------------------------------------------------
+
+  function renderChecks(r) {
+    const box = $("#bt-checks"), c = r.metrics && r.metrics.checks;
+    box.hidden = !c;
+    if (!c) return;
+    const item = (cls, text) => h("li", { class: cls, text });
+    const capital = r.params && r.params.capital, final = r.metrics.final_value;
+    const items = [
+      c.few_trades
+        ? item("warn", `Only ${c.trades} closed trade${c.trades === 1 ? "" : "s"}. Under ${c.min_trades}, the result can be luck: test a longer period or other stocks before trusting it.`)
+        : item("ok", `${c.trades} closed trades: enough to read the averages, if the period has both rising and falling markets.`),
+      c.beats_safe
+        ? item("ok", `Beat a safe ${c.safe_rate_pct}% a year (the risk-free rate in Settings). ${rupees(capital)} at that rate would be ${rupees(c.safe_final)}; this ended at ${rupees(final)}.`)
+        : item("warn", `Did not beat a safe ${c.safe_rate_pct}% a year (the risk-free rate in Settings). ${rupees(capital)} at that rate would be ${rupees(c.safe_final)}; this ended at ${rupees(final)}. The risk bought nothing.`)];
+    const mc = c.monte_carlo;
+    if (mc) {
+      items.push(item(mc.loss_chance_pct >= 20 ? "warn" : "",
+        `The same trades in ${inr.format(mc.runs)} random orders: the worst fall was ${Math.abs(mc.drawdown_pct.median).toFixed(1)}% in a typical run and ${Math.abs(mc.drawdown_pct.bad).toFixed(1)}% or deeper in 1 run in 20. `
+        + `The final value ranged from ${rupees(mc.final.low)} to ${rupees(mc.final.high)} (9 runs in 10). ${mc.loss_chance_pct}% of runs lost money; ${mc.below_safe_pct}% ended below the safe rate.`));
+    }
+    items.push(item("", "Survivorship: a list of stocks chosen today leaves out companies that dropped out of the index or were delisted, so a test on today's index members looks better than trading through those years would have been."));
+    box.replaceChildren(h("h3", { text: "Can you trust this result?" }), h("ul", { class: "checklist" }, items),
+      h("p", { class: "hint", text: "Random orders: the closed trades are drawn again at random, with repeats, keeping each trade's rupee result. It shows how much of the result depends on the order the trades happened to come in. It cannot show what the strategy would do in a market unlike this period." }));
+  }
+
   // -- start -------------------------------------------------------------------
 
   (async () => {
@@ -3439,6 +3705,7 @@
     const bta = $("#form-bta"), month = new Date(today); month.setDate(month.getDate() - 60);
     bta.start.value = iso(month); bta.end.value = today; bta.end.max = today;
     $("#form-order").product.value = state.app.settings.product;
+    $("#form-order").risk_pct.value = state.app.settings.risk_per_trade_pct;
     fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); startMarketTools(); renderTheme();
     syncSharedDates(); showBacktestPane($("#bt-what").value);
     if (state.app.hosted) { $("#logout").hidden = false; $("#logout-2").hidden = false; $("#logout").title = "Signed in as " + state.app.user; }

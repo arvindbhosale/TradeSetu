@@ -53,6 +53,14 @@ DEFAULTS: dict = {
     "max_order_value": 50_000.0,
     "max_orders_per_day": 10,
     "max_position_pct": 20.0,    # ceiling on one holding, % of capital
+    # Risk per trade. The order ticket sizes a buy so that its stoploss loses risk_per_trade_pct of the capital;
+    # a manual order whose stoploss would lose more than max_risk_pct (0 = no check) is refused. risk_capital is
+    # the capital these are a share of (0 = the paper capital). require_stoploss refuses a manual share buy that
+    # gives no stoploss.
+    "risk_capital": 0.0,
+    "risk_per_trade_pct": 1.0,
+    "max_risk_pct": 2.0,
+    "require_stoploss": False,
     # F&O algos may run structures with sold options no bought option covers (short straddles, strangles,
     # ratio spreads, synthetics) live only when this is on. Paper is not gated.
     "fno_naked_live": False,
@@ -330,6 +338,10 @@ def _validated(key: str, value, current):
             raise ValueError(f"{key} must be a non-negative number")
         if key in ("max_debate_rounds", "max_risk_discuss_rounds") and not 1 <= value <= 5:
             raise ValueError(f"{key} must be between 1 and 5")
+        if key in ("risk_per_trade_pct", "max_risk_pct") and value > 10:
+            raise ValueError(f"{key} cannot exceed 10: one trade losing more than a tenth of capital is not risk control")
+        if key == "risk_per_trade_pct" and value <= 0:
+            raise ValueError("risk_per_trade_pct must be above 0")
         if key.endswith("_pct") and value > 100:
             raise ValueError(f"{key} cannot exceed 100")
         return int(value) if isinstance(default, int) else float(value)

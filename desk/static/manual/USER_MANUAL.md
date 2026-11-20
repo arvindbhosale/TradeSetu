@@ -20,8 +20,10 @@ The screenshots use sample data, not real prices.
    - [Index futures: prices and charts](#index-futures-prices-and-charts)
    - [Gold & silver (MCX)](#gold--silver-mcx)
    - [P&L and alerts](#pl-and-alerts)
+   - [Learn from your trades](#learn-from-your-trades)
    - [Export and tax report](#export-and-tax-report)
 3. [Settings](#3-settings)
+   - [Risk per trade](#risk-per-trade)
 4. [Charts](#4-charts)
 5. [Strategies: combine indicators](#5-strategies-combine-indicators)
    - [Strategies of market legends](#strategies-of-market-legends)
@@ -367,6 +369,33 @@ Below: **Still holding** (each open position with its entry and current price), 
 
 It counts fills the desk made: every paper fill, and live fills read from Kite's trade book for orders this desk placed. Trades you place in Kite directly, and the order a triggered live GTT sends, are not seen. For the live account Kite's console is the final word.
 
+Every tile with a **?** explains itself: press it for what the number means, worked out with the number on screen, and a link to this manual.
+
+### Learn from your trades
+
+Two panels on the P&L tab turn your own trades into lessons. Both use the account selected at the top.
+
+**Trade journal.** One row per trade: a position from the buy until it is sold again (a trade sold in parts counts once). Press **Write note** to record:
+
+- **Plan**: the setup (your own name for the pattern, for example *Breakout*), why you took the trade, and the stoploss and target you planned.
+- **Review**, once it closes: whether you followed the plan, the mistakes made (chased the entry, moved the stoploss, exited early, too big, against the trend, revenge trade and others), and the lesson.
+
+A buy from the order ticket with a setup, a reason or a stoploss filled in saves its plan by itself. It is tied to the trade when the order fills; until then it waits under **Plans waiting for a fill**. With a stoploss in the plan, the journal shows each trade's result in **R**: the profit or loss divided by the risk planned (entry to stoploss). +2R made twice what was risked; −1R lost exactly the planned risk; worse than −1R means the stoploss was not kept or the price gapped through it.
+
+**Your results.** What the closed trades say, after charges:
+
+| Tile | Meaning |
+|---|---|
+| **Expectancy** | The average result of one trade. Positive means the way you trade makes money over many trades. |
+| **Win rate**, **Average win**, **Average loss** | Read together: a 40% win rate pays when wins are well over twice the losses. |
+| **Profit factor** | Money won ÷ money lost. |
+| **Expectancy in R** | The average result in multiples of the planned risk, for trades with a stoploss in the journal. |
+| **Worst losing streak**, **Largest fall** | What you had to sit through. |
+
+The sentence above the tiles gives the likely range (95%) of the average result. When that range includes zero, the trades so far cannot tell an edge from luck. Under 30 trades the desk says so: a few lucky or unlucky trades decide the averages.
+
+**Group by** splits the same figures by setup, who placed the trade (you, an algo, the scanner), the hour and day it was bought, how long it was held, long or short, whether you followed the plan, and mistake. Look for the setup that pays and the mistake that costs most, then trade more of the first and stop the second. A group with fewer than 30 trades is marked: it is a hint, not proof. The line under the table compares the other account (paper against live).
+
 ### Export and tax report
 
 The **Download** panel on the P&L tab. All on the account selected at the top; the tax summary is under **Advanced**.
@@ -435,6 +464,17 @@ Free tiers limit how many requests you may make. One analysis makes dozens of re
 | **Paper capital** | Starting money of the paper account. |
 
 The size and count limits apply to buys only. A sell is never blocked by them, so you can always exit.
+
+### Risk per trade
+
+| Setting | What it does |
+|---|---|
+| **Capital for risk** | The capital the risk % is a share of. 0 uses the paper capital. Set it to your real trading capital before trading live. |
+| **Risk a trade, %** | What **Work out quantity** on the order ticket risks: 1% by default, at most 10%. |
+| **Refuse above, %** | A manual order whose stoploss would lose more than this share of capital is refused (2% by default; 0 turns the check off). |
+| **Refuse a manual share buy without a stoploss** | Off by default. On, a buy of shares from the ticket needs a stoploss price. |
+
+The loss counted is the fall from the entry to the stoploss times the quantity, plus the charges of buying and selling. A price that gaps through the stoploss (news overnight, a circuit) fills worse, so the real loss can be larger. Algos follow their own exit rules and are not checked against this limit.
 
 ### Daily loss limit
 
@@ -774,6 +814,12 @@ Two differences from the backtest: the algo uses the trade window in **Settings*
 
 The chart compares your strategy (blue) with simply holding the stock (orange) and the Nifty 50 (green). If blue is not clearly better than orange, the strategy added work, not money.
 
+**Can you trust this result?** Under the tiles the desk checks three things:
+
+- **Enough trades.** Fewer than 30 closed trades and the result can be luck.
+- **Better than a safe rate.** What the capital would have grown to at the risk-free rate in Settings (6.5% a year by default). A strategy that ends below it took risk for nothing.
+- **The same trades in random orders.** The closed trades are drawn again at random, with repeats, 1,000 times. It shows the fall from a peak you should be ready for (typical, and 1 run in 20), the range of final values and how often the same trades lost money. A strategy whose result depends on the lucky order of a few trades shows a wide range.
+
 The **Trades** table lists every trade with its entry, exit, profit and the reason it closed: *signal*, *stoploss*, *trailing stoploss*, *stoploss at cost*, *target*, or *square-off*. The **Re-entries** tile counts the buys made again after a stoploss.
 
 ### Intraday backtests
@@ -984,6 +1030,8 @@ Yahoo printed NIFTYBEES and GOLDBEES at 1/10 and 1/100 of their price on 19-20 D
 ### What a backtest leaves out
 
 It assumes every order fills at the next candle's open, with a small slippage. It ignores days a stock is locked at its circuit limit, how thin trading can be in small stocks, tax on your gains, and stocks that were delisted. Real results will be lower.
+
+**Survivorship.** The Nifty and sector lists are today's members. Companies that fell out of an index, or were delisted, are missing from tests and screens run on them, and those were mostly the losers. A test across today's index members therefore looks better than trading through those years would have been. Test single stocks over periods you can check, and treat results across a list with extra caution.
 
 ### AI agents backtest
 
@@ -1205,6 +1253,19 @@ Zerodha ends the session every morning, so repeat steps 2 and 3 each trading day
 7. Type the phrase shown, for example `BUY 10 INFY`, and press **Place**.
 
 The confirmation works once and expires after two minutes.
+
+### Size by risk
+
+Decide the loss you accept before the quantity. On the ticket, fill **Stoploss ₹** (where the trade is wrong), optionally **Target ₹**, and **Risk % of capital** (from Settings), then press **Work out quantity**. The desk:
+
+- sets the quantity so that hitting the stoploss loses that share of your capital, charges included, rounded down;
+- caps it at your capital and your maximum order value, and says when it did;
+- fills **Then stoploss %** and **Then target %** to match, for the GTT after a delivery buy;
+- with a target, shows the gain against the risk and the win rate the trade needs to pay over time. A target twice as far as the stoploss pays if more than about a third of such trades reach it.
+
+Example: capital ₹10,00,000, risk 1% (₹10,000), entry ₹1,000, stoploss ₹950. Each share risks ₹50, so 200 shares would risk ₹10,000; the charges take a few shares off, and the desk suggests about 195.
+
+**Review order** shows the loss if the stoploss hits. Fill **Setup** and **Why this trade** too, and the plan goes to your trade journal when the order is placed.
 
 Paper orders fill immediately at the last price. A real order may fill partly, later, or not at all; "sent" is not "filled". Check **Today's orders**.
 

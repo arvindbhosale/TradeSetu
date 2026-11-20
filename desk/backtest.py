@@ -327,4 +327,38 @@ def _metrics(curve, trades, params, total_charges, in_market) -> dict:
         "exposure_pct": round(in_market / len(curve) * 100, 1),
         "total_charges": round(float(total_charges), 2),
     })
+    years = max((curve.index[-1] - curve.index[0]).days, 1) / 365.25
+    stats["checks"] = checks([float(t["pnl"]) for t in closed], params.capital, float(curve.iloc[-1]), years,
+                             params.risk_free_rate_pct)
     return stats
+
+
+MIN_TRADES = 30          # fewer closed trades than this and the result says little about the strategy
+MONTE_CARLO_RUNS = 1000
+
+
+def checks(pnls: list[float], capital: float, final: float, years: float, safe_rate_pct: float,
+           runs: int = MONTE_CARLO_RUNS, seed: int = 7) -> dict:
+    """How far to trust a backtest: enough trades, better than a safe deposit, and what other orders of the
+    same trades would have done (Monte Carlo: the trades drawn again at random, with replacement, ``runs``
+    times). The draws keep each trade's rupee result, so they ignore that a strategy sizes from its capital."""
+    safe_final = capital * (1 + safe_rate_pct / 100) ** years
+    out = {"trades": len(pnls), "min_trades": MIN_TRADES, "few_trades": len(pnls) < MIN_TRADES,
+           "safe_rate_pct": safe_rate_pct, "safe_final": round(safe_final, 2), "beats_safe": final > safe_final}
+    if len(pnls) < 5 or capital <= 0:
+        return out
+    rng = np.random.default_rng(seed)
+    draws = rng.choice(np.asarray(pnls, dtype=float), size=(runs, len(pnls)), replace=True)
+    equity = capital + np.cumsum(draws, axis=1)
+    peaks = np.maximum.accumulate(np.concatenate([np.full((runs, 1), capital), equity], axis=1), axis=1)[:, 1:]
+    worst = ((equity - peaks) / peaks).min(axis=1) * 100
+    finals = equity[:, -1]
+    pct = lambda values, q: round(float(np.percentile(values, q)), 2)  # noqa: E731
+    out["monte_carlo"] = {
+        "runs": runs,
+        "drawdown_pct": {"median": pct(worst, 50), "bad": pct(worst, 5)},       # 5th percentile: 1 run in 20 worse
+        "final": {"low": pct(finals, 5), "median": pct(finals, 50), "high": pct(finals, 95)},
+        "loss_chance_pct": round(float((finals < capital).mean() * 100), 1),
+        "below_safe_pct": round(float((finals < safe_final).mean() * 100), 1),
+    }
+    return out
