@@ -153,6 +153,7 @@ def setup(tmp_path, clock, kite=None, **settings):
                 ledger=Ledger(tmp_path / "fills.jsonl", now=clock))
     desk.last_price = lambda instrument: (prices.price(getattr(instrument, "instrument", instrument)), "test")
     engine = FnoAlgoEngine(desk, contracts, path=tmp_path / "fno.json", now=clock)
+    desk.algo_claims = engine.claimed                       # as the server wires it
     return engine, desk, prices
 
 
@@ -293,6 +294,52 @@ def test_the_kill_switch_stops_entries_but_never_an_exit(tmp_path):
     other = engine.create({**CONDOR, "name": "Second"})
     engine.set_enabled(other["id"], True)
     assert engine.evaluate(other["id"])["status"] == "Blocked: kill switch is on"
+
+
+def test_an_algo_closes_its_own_leg_when_another_algo_holds_the_opposite_side(tmp_path):
+    # A condor sells the 25200 call; an iron butterfly buys it as a wing. The account nets to 0, yet each algo
+    # must still close its own leg. Before, the condor's buy-back was refused: "You are short 0 ...".
+    clock = Clock("2026-11-17 09:35")
+    engine, desk, _ = setup(tmp_path, clock)
+    condor = engine.create(CONDOR)
+    fly = engine.create({**CONDOR, "name": "Fly", "structure": "iron_fly", "w": 4})
+    for a in (condor, fly):
+        engine.set_enabled(a["id"], True)
+        engine.evaluate(a["id"])
+    call = f"NFO:{symbol(NEAR, 25200, 'CE')}"
+    assert desk.paper.quantity(call) == 0
+    assert engine.claimed(call, "fno:Fly") == -65 and engine.claimed(call, "fno:Nifty condor") == 65
+    out = engine.request_exit(condor["id"])
+    assert out["book"] is None, out["log"][-3:]
+    assert desk.paper.quantity(call) == 65                       # the butterfly's wing is still there
+    assert engine.request_exit(fly["id"])["book"] is None
+    assert desk.paper.quantity(call) == 0
+    # The check still bites: a closing buy larger than the algo's own short is refused.
+    over = {"exchange": "NFO", "tradingsymbol": symbol(NEAR, 25200, "CE"), "side": "BUY", "quantity": 65,
+            "product": "MIS", "order_type": "LIMIT", "price": 200, "intent": "close"}
+    assert any("would open a long" in e for e in desk.preview(over, "paper", source="fno:Fly")["errors"])
+
+
+def test_a_price_failure_names_what_kite_said(tmp_path):
+    clock = Clock("2026-11-17 09:35")
+    kite = StubKite(Market())
+    engine, desk, _ = setup(tmp_path, clock, kite=kite)
+    algo = engine.create(CONDOR)
+    engine.set_enabled(algo["id"], True)
+    engine.evaluate(algo["id"])
+    desk.settings.update({"live_enabled": False})
+
+    def refuse(instruments):
+        raise KiteError("Too many requests")
+    kite.ltp = refuse
+    desk.last_price = lambda instrument: (None, "no price available")
+    clock.set("2026-11-17 10:00")
+    out = engine.evaluate(algo["id"])
+    assert out["status"].startswith("Blocked: No live price")
+    assert "Too many requests" in out["algo"]["log"][-1]["message"]
+    assert "Log in to Kite" not in out["algo"]["log"][-1]["message"]
+    del kite.ltp                                             # Kite answers again
+    assert engine.evaluate(algo["id"])["status"].startswith("Running: open")    # recovers on its own
 
 
 def test_a_single_order_never_opens_a_short(tmp_path):

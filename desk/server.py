@@ -131,6 +131,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     algos.extra_ticks.append(fno_algos.tick)
     algos.extra_live.append(fno_algos.live_names)
     desk.algo_instruments = fno_algos.held_instruments
+    desk.algo_claims = fno_algos.claimed
     algos.extra_ticks.append(desk.close_paper_mcx)
     hosted = auth is not None
     passkeys = Passkeys(home() / "passkeys.json", auth.username) if hosted else None

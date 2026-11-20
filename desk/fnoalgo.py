@@ -97,6 +97,7 @@ class FnoAlgoEngine:
         self.path = path or home() / "fno_algos.json"
         self._lock = threading.RLock()
         self._algos: dict[str, dict] = {}
+        self._price_error: str | None = None
         self._retry_at: dict[str, datetime] = {}
         with contextlib.suppress(OSError, json.JSONDecodeError):
             stored = json.loads(self.path.read_text(encoding="utf-8"))
@@ -379,9 +380,15 @@ class FnoAlgoEngine:
 
     def _prices(self, instruments: list[str]) -> dict[str, float]:
         kite, out = self.desk.kite, {}
-        if kite.connected and "get_ltp" in kite.tools:
-            with contextlib.suppress(KiteError):
+        self._price_error = None if kite.connected else "Kite is not connected. Log in to Kite"
+        if kite.connected and "get_ltp" not in kite.tools:
+            self._price_error = "The connected Kite server has no price (get_ltp) tool"
+        elif kite.connected:
+            try:
                 out = kite.ltp(instruments)
+            except KiteError as exc:
+                self._price_error = ("Kite needs a login. Log in to Kite" if exc.needs_login else
+                                     f"Kite did not give prices ({str(exc).rstrip('.')}); trying again")
         for name in instruments:
             if not out.get(name):
                 price, source = self.desk.last_price(name)
@@ -527,7 +534,8 @@ class FnoAlgoEngine:
         prices = self._prices([g["instrument"] for g in legs])
         missing = [g["tradingsymbol"] for g in legs if not prices.get(g["instrument"])]
         if missing:
-            raise AlgoError(f"No live price for {', '.join(missing)}. Log in to Kite.")
+            raise AlgoError(f"No live price for {', '.join(missing)}. "
+                            f"{self._price_error or 'Kite did not return these contracts; trying again'}.")
         for g in legs:
             g["ltp"] = prices[g["instrument"]]
         lot, factor = legs[0]["lot_size"], legs[0]["mult"]
@@ -571,16 +579,20 @@ class FnoAlgoEngine:
         """Run one algo now. Returns what it did."""
         with self._lock:
             algo = self.get(algo_id)
+            tail, reason = (algo["log"][-1] if algo["log"] else None), ""
             try:
                 status, done = self._step(algo, force)
             except AlgoError as exc:
-                self._log(algo, str(exc))
-                status, done = f"Blocked: {str(exc).split('.')[0]}", False
+                reason = str(exc)
+                self._log(algo, reason)
+                status, done = f"Blocked: {reason.split('.')[0]}", False
             before = algo["status"]
             algo["status"] = status
             if status.startswith("Blocked") and status != before:
-                last = algo["log"][-1]["message"] if algo["log"] else ""
-                self.desk.notifier.notify(f"F&O algo “{algo['name']}” is blocked", f"{status}. {last}", "bad",
+                # The reason logged by this run, said once; the status line alone when nothing new was logged.
+                if not reason and algo["log"] and algo["log"][-1] is not tail:
+                    reason = algo["log"][-1]["message"]
+                self.desk.notifier.notify(f"F&O algo “{algo['name']}” is blocked", reason or status, "bad",
                                           key=f"fno-blocked:{algo['id']}:{status}")
             self._save()
             return {"status": status, "done": done, "algo": _copy(algo)}
@@ -791,7 +803,8 @@ class FnoAlgoEngine:
         pnl = self.mtm(algo, prices)
         if pnl is None:
             missing = [g["tradingsymbol"] for g in open_legs if not prices.get(g["instrument"])]
-            raise AlgoError(f"No live price for {', '.join(missing)}; the maximum loss cannot be watched. Log in to Kite")
+            why = self._price_error or "Kite did not return these contracts; trying again"
+            raise AlgoError(f"No live price for {', '.join(missing)}; the maximum loss cannot be watched. {why}")
         book["pnl"], book["peak"] = round(pnl, 2), max(book.get("peak", 0.0), pnl)
         if algo["max_loss"] and pnl <= -algo["max_loss"]:
             return self._begin_close(algo, f"maximum loss: ₹{pnl:,.0f} against ₹{algo['max_loss']:,.0f}", block=True)
@@ -1063,6 +1076,14 @@ class FnoAlgoEngine:
         with self._lock:
             return [g["instrument"] for a in self._algos.values() if a["book"] for g in a["book"]["legs"]
                     if g["open_qty"] or g["pending"]]
+
+    def claimed(self, instrument: str, source: str) -> int:
+        """The signed quantity of ``instrument`` that the F&O algos other than ``source`` (``fno:<name>``) hold: below
+        zero for a short. The account's position nets every algo's legs; this is the part that is not ``source``'s."""
+        with self._lock:
+            return sum(g["open_qty"] * (1 if g["action"] > 0 else -1)
+                       for a in self._algos.values() if a["book"] and f"fno:{a['name']}" != source
+                       for g in a["book"]["legs"] if g["instrument"] == instrument and g["open_qty"])
 
     def live_names(self) -> list[str]:
         with self._lock:
