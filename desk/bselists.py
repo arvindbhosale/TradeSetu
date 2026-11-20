@@ -94,8 +94,15 @@ def merge(stored: dict, fresh: dict[str, dict], now: float | None = None) -> dic
 
 
 def http_get_json(url: str, params: dict):
+    """GET a BSE API answer. On 401/403 it opens bseindia.com once for cookies and tries again."""
     import httpx
 
-    response = httpx.get(url, params=params, headers=HEADERS, timeout=30, follow_redirects=True)
-    response.raise_for_status()
-    return json.loads(response.text)
+    from .nse import proxy_kwargs
+
+    with httpx.Client(headers=HEADERS, timeout=30, follow_redirects=True, **proxy_kwargs()) as client:
+        response = client.get(url, params=params)
+        if response.status_code in (401, 403):
+            client.get("https://www.bseindia.com/", headers={"Accept": "text/html,*/*"})
+            response = client.get(url, params=params)
+        response.raise_for_status()
+        return json.loads(response.text)

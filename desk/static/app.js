@@ -1977,7 +1977,7 @@
     renderHeat();
   }
 
-  function sortableTable(box, columns, rows, sortState) {
+  function sortableTable(box, columns, rows, sortState, empty = "Nothing to show yet.") {
     const sorted = rows.slice();
     if (sortState.key) {
       const col = columns.find((c) => c.key === sortState.key);
@@ -1985,13 +1985,13 @@
       sorted.sort((a, b) => { const x = val(a), y = val(b); if (x == null) return 1; if (y == null) return -1; return (x < y ? -1 : x > y ? 1 : 0) * sortState.dir; });
     }
     const head = h("tr", {}, columns.map((c) => h("th", { class: c.num ? "num" : null, style: "cursor:pointer", text: c.label + (sortState.key === c.key ? (sortState.dir > 0 ? " ▲" : " ▼") : ""),
-      onclick: () => { sortState.dir = sortState.key === c.key ? -sortState.dir : -1; sortState.key = c.key; sortableTable(box, columns, rows, sortState); } })));
+      onclick: () => { sortState.dir = sortState.key === c.key ? -sortState.dir : -1; sortState.key = c.key; sortableTable(box, columns, rows, sortState, empty); } })));
     box.replaceChildren(rows.length ? h("table", {}, h("thead", {}, head), h("tbody", {}, sorted.map((r) => h("tr", {}, columns.map((c) => {
       const content = c.cell ? c.cell(r) : r[c.key];
       const td = h("td", { class: (c.num ? "num " : "") + (c.tone ? tone(c.tone(r)) : "") });
       if (content != null && content.nodeType) td.append(content); else td.textContent = content == null ? "–" : content;
       return td;
-    }))))) : h("p", { class: "hint", text: "Nothing to show yet." }));
+    }))))) : h("p", { class: "hint", text: empty }));
   }
   const stockLink = (symbol) => h("button", { type: "button", class: "linkish", text: symbol.replace(/\.(NS|BO)$/, ""), onclick: () => openStock(symbol) });
   const toolState = { tool: "deals", deals: null, drift: null, compass: null, radar: null, compassPeriod: "weekly",
@@ -2029,40 +2029,95 @@
       { key: "sales_yoy", label: "Sales vs year ago", num: true, cell: (r) => (r.sales_yoy == null ? "–" : pct(r.sales_yoy)), tone: (r) => r.sales_yoy },
       { key: "profit_yoy", label: "Profit vs year ago", num: true, cell: (r) => (r.profit_yoy == null ? "–" : pct(r.profit_yoy)), tone: (r) => r.profit_yoy },
       { key: "verdict", label: "Results", cell: (r) => (r.verdict ? h("span", { class: "trend " + (r.verdict === "Strong" ? "up" : r.verdict === "Weak" ? "down" : "flat"), text: r.verdict, title: r.quarter ? `Quarter to ${r.quarter}` : "" }) : "–") },
-      { key: "agrees", label: "Results back the move", sort: (r) => (r.agrees == null ? null : r.agrees ? 1 : 0), cell: (r) => (r.agrees == null ? "–" : r.agrees ? "Yes" : "No"), tone: (r) => (r.agrees == null ? null : r.agrees ? 1 : -1) }], rows, toolState.sorts.drift);
-    $("#tool-updated").textContent = d.note || `${d.calendar} results in BSE's calendar (last 60 days), ${d.priced} priced by the desk, ${d.with_numbers} with the quarter's numbers from NSE so far.`;
+      { key: "agrees", label: "Results back the move", sort: (r) => (r.agrees == null ? null : r.agrees ? 1 : 0), cell: (r) => (r.agrees == null ? "–" : r.agrees ? "Yes" : "No"), tone: (r) => (r.agrees == null ? null : r.agrees ? 1 : -1) }], rows, toolState.sorts.drift, driftEmpty(d, only));
+    const source = d.source === "NSE" ? "NSE's event calendar" : "BSE's calendar";
+    const read = d.read_at ? new Date(d.read_at * 1000).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : null;
+    $("#tool-updated").textContent = d.note
+      ? d.note + (d.calendar ? ` Showing the ${d.calendar} results dates read on ${read}.` : "")
+      : `${d.calendar} results in ${source} (last 60 days), ${d.priced} priced by the desk, ${d.with_numbers} with the quarter's numbers from NSE so far.`;
   }
+
+  function driftEmpty(d, only) {
+    if (!d.calendar) return d.note ? "No results dates yet: the exchanges' calendars could not be read. The reason is shown above." : "Results dates have not been read yet. They load a minute after the desk starts.";
+    if (!d.priced) return `None of the ${d.calendar} companies in the results calendar has prices on the desk yet (the desk prices the Nifty 500 and your sectors). Prices load after you log in to your broker.`;
+    if (only === "all") return "Nothing to show yet.";
+    return only === "agree"
+      ? `No stock moved at least ${d.min_move}% on results that back the move. Try a smaller move, or Show: All results.`
+      : `No stock moved at least ${d.min_move}% on its results and kept going. Try a smaller move, or Show: All results.`;
+  }
+
+  // Sector Compass: four groups from two plain numbers, in the order sectors usually move through them.
+  const COMPASS_GROUPS = [
+    { key: "Leading", title: "Leading", plain: (L, S) => `Ahead of the Nifty over ${L}, and still gaining on it over ${S}.`, tip: "The strongest sectors right now. Traders look here first for stocks to buy.", cls: "lead" },
+    { key: "Weakening", title: "Losing pace", plain: (L, S) => `Ahead of the Nifty over ${L}, but slipping behind it over ${S}.`, tip: "Strong but slowing. Hold with a tighter stoploss; be careful with fresh buys.", cls: "fade" },
+    { key: "Lagging", title: "Lagging", plain: (L, S) => `Behind the Nifty over ${L}, and still slipping over ${S}.`, tip: "The weakest sectors. Usually best avoided for new buys.", cls: "lag" },
+    { key: "Improving", title: "Catching up", plain: (L, S) => `Behind the Nifty over ${L}, but gaining on it over ${S}.`, tip: "An early turn. Worth watching: these often move into Leading next.", cls: "turn" }];
+  const groupTitle = (key) => (COMPASS_GROUPS.find((g) => g.key === key) || { title: key }).title;
+  const shortSector = (name) => name.replace(/^(Nifty|BSE) /, "");
+  const points = (v) => (v == null ? "–" : `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(1)} pts`);
+  const compassSpans = (d) => (d.weekly === false ? ["1 month", "1 week"] : ["3 months", "4 weeks"]);
 
   function drawCompass() {
     const d = toolState.compass; if (!d) return;
+    const rows = d.rows, [L, S] = compassSpans(d);
+    const ranked = rows.slice().sort((a, b) => b.ahead - a.ahead);
+    const say = (r) => `${shortSector(r.name)} (${points(r.ahead)})`;
+    $("#compass-summary").replaceChildren(...(rows.length ? [
+      h("div", {}, h("b", { text: `Best against the Nifty over ${L}: ` }), ranked.slice(0, 3).map(say).join(", ")),
+      h("div", {}, h("b", { text: "Worst: " }), ranked.slice(-3).reverse().map(say).join(", ")),
+      h("div", { class: "hint", text: `"pts" is the sector's return minus the Nifty 50's return, in percentage points. Nifty 50: ${pct(rows[0].bench_long)} over ${L}, ${pct(rows[0].bench_short)} over ${S}.` })] : []));
+    const line = (label, mine, nifty) => h("div", { class: "compass-figs" }, h("span", { class: "hint", text: `${label}: ` }),
+      h("span", { class: mine - nifty >= 0 ? "pos" : "neg", text: pct(mine) }), h("span", { class: "hint", text: ` vs Nifty ${pct(nifty)}` }));
+    $("#compass-groups").replaceChildren(...COMPASS_GROUPS.map((g) => {
+      const members = rows.filter((r) => r.quadrant === g.key).sort((a, b) => b.ahead - a.ahead);
+      return h("div", { class: "compass-group " + g.cls },
+        h("div", { class: "compass-head" }, h("h3", { text: g.title }), h("span", { class: "compass-count", text: members.length === 1 ? "1 sector" : `${members.length} sectors` })),
+        h("p", { class: "compass-plain", text: g.plain(L, S) }), h("p", { class: "hint", text: g.tip }),
+        members.length ? h("ul", { class: "compass-list" }, members.map((r) => h("li", {},
+          h("div", { class: "compass-name" }, h("span", { text: shortSector(r.name) }),
+            r.was !== r.quadrant ? h("span", { class: "compass-was", text: ` · was ${groupTitle(r.was)}` }) : null),
+          line(L, r.change_long, r.bench_long), line(S, r.change_short, r.bench_short))))
+          : h("p", { class: "hint", text: "None right now." }));
+    }));
+    const was = rows.length ? (d.weekly === false ? `${rows[0].tail.length - 1} sessions` : `${rows[0].tail.length - 1} weeks`) : "";
+    $("#compass-span").textContent = rows.length ? `${d.weekly === false ? "Daily closes" : "Friday closes"}. "was" is the group a sector was in ${was} ago.` : "";
+    if ($("#compass-more").open) drawCompassChart();
+    $("#tool-updated").textContent = d.note || `${rows.length} sector indices against the Nifty 50.`;
+  }
+
+  function drawCompassChart() {
+    const d = toolState.compass; if (!d) return;
     const svg = $("#compass-chart"); svg.replaceChildren();
-    const W = 520, pad = 40, rows = d.rows;
-    const xs = rows.flatMap((r) => r.tail.map((t) => t.ratio)), ys = rows.flatMap((r) => r.tail.map((t) => t.momentum));
-    const span = Math.max(2, ...xs.map((x) => Math.abs(x - 100)), ...ys.map((y) => Math.abs(y - 100))) * 1.1;
-    const X = (v) => pad + ((v - 100 + span) / (2 * span)) * (W - 2 * pad), Y = (v) => W - pad - ((v - 100 + span) / (2 * span)) * (W - 2 * pad);
-    const quads = [["Improving", pad, pad, "--s1"], ["Leading", W / 2, pad, "--good"], ["Lagging", pad, W / 2, "--bad"], ["Weakening", W / 2, W / 2, "--s4"]];
+    const W = 520, pad = 40, rows = d.rows, trails = $("#compass-trails").checked;
+    const pts = rows.flatMap((r) => (trails ? r.tail : r.tail.slice(-1))), [L, S] = compassSpans(d);
+    const sx = Math.max(1, ...pts.map((t) => Math.abs(t.ahead))) * 1.15, sy = Math.max(1, ...pts.map((t) => Math.abs(t.gaining))) * 1.15;
+    const X = (v) => pad + ((v + sx) / (2 * sx)) * (W - 2 * pad), Y = (v) => W - pad - ((v + sy) / (2 * sy)) * (W - 2 * pad);
+    const quads = [["Catching up", pad, pad, "--s1"], ["Leading", W / 2, pad, "--good"], ["Lagging", pad, W / 2, "--bad"], ["Losing pace", W / 2, W / 2, "--s4"]];
     for (const [label, x, y, colour] of quads) {
       svg.append(sv("rect", { x, y, width: W / 2 - pad, height: W / 2 - pad, fill: `color-mix(in srgb, ${cssVar(colour)} 9%, transparent)` }));
-      const t = sv("text", { x: x + 8, y: y + 18, class: "compass-quad" }); t.textContent = label; svg.append(t);
+      const t = sv("text", { x: x + 8, y: y === pad ? y + 18 : W - pad - 8, class: "compass-quad" }); t.textContent = label; svg.append(t);
     }
     svg.append(sv("line", { x1: W / 2, y1: pad, x2: W / 2, y2: W - pad, stroke: cssVar("--line-strong") }));
     svg.append(sv("line", { x1: pad, y1: W / 2, x2: W - pad, y2: W / 2, stroke: cssVar("--line-strong") }));
     const axis = (text, x, y, rotate) => { const t = sv("text", { x, y, "text-anchor": "middle", class: "compass-axis", ...(rotate ? { transform: `rotate(-90 ${x} ${y})` } : {}) }); t.textContent = text; svg.append(t); };
-    axis("Relative strength →", W / 2, W - 10); axis("Strength momentum →", 14, W / 2, true);
-    const colours = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6"];
-    rows.forEach((r, i) => {
-      const colour = cssVar(colours[i % colours.length]);
-      const pts = r.tail.map((t) => `${X(t.ratio)},${Y(t.momentum)}`).join(" ");
-      svg.append(sv("polyline", { points: pts, fill: "none", stroke: colour, "stroke-width": 1.6, opacity: 0.8 }));
-      r.tail.forEach((t, j) => svg.append(sv("circle", { cx: X(t.ratio), cy: Y(t.momentum), r: j === r.tail.length - 1 ? 5 : 2, fill: colour })));
-      const last = r.tail[r.tail.length - 1];
-      const t = sv("text", { x: X(last.ratio) + 7, y: Y(last.momentum) - 6, class: "compass-label", fill: colour }); t.textContent = r.name.replace(/^Nifty /, ""); svg.append(t);
+    axis(`Behind the Nifty  ·  Ahead over ${L} →`, W / 2, W - 10); axis(`Slipping  ·  Gaining over ${S} →`, 14, W / 2, true);
+    const colourOf = { Leading: "--good", Weakening: "--s4", Lagging: "--bad", Improving: "--s1" };
+    const placed = [];
+    const spot = (x, y, w) => {               // first label position that does not overlap one already drawn
+      for (const dy of [-7, 13, -19, 25, -31, 37]) {
+        const box = { x1: x + 7, x2: x + 7 + w, y1: y + dy - 10, y2: y + dy + 2 };
+        if (!placed.some((b) => box.x1 < b.x2 && b.x1 < box.x2 && box.y1 < b.y2 && b.y1 < box.y2)) { placed.push(box); return y + dy; }
+      }
+      return null;
+    };
+    rows.slice().sort((a, b) => b.gaining - a.gaining).forEach((r) => {
+      const colour = cssVar(colourOf[r.quadrant] || "--s2"), last = r.tail[r.tail.length - 1];
+      if (trails) svg.append(sv("polyline", { points: r.tail.map((t) => `${X(t.ahead)},${Y(t.gaining)}`).join(" "), fill: "none", stroke: colour, "stroke-width": 1.3, opacity: 0.55 }));
+      const dot = sv("circle", { cx: X(last.ahead), cy: Y(last.gaining), r: 5, fill: colour });
+      const tip = sv("title", {}); tip.textContent = `${r.name}: ${groupTitle(r.quadrant)}. ${L}: ${points(r.ahead)}, ${S}: ${points(r.gaining)} against the Nifty`; dot.append(tip); svg.append(dot);
+      const label = shortSector(r.name), y = spot(X(last.ahead), Y(last.gaining), label.length * 6);
+      if (y != null) { const t = sv("text", { x: X(last.ahead) + 7, y, class: "compass-label" }); t.textContent = label; svg.append(t); }
     });
-    sortableTable($("#compass-table"), [
-      { key: "name", label: "Sector" }, { key: "quadrant", label: "Quadrant" },
-      { key: "ratio", label: "Strength", num: true, cell: (r) => num(r.ratio, 2), tone: (r) => r.ratio - 100 },
-      { key: "momentum", label: "Momentum", num: true, cell: (r) => num(r.momentum, 2), tone: (r) => r.momentum - 100 }], rows, toolState.sorts.compass);
-    $("#tool-updated").textContent = d.note || `${rows.length} sector indices against the Nifty 50.`;
   }
 
   function renderRadar() {
@@ -2106,6 +2161,8 @@
     $$("#heat-what button").forEach((b) => b.addEventListener("click", () => { pulseState.what = b.dataset.what; $$("#heat-what button").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); renderHeat(); }));
     $$("#tool-pick button").forEach((b) => b.addEventListener("click", () => showTool(b.dataset.tool)));
     $$("#compass-period button").forEach((b) => b.addEventListener("click", () => { toolState.compassPeriod = b.dataset.period; $$("#compass-period button").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); loadTool("compass"); }));
+    $("#compass-more").addEventListener("toggle", () => { if ($("#compass-more").open) drawCompassChart(); });
+    $("#compass-trails").addEventListener("change", drawCompassChart);
     const deals = $("#form-deals"); deals.days.addEventListener("change", () => loadTool("deals")); deals.min_value.addEventListener("change", () => loadTool("deals")); deals.q.addEventListener("input", renderDeals);
     deals.addEventListener("submit", (e) => e.preventDefault());
     const drift = $("#form-drift"); drift.min_move.addEventListener("change", () => loadTool("drift")); drift.only.addEventListener("change", renderDrift); drift.addEventListener("submit", (e) => e.preventDefault());
