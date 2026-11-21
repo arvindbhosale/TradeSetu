@@ -67,6 +67,13 @@ KITE_API_SECRET=your_kite_api_secret
 - To keep the password itself out of the panel, set `DESK_ADMIN_PASSWORD_HASH`
   instead and leave `DESK_ADMIN_PASSWORD` empty. Get the hash from the running
   container: `docker exec -it <desk-container-name> python -m desk.auth`.
+- Optional, `DESK_EXCHANGE_PROXY`: NSE and BSE refuse most VPS addresses ("403
+  Forbidden" on Results Drift and Whale Deals). Set it to an HTTP proxy that
+  exits from an Indian home or office connection, e.g.
+  `DESK_EXCHANGE_PROXY=http://user:pass@100.64.0.5:8888`, and redeploy. Only NSE
+  and BSE requests use it. Test from the VPS first:
+  `curl -x http://user:pass@100.64.0.5:8888 -s -o /dev/null -w "%{http_code}\n" -H "Referer: https://www.bseindia.com/" "https://api.bseindia.com/BseIndiaAPI/api/Corpforthresults/w?fromdate=20261001&todate=20261120&scripcode="`
+  should print `200`.
 
 ## 5. Domain and HTTPS
 
@@ -158,6 +165,7 @@ A `desk` container that says `Restarting` is crashing at start, and the browser 
 | Sign-in works, then every click returns to sign-in | The site is on `http://`; turn HTTPS on for the domain |
 | "Wrong username or password" with the right ones | The container received a different value than you typed in the panel, usually because of `$`, `#` or quotes in the password. Check with `docker exec -it <desk-container-name> python -m desk.auth check`, and see the reason in `docker logs <desk-container-name> \| grep -i sign-in`. Change the password to letters, digits, `-`, `_` and redeploy |
 | Locked out of two-factor sign-in (phone and recovery codes lost) | Add `DESK_2FA_RESET=1` to the service's environment, redeploy, sign in with the password, set two-factor up again, then remove the variable and redeploy |
+| Results Drift or Whale Deals: "403 Forbidden" | NSE/BSE block the VPS address. Set `DESK_EXCHANGE_PROXY` (step 4) and redeploy |
 | "Too many failed sign-ins" | 5 wrong passwords lock that IP for 15 minutes. Redeploy to clear it sooner |
 | Kite pill says "not connected" | Trade → Connect. Check `kite-mcp` logs: wrong API key/secret stops it |
 | Kite login ends on an error page | Redirect URL in the Kite console is not exactly `https://<domain>/kite/callback` |

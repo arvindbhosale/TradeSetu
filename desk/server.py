@@ -103,7 +103,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                             if fetch is not None else None)
     tools = MarketTools(sectors, indices, fundamentals, fetch=fetch, get_json=offline_json,
                         download=(lambda url: (_ for _ in ()).throw(OSError("offline"))) if fetch is not None else None,
-                        results=financials.results)
+                        results=financials.results, nse=financials.client)
     sectors.extra = []                      # filled from index lists so contributor prices stay warm
     first_oi: dict = {"day": None, "values": {}}
     algos.extra_ticks.append(derivatives.tick)

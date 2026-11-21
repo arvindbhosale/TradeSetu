@@ -16,6 +16,7 @@ callers keep what they already have and say why.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 
@@ -25,6 +26,20 @@ HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-IN,en;q=0.9",
 }
+
+
+def exchange_proxy() -> str | None:
+    """``DESK_EXCHANGE_PROXY`` (e.g. ``http://user:pass@host:port``): send NSE and BSE requests through it.
+
+    NSE and BSE refuse many cloud and data-centre addresses; a proxy on an Indian home or office connection gets
+    their data to a desk hosted on such a server. Only exchange requests use it, never the broker.
+    """
+    return (os.environ.get("DESK_EXCHANGE_PROXY") or "").strip() or None
+
+
+def proxy_kwargs() -> dict:
+    proxy = exchange_proxy()
+    return {"proxy": proxy} if proxy else {}
 
 
 class NseError(RuntimeError):
@@ -50,7 +65,7 @@ class NseClient:
         if self._client is None:
             import httpx
 
-            self._client = httpx.Client(headers=HEADERS, timeout=self.timeout, follow_redirects=True)
+            self._client = httpx.Client(headers=HEADERS, timeout=self.timeout, follow_redirects=True, **proxy_kwargs())
         return self._client
 
     def _pace(self) -> None:

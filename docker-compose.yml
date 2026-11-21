@@ -20,6 +20,8 @@ services:
       DESK_KITE_MCP_URL: http://kite-mcp:8080/mcp
       # Set to 1 for one deploy to switch two-factor sign-in off (lost phone), then remove.
       DESK_2FA_RESET: ${DESK_2FA_RESET:-}
+      # Optional: send NSE and BSE requests through a proxy on an Indian home or office line (they block most servers).
+      DESK_EXCHANGE_PROXY: ${DESK_EXCHANGE_PROXY:-}
       TZ: Asia/Kolkata
     expose:
       - "8000"

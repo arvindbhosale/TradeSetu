@@ -155,7 +155,7 @@
       <div class="jobhead"><h2>Results Drift</h2>
         <form class="row inline" id="form-drift"><label class="inline">Reaction of at least <input name="min_move" type="number" min="1" max="30" step="0.5" value="4" style="width:70px">%</label>
           <label class="inline">Show <select name="only"><option value="edge">Drifting or holding</option><option value="agree">Results back the move</option><option value="all">All results</option></select></label></form></div>
-      <p class="hint">Post-earnings drift: a stock that moves hard on its results tends to keep going the same way for weeks. Results dates are BSE's calendar for the last 60 days. Reaction is the move from the close before the board meeting to the close of the next session. "Drifting up" means a reaction of at least the set move, the price still above the low of those two sessions and higher than the reaction close; "Holding up" is above that low but not higher. The same in reverse for down. Only stocks the desk prices (Nifty 500 and your sectors) are listed. Sales and profit are the quarter just announced against the same quarter a year before, from the company's NSE filing (filled in over a few minutes after results come out). Results are <b>Strong</b> when profit grew at least 15% with sales not falling, or a loss turned to profit; <b>Weak</b> when profit fell 10% or more, or sales and profit both fell, or a profit turned to a loss; <b>Mixed</b> otherwise. "Results back the move" is Yes when a stock drifting or holding up had Strong results, or one going down had Weak results.</p>
+      <p class="hint">Post-earnings drift: a stock that moves hard on its results tends to keep going the same way for weeks. Results dates are BSE's results calendar for the last 60 days (NSE's event calendar when BSE refuses). Reaction is the move from the close before the board meeting to the close of the next session. "Drifting up" means a reaction of at least the set move, the price still above the low of those two sessions and higher than the reaction close; "Holding up" is above that low but not higher. The same in reverse for down. Only stocks the desk prices (Nifty 500 and your sectors) are listed. Sales and profit are the quarter just announced against the same quarter a year before, from the company's NSE filing (filled in over a few minutes after results come out). Results are <b>Strong</b> when profit grew at least 15% with sales not falling, or a loss turned to profit; <b>Weak</b> when profit fell 10% or more, or sales and profit both fell, or a profit turned to a loss; <b>Mixed</b> otherwise. "Results back the move" is Yes when a stock drifting or holding up had Strong results, or one going down had Weak results.</p>
       <div class="scroll tall" id="drift-table"></div>
     </div>
   </div>
@@ -163,8 +163,14 @@
     <div class="panel">
       <div class="jobhead"><h2>Sector Compass</h2>
         <span class="seg" id="compass-period" role="group" aria-label="Period"><button data-period="weekly" aria-pressed="true">Weekly</button><button data-period="daily" aria-pressed="false">Daily</button></span></div>
-      <p class="hint">Each Nifty sector index against the Nifty 50. Across: relative strength (above 100 is beating the Nifty). Up: whether that strength is rising. Sectors usually turn clockwise: Improving → Leading → Weakening → Lagging. The tail shows the last 6 weeks (10 days on daily).</p>
-      <div class="compass-wrap"><svg id="compass-chart" viewBox="0 0 520 520" role="img" aria-label="Sector rotation chart"></svg><div class="scroll" id="compass-table"></div></div>
+      <p class="hint">Each Nifty sector index against the Nifty 50, in two plain numbers: is it ahead of the Nifty over the last 3 months, and is it gaining on the Nifty over the last 4 weeks? The two answers put it in one of four groups. Sectors usually move round in this order: Catching up → Leading → Losing pace → Lagging → Catching up. Daily uses 1 month and 1 week. This describes the recent past; it is not a forecast.</p>
+      <div class="compass-summary" id="compass-summary"></div>
+      <div class="compass-groups" id="compass-groups"></div>
+      <p class="hint" id="compass-span"></p>
+      <details class="compass-more" id="compass-more"><summary>Show as a chart</summary>
+        <p class="hint">The same groups on one chart. Right of centre: ahead of the Nifty over the longer period. Above centre: gaining on it over the shorter one. Hover a dot for its numbers; the path shows where it has come from.</p>
+        <label class="inline"><input type="checkbox" id="compass-trails"> Show each sector's path</label>
+        <svg id="compass-chart" viewBox="0 0 520 520" role="img" aria-label="Sector rotation chart"></svg></details>
     </div>
   </div>
   <div class="tool" id="tool-radar" hidden>

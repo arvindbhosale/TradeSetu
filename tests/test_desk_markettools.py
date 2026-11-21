@@ -145,8 +145,22 @@ def test_rotation_places_a_leader_and_a_laggard():
     laggard = bench * np.exp(-np.linspace(0, 0.4, 400) ** 2)
     rows = {r["name"]: r for r in mt.rotation({"Lead": leader, "Lag": laggard}, bench)}
     assert rows["Lead"]["quadrant"] == "Leading" and rows["Lag"]["quadrant"] == "Lagging"
-    assert len(rows["Lead"]["tail"]) == 6 and rows["Lead"]["ratio"] > 100 > rows["Lag"]["ratio"]
+    assert len(rows["Lead"]["tail"]) == 6 and rows["Lead"]["ahead"] > 0 > rows["Lag"]["ahead"]
     assert mt.rotation({"Short": bench.iloc[-20:]}, bench) == []
+
+
+def test_rotation_groups_match_the_numbers_shown():
+    index = pd.bdate_range(end="2026-11-13", periods=300)
+    bench = pd.Series(100.0, index=index)
+    up_then_down = pd.Series(np.r_[np.linspace(100, 130, 280), np.linspace(130, 128, 20)], index=index)
+    down_then_up = pd.Series(np.r_[np.linspace(100, 80, 280), np.linspace(80, 82, 20)], index=index)
+    rows = {r["name"]: r for r in mt.rotation({"Fade": up_then_down, "Turn": down_then_up}, bench)}
+    fade, turn = rows["Fade"], rows["Turn"]
+    assert fade["quadrant"] == "Weakening" and turn["quadrant"] == "Improving"
+    weekly = up_then_down.resample("W-FRI").last()
+    assert fade["change_long"] == round((weekly.iloc[-1] / weekly.iloc[-14] - 1) * 100, 2) and fade["bench_long"] == 0
+    assert fade["ahead"] == round(fade["change_long"] - fade["bench_long"], 2)
+    assert fade["gaining"] == round(fade["change_short"] - fade["bench_short"], 2) < 0
 
 
 # -- Stock Radar -------------------------------------------------------------------------------
@@ -193,3 +207,91 @@ def test_market_tools_download_once_and_keep_old_data(tmp_path):
                            get_json=lambda url, params: (_ for _ in ()).throw(OSError("BSE down")))
     again.refresh_results(force=True)
     assert again._state["results"][0]["symbol"] == "ABCLTD.NS" and "could not be read" in again._state["results_note"]
+
+
+# -- Results calendar sources -------------------------------------------------------------------
+
+NSE_EVENTS = [
+    {"symbol": "ABCLTD", "company": "ABC  Limited", "purpose": "Financial Results/Dividend",
+     "bm_desc": "To consider and approve the financial results for the period ended September 30, 2026", "date": "02-Nov-2026"},
+    {"symbol": "XYZ", "company": "XYZ Ltd", "purpose": "Fund Raising", "bm_desc": "To consider raising funds", "date": "03-Nov-2026"},
+    {"symbol": "PQR", "company": "PQR Ltd", "purpose": "Other business matters",
+     "bm_desc": "Inter alia, to consider Financial Results", "date": "04-Nov-2026"},
+    {"symbol": "ABCLTD", "company": "ABC Limited", "purpose": "Financial Results", "bm_desc": "", "date": "02-Nov-2026"},
+    {"symbol": "BAD", "purpose": "Financial Results", "date": "not a date"}]
+
+
+def test_nse_event_calendar_keeps_only_results_meetings():
+    rows = mt.parse_nse_events(NSE_EVENTS)
+    assert [(r["symbol"], r["date"]) for r in rows] == [("ABCLTD.NS", "2026-11-02"), ("PQR.NS", "2026-11-04")]
+    assert rows[0]["company"] == "ABC Limited"
+    assert mt.parse_nse_events({"data": NSE_EVENTS[:1]})[0]["symbol"] == "ABCLTD.NS"
+    assert mt.parse_nse_events("nonsense") == []
+
+
+def test_why_gives_a_short_reason():
+    import httpx
+
+    request = httpx.Request("GET", "https://api.bseindia.com/x")
+    exc = httpx.HTTPStatusError("Client error '403 Forbidden' for url ...", request=request,
+                                response=httpx.Response(403, request=request))
+    assert mt.why(exc) == "403 Forbidden"
+    assert mt.why(RuntimeError("NSE did not answer (www.nseindia.com: Client error '403 Forbidden' for url 'x')")) == "403 Forbidden"
+    assert mt.why(OSError("offline")) == "offline"
+
+
+class _Nse:
+    def __init__(self, answer):
+        self.answer, self.calls = answer, []
+
+    def json(self, path, params):
+        self.calls.append((path, params))
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+def test_results_calendar_falls_back_to_nse_when_bse_refuses(tmp_path):
+    from datetime import datetime
+
+    from desk import market
+
+    nse = _Nse(NSE_EVENTS)
+    tools = mt.MarketTools(None, None, None, path=tmp_path / "t.json", nse=nse,
+                           get_json=lambda url, params: (_ for _ in ()).throw(RuntimeError("Client error '403 Forbidden'")),
+                           now=lambda: datetime(2026, 11, 13, 18, 0, tzinfo=market.IST))
+    tools.refresh_results(force=True)
+    assert nse.calls == [("event-calendar", {"index": "equities", "from_date": "14-09-2026", "to_date": "13-11-2026"})]
+    assert tools._state["results_source"] == "NSE" and tools._state["results_note"] is None
+    assert {r["symbol"] for r in tools._state["results"]} == {"ABCLTD.NS", "PQR.NS"}
+
+
+def test_results_calendar_explains_a_blocked_server_and_retries_sooner(tmp_path, monkeypatch):
+    from datetime import datetime
+
+    from desk import market
+
+    tools = mt.MarketTools(None, None, None, path=tmp_path / "t.json", nse=_Nse(RuntimeError("Client error '403 Forbidden'")),
+                           get_json=lambda url, params: (_ for _ in ()).throw(RuntimeError("Client error '403 Forbidden'")),
+                           now=lambda: datetime(2026, 11, 13, 18, 0, tzinfo=market.IST))
+    clock = [1_000_000.0]
+    monkeypatch.setattr(mt.time, "time", lambda: clock[0])
+    tools.refresh_results(force=True)
+    note = tools._state["results_note"]
+    assert "BSE: 403 Forbidden" in note and "NSE: 403 Forbidden" in note and "DESK_EXCHANGE_PROXY" in note
+    calls = tools.nse.calls
+    clock[0] += 20 * 60
+    tools.refresh_results()
+    assert len(calls) == 1                                                     # not before 30 minutes
+    clock[0] += 11 * 60
+    tools.refresh_results()
+    assert len(calls) == 2
+
+
+def test_exchange_proxy_only_when_set(monkeypatch):
+    from desk import nse
+
+    monkeypatch.delenv("DESK_EXCHANGE_PROXY", raising=False)
+    assert nse.proxy_kwargs() == {}
+    monkeypatch.setenv("DESK_EXCHANGE_PROXY", " http://u:p@10.0.0.2:3128 ")
+    assert nse.proxy_kwargs() == {"proxy": "http://u:p@10.0.0.2:3128"}

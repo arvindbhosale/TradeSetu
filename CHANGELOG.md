@@ -17,10 +17,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Profit/Loss (closed trades) CSV download.
 
 ### Changed
+
+- Sector Compass is now four plain groups (Leading, Losing pace, Lagging, Catching up) decided by two numbers shown for every sector: its return against the Nifty 50 over 3 months and over 4 weeks. The chart is optional, uses the same numbers, and no longer overlaps its labels.
 - The P&L tab leads with a plain summary (total, booked, still holding, today) and tables in plain words; statistics and the tax estimate moved under Advanced.
 - New TradeSetu logo in the README, the desk sidebar, the sign-in page, the browser tab icon, the installed-app icons and the social preview.
 
 ### Fixed
+
+- Results Drift showed nothing when BSE refused the server (403). It now retries BSE with cookies, falls back to NSE's event calendar, retries every 30 minutes after a failure, says why in plain words, and can send exchange requests through `DESK_EXCHANGE_PROXY`.
 - Stock algos: a sell went ahead when cancelling the algo's target/stoploss GTT failed (the error was ignored), so the GTT could fire later and sell shares that were no longer the algo's. The sell now waits until the GTT is gone; if it has fired, nothing more is sold. A trailing or at-cost stoploss is not moved while the old GTT cannot be cancelled.
 - Background jobs (paper GTT check, live fill sync, daily loss limit, F&O algos, paper expiry settlement, MCX square-off, scanner) failed silently. A failure is now logged and alerted, once an hour; an algo that hits an unexpected error says so.
 - Daily loss limit: warns which positions it has no price for, instead of leaving them out without a word.

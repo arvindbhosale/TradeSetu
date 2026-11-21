@@ -6,11 +6,12 @@
 - **Whale Deals**: NSE's bulk and block deals (big trades by named clients),
   and stocks trading far above their usual volume today.
 - **Results Drift**: post-earnings announcement drift. Stocks that reported
-  results in the last 60 days (BSE's results calendar), how hard the price
+  results in the last 60 days (BSE's results calendar, NSE's event calendar if BSE refuses), how hard the price
   reacted, whether it has kept moving the same way since, and the quarter's
   sales and profit against a year before (NSE filings, :mod:`desk.financials`).
-- **Sector Compass**: a relative rotation map of the sector indices against
-  the Nifty 50 (strength and its momentum, four quadrants, weekly tails).
+- **Sector Compass**: each sector index against the Nifty 50 in two numbers
+  (ahead or behind over 3 months, gaining or slipping over 4 weeks) and the
+  four groups they make, with an optional chart.
 - **Stock Radar**: one table of every tracked stock with returns, distance from
   its 52-week high, strength against the Nifty, volume, valuation and a score.
 
@@ -40,6 +41,7 @@ import pandas as pd
 from tradingagents.dataflows.symbols import normalize_symbol
 
 from . import data, market, trend
+from .nse import NseClient
 from .settings import home
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,7 @@ NSE_DEALS = {"Bulk": "https://nsearchives.nseindia.com/content/equities/bulk.csv
 BSE_RESULTS = "https://api.bseindia.com/BseIndiaAPI/api/Corpforthresults/w"
 DEALS_SECONDS = 2 * 3600
 RESULTS_SECONDS = 12 * 3600
+RETRY_SECONDS = 30 * 60           # after a failed read of the results calendar
 KEEP_DEALS_DAYS = 30
 RESULTS_DAYS = 60
 SPIKE = 3.0                       # today's volume at least this many times the 20-day average
@@ -262,6 +265,44 @@ def parse_results(answer) -> list[dict]:
     return out
 
 
+def parse_nse_events(answer) -> list[dict]:
+    """NSE's event calendar: [{symbol, date, company}] for board meetings about financial results.
+
+    Rows look like {"symbol": "TCS", "company": "...", "purpose": "Financial Results/Dividend",
+    "bm_desc": "To consider and approve the financial results...", "date": "09-Oct-2026"}.
+    """
+    if isinstance(answer, dict):
+        answer = answer.get("data") or []
+    out, seen = [], set()
+    for row in answer if isinstance(answer, list) else []:
+        if not isinstance(row, dict):
+            continue
+        what = f"{row.get('purpose') or ''} {row.get('bm_desc') or ''}".lower()
+        if "financial result" not in what:
+            continue
+        name = str(row.get("symbol") or "").strip().upper()
+        try:
+            day = datetime.strptime(str(row.get("date") or "").strip(), "%d-%b-%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+        if re.fullmatch(r"[A-Z0-9&\-]{1,20}", name) and (name, day) not in seen:
+            seen.add((name, day))
+            out.append({"symbol": normalize_symbol(f"NSE:{name}"), "date": day,
+                        "company": " ".join(str(row.get("company") or "").split())})
+    return out
+
+
+def why(exc: Exception) -> str:
+    """A short reason for a failed download: "403 Forbidden" rather than httpx's paragraph with the URL."""
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None):
+        return f"{response.status_code} {response.reason_phrase or ''}".strip()
+    found = re.search(r"\b([45]\d\d) ([A-Z][A-Za-z ]+)", str(exc))
+    if found:
+        return f"{found.group(1)} {found.group(2).strip()}"
+    return str(exc).split("\n")[0][:100] or type(exc).__name__
+
+
 def drift_row(frame: pd.DataFrame, result_day: str, volume: pd.Series | None = None, min_move: float = 4.0) -> dict | None:
     """How a stock reacted to results announced on ``result_day`` and what it has done since.
 
@@ -318,13 +359,14 @@ def results_columns(numbers: dict | None, signal: str) -> dict:
 
 # -- Sector Compass ------------------------------------------------------------------------------
 
-def rotation(series: dict[str, pd.Series], bench: pd.Series, tail: int = 6, length: int = 10,
+def rotation(series: dict[str, pd.Series], bench: pd.Series, tail: int = 6, long: int = 13, short: int = 4,
              weekly: bool = True) -> list[dict]:
-    """Relative rotation: strength ratio against ``bench`` and its momentum, both centred on 100, with a tail.
+    """Each sector against ``bench`` in two plain numbers, both "sector return minus benchmark return" in points.
 
-    RS = sector / bench. RS-Ratio = 100 x RS / its ``length``-period average. RS-Momentum = 100 x RS-Ratio / its
-    ``length``-period average. Above 100 on both is Leading; strong but slowing is Weakening; below on both is
-    Lagging; weak but turning up is Improving.
+    ``ahead``: over the last ``long`` periods (13 weeks, or 20 sessions on daily). ``gaining``: over the last
+    ``short`` periods (4 weeks, or 5 sessions). Ahead and gaining is Leading; ahead but slipping is Weakening;
+    behind and slipping is Lagging; behind but gaining is Improving. ``tail`` is the same pair at each of the
+    last ``tail`` periods, so a sector's path through the groups can be drawn.
     """
     def resample(s: pd.Series) -> pd.Series:
         s = s.dropna()
@@ -333,22 +375,28 @@ def rotation(series: dict[str, pd.Series], bench: pd.Series, tail: int = 6, leng
     b = resample(bench)
     out = []
     for name, s in series.items():
-        s = resample(s)
-        both = pd.concat([s, b], axis=1, join="inner").dropna()
-        if len(both) < 2 * length + tail:
+        both = pd.concat([resample(s), b], axis=1, join="inner").dropna()
+        if len(both) < long + tail:
             continue
-        rs = both.iloc[:, 0] / both.iloc[:, 1]
-        ratio = 100 * rs / rs.rolling(length).mean()
-        mom = 100 * ratio / ratio.rolling(length).mean()
-        frame = pd.concat([ratio, mom], axis=1).dropna().iloc[-tail:]
+        sec, ben = both.iloc[:, 0], both.iloc[:, 1]
+        ret_long, bench_long = (sec / sec.shift(long) - 1) * 100, (ben / ben.shift(long) - 1) * 100
+        ret_short, bench_short = (sec / sec.shift(short) - 1) * 100, (ben / ben.shift(short) - 1) * 100
+        frame = pd.concat([ret_long - bench_long, ret_short - bench_short], axis=1).dropna().iloc[-tail:]
         if frame.empty:
             continue
         x, y = float(frame.iloc[-1, 0]), float(frame.iloc[-1, 1])
-        quadrant = ("Leading" if y >= 100 else "Weakening") if x >= 100 else ("Improving" if y >= 100 else "Lagging")
-        out.append({"name": name, "ratio": round(x, 2), "momentum": round(y, 2), "quadrant": quadrant,
-                    "tail": [{"date": d.strftime("%Y-%m-%d"), "ratio": round(float(r), 2), "momentum": round(float(m), 2)}
-                             for d, r, m in frame.itertuples()]})
-    return sorted(out, key=lambda r: (["Leading", "Improving", "Weakening", "Lagging"].index(r["quadrant"]), -r["ratio"]))
+        out.append({"name": name, "ahead": round(x, 2), "gaining": round(y, 2), "quadrant": _quadrant(x, y),
+                    "was": _quadrant(float(frame.iloc[0, 0]), float(frame.iloc[0, 1])),
+                    "since": frame.index[0].strftime("%Y-%m-%d"), "long": long, "short": short,
+                    "change_long": round(float(ret_long.iloc[-1]), 2), "bench_long": round(float(bench_long.iloc[-1]), 2),
+                    "change_short": round(float(ret_short.iloc[-1]), 2), "bench_short": round(float(bench_short.iloc[-1]), 2),
+                    "tail": [{"date": d.strftime("%Y-%m-%d"), "ahead": round(float(a), 2), "gaining": round(float(g), 2)}
+                             for d, a, g in frame.itertuples()]})
+    return sorted(out, key=lambda r: (["Leading", "Improving", "Weakening", "Lagging"].index(r["quadrant"]), -r["ahead"]))
+
+
+def _quadrant(ahead: float, gaining: float) -> str:
+    return ("Leading" if gaining >= 0 else "Weakening") if ahead >= 0 else ("Improving" if gaining >= 0 else "Lagging")
 
 
 # -- Stock Radar ---------------------------------------------------------------------------------
@@ -409,14 +457,16 @@ class MarketTools:
     """Holds the downloaded deals and results calendar and answers the five tools from the desk's candles."""
 
     def __init__(self, sectors, indices, fundamentals, path: Path | None = None, download=None, get_json=None,
-                 fetch=None, now=market.now_ist, results=None):
+                 fetch=None, now=market.now_ist, results=None, nse: NseClient | None = None):
         self.sectors, self.indices, self.fundamentals = sectors, indices, fundamentals
         self.results = results              # (symbol, result date) -> latest quarter against a year before, or None
         self._download, self._get_json, self.fetch, self._now = download, get_json, fetch, now
+        # NSE's event calendar stands in when BSE refuses; tests that inject get_json use only BSE unless given one.
+        self.nse = nse if nse is not None else (None if get_json is not None else NseClient())
         self.path = path or home() / "market_tools.json"
         self._lock = threading.RLock()
         self._state = {"deals": [], "deals_at": 0, "deals_note": None, "results": [], "results_at": 0,
-                       "results_note": None}
+                       "results_note": None, "results_source": None, "results_ok_at": 0}
         with contextlib.suppress(OSError, json.JSONDecodeError):
             stored = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(stored, dict):
@@ -437,7 +487,9 @@ class MarketTools:
 
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                                  "Chrome/131.0 Safari/537.36", "Accept": "text/csv,*/*"}
-        response = httpx.get(url, timeout=30, headers=headers, follow_redirects=True)
+        from .nse import proxy_kwargs
+
+        response = httpx.get(url, timeout=30, headers=headers, follow_redirects=True, **proxy_kwargs())
         response.raise_for_status()
         return response.text
 
@@ -458,24 +510,48 @@ class MarketTools:
             self._save()
 
     def refresh_results(self, force: bool = False) -> None:
-        if not force and time.time() - self._state["results_at"] < RESULTS_SECONDS:
+        """Read the results calendar: BSE's first, NSE's event calendar if BSE refuses or has nothing.
+
+        A failed read is tried again after 30 minutes (a good one after 12 hours); the last good calendar is kept.
+        """
+        wait = RETRY_SECONDS if self._state.get("results_note") else RESULTS_SECONDS
+        if not force and time.time() - self._state["results_at"] < wait:
             return
         end = self._now().date()
         start = end - timedelta(days=RESULTS_DAYS)
-        params = {"fromdate": start.strftime("%Y%m%d"), "todate": end.strftime("%Y%m%d")}
+        rows, source, failed = None, None, []
+        params = {"fromdate": start.strftime("%Y%m%d"), "todate": end.strftime("%Y%m%d"), "scripcode": ""}
         try:
             if self._get_json is not None:
                 answer = self._get_json(BSE_RESULTS, params)
             else:
                 from .bselists import http_get_json
                 answer = http_get_json(BSE_RESULTS, params)
-            rows = parse_results(answer)
-            note = None if rows else "BSE's results calendar came back empty."
-        except Exception as exc:  # noqa: BLE001 - keep the stored calendar
-            rows, note = None, f"BSE's results calendar could not be read: {str(exc)[:100]}"
+            rows, source = parse_results(answer), "BSE"
+            if not rows:
+                failed.append("BSE: empty calendar")
+        except Exception as exc:  # noqa: BLE001 - try NSE, keep the stored calendar
+            failed.append(f"BSE: {why(exc)}")
+        if not rows and self.nse is not None:
+            try:
+                answer = self.nse.json("event-calendar", {"index": "equities", "from_date": start.strftime("%d-%m-%Y"),
+                                                          "to_date": end.strftime("%d-%m-%Y")})
+                rows, source = parse_nse_events(answer), "NSE"
+                if not rows:
+                    failed.append("NSE: no results meetings in its calendar")
+            except Exception as exc:  # noqa: BLE001 - keep the stored calendar
+                failed.append(f"NSE: {why(exc)}")
+        note = None
+        if not rows:
+            blocked = any(re.search(r"\b40[13]\b", f) for f in failed)
+            note = ("Results dates could not be read (" + "; ".join(failed) + ")."
+                    + (" NSE and BSE refuse many cloud servers. Run the desk on your own connection, or set "
+                       "DESK_EXCHANGE_PROXY (see the user manual)." if blocked else "")
+                    + " Trying again every 30 minutes.")
+            logger.warning("results calendar: %s", "; ".join(failed))
         with self._lock:
             if rows:
-                self._state["results"] = rows
+                self._state.update(results=rows, results_source=source, results_ok_at=time.time())
             self._state.update(results_at=time.time(), results_note=note)
             self._save()
 
@@ -561,6 +637,7 @@ class MarketTools:
         out.sort(key=lambda r: (r["signal"] == "No edge", -abs(r["reaction"])))
         listed = len(self._state["results"])
         return {"rows": out, "note": self._state.get("results_note"), "fetched": self._state["results_at"],
+                "source": self._state.get("results_source"), "read_at": self._state.get("results_ok_at") or 0,
                 "calendar": listed, "priced": len(out), "min_move": min_move,
                 "with_numbers": sum(1 for r in out if r.get("verdict") or r.get("profit") is not None)}
 
@@ -587,7 +664,7 @@ class MarketTools:
             frame, _ = self.indices.level(entry[0])
             if frame is not None and len(frame) > 60:
                 series[entry[1]] = frame["Close"]
-        rows = rotation(series, bench["Close"], weekly=weekly, length=10 if weekly else 20,
+        rows = rotation(series, bench["Close"], weekly=weekly, long=13 if weekly else 20, short=4 if weekly else 5,
                         tail=6 if weekly else 10)
         return {"rows": rows, "note": None if rows else "Not enough sector history yet.", "weekly": weekly}
 
