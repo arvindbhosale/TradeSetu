@@ -20,7 +20,7 @@ def minutes(day, start="09:15", end="15:29", seed=1):
 def test_the_new_sizes_are_offered_everywhere_in_order():
     assert list(data.INTERVALS) == ["1m", "2m", "3m", "4m", "5m", "15m", "30m", "1h", "1d"]
     for key in data.INTRADAY:
-        assert key in data.KITE_LOOKBACK and key in data.KITE_CHUNK and key in data.KITE_MAX_DAYS
+        assert key in data.KITE_LOOKBACK and key in data.KITE_CHUNK
     # Kite's own sizes are used where it has them; 2 and 4 minutes are built from its minute candles.
     assert {k: v["kite"] for k, v in data.INTERVALS.items() if not v.get("kite_resample")}["3m"] == "3minute"
     assert data.INTERVALS["30m"]["kite"] == "30minute"

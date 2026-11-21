@@ -16,7 +16,9 @@ How a run trades, so its figures can be read for what they are:
   candle's high reaches it (at the open if it opens above). On that candle the
   exits are checked on its close only: the order of its high and low is unknown.
 - Long only, whole shares, one position, delivery (CNC) charges on every fill.
-- Prices are adjusted for splits, bonuses and dividends.
+- Prices are adjusted for splits and bonuses (Yahoo's for dividends too).
+- Each trade records how far it fell and rose from its entry (``worst_pct``, ``best_pct``), and
+  ``metrics.exits`` says whether the stoploss and target were ever within reach.
 
 What it leaves out: liquidity and impact, circuit-limit days when an order
 cannot fill, taxes on gains, and survivorship (a delisted stock has no
@@ -146,6 +148,8 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
     equity = np.empty(len(bars))
     in_market = 0
     reentries = 0
+    reentry_trade = False    # the open position is a re-entry after a stoploss
+    worst = best = 0.0       # the open position's lowest low and highest high since entry
 
     def close_trade(i: int, price: float, reason: str) -> None:
         nonlocal cash, qty, total_charges
@@ -160,11 +164,12 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
             "quantity": qty, "entry_price": round(entry_price, 2), "exit_price": round(price, 2),
             "pnl": round(float(pnl), 2), "return_pct": round(float(pnl / entry_cost * 100), 2),
             "days": int((dates[i] - dates[entry_index]).days), "exit": reason, "open": False,
+            "reentry": reentry_trade, **_excursion(entry_price, min(worst, price), max(best, price)),
         })
         qty = 0
 
-    def buy(i: int, price: float) -> bool:
-        nonlocal cash, qty, entry_price, entry_cost, entry_index, total_charges, peak
+    def buy(i: int, price: float, again: bool = False) -> bool:
+        nonlocal cash, qty, entry_price, entry_cost, entry_index, total_charges, peak, reentry_trade, worst, best
         shares = _max_quantity(min(cash, cash * params.allocation_pct / 100), price,
                                params.exchange, schedule, product)
         if shares <= 0:
@@ -174,7 +179,8 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
         cash -= entry_cost
         total_charges += fees
         qty, entry_price, entry_index = shares, price, i
-        peak = price
+        peak = worst = best = price
+        reentry_trade = again
         return True
 
     def exit_levels():
@@ -216,7 +222,7 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
                 fill = opens[i]
             elif highs[i] >= level:
                 fill, close_only = level, True
-            if fill is not None and buy(i, fill * (1 + slip)):
+            if fill is not None and buy(i, fill * (1 + slip), again=True):
                 reentries_left, rearm = rearm["left"] - 1, None
                 reentries += 1
         elif not held_before and qty == 0 and want == 1 and not blocked and may_enter and buy(i, opens[i] * (1 + slip)):
@@ -240,6 +246,7 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
 
         if qty > 0:
             peak = max(peak, highs[i])
+            worst, best = min(worst, closes[i] if close_only else lows[i]), max(best, highs[i])
             in_market += 1
         equity[i] = cash + qty * closes[i]
 
@@ -250,6 +257,7 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
             "quantity": qty, "entry_price": round(entry_price, 2), "exit_price": round(closes[-1], 2),
             "pnl": round(value - entry_cost, 2), "return_pct": round((value - entry_cost) / entry_cost * 100, 2),
             "days": int((dates[-1] - dates[entry_index]).days), "exit": "open", "open": True,
+            "reentry": reentry_trade, **_excursion(entry_price, worst, best),
         })
 
     curve = pd.Series(equity, index=dates)
@@ -263,7 +271,8 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
         "params": params.as_dict(),
         "period": {"start": dates[0].strftime("%Y-%m-%d"), "end": dates[-1].strftime("%Y-%m-%d"),
                    "bars": len(bars), "days": len(curve)},
-        "metrics": {**_metrics(curve, trades, params, total_charges, in_market), "reentries": reentries},
+        "metrics": {**_metrics(curve, trades, params, total_charges, in_market), "reentries": reentries,
+                    "exits": exit_summary(trades, rules)},
         "buy_hold": _curve_stats(hold, params),
         "trades": trades,
         "equity": _points(curve),
@@ -276,6 +285,28 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
             scaled = params.capital * bench / bench.iloc[0]
             out["benchmark_equity"] = _points(scaled)
             out["benchmark"] = _curve_stats(scaled, params)
+    return out
+
+
+def _excursion(entry: float, worst: float, best: float) -> dict:
+    """How far a trade went against and for its entry while open, in % of the entry price."""
+    return {"worst_pct": round((worst / entry - 1) * 100, 2), "best_pct": round((best / entry - 1) * 100, 2)}
+
+
+def exit_summary(trades: list[dict], rules: ExitRules) -> dict:
+    """Closed trades by exit reason, and whether the stoploss and target could ever have been reached: the
+    deepest fall and highest rise any trade saw from its entry. A 15% stoploss on trades that never fell more
+    than 3% changes nothing, and the page says so."""
+    reasons: dict[str, int] = {}
+    for t in trades:
+        reasons[t["exit"]] = reasons.get(t["exit"], 0) + 1
+    out = {"by_reason": reasons, "rules": rules.text(), "unit": rules.unit,
+           "stop_loss": rules.stop_loss, "target": rules.target,
+           "deepest_fall_pct": min((t["worst_pct"] for t in trades), default=None),
+           "highest_rise_pct": max((t["best_pct"] for t in trades), default=None)}
+    stops = sum(n for k, n in reasons.items() if "stoploss" in k)
+    out["stop_unused"] = bool(rules.stop_loss) and stops == 0
+    out["target_unused"] = bool(rules.target) and reasons.get("target", 0) == 0
     return out
 
 

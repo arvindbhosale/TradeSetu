@@ -58,7 +58,7 @@ What the desk cannot do:
 |---|---|
 | Run for days without you | Zerodha signs every Kite session out each morning. You sign in again once a day. |
 | React in milliseconds | The desk checks prices and candles about every 20 seconds. |
-| Give exchange-grade live data for free | Charts and live prices come from Kite, which needs the paid Kite Connect plan (₹500 a month) for market data; the free Personal API has none. Backtests, the scanner and sector history use Yahoo's delayed data. |
+| Give exchange-grade live data for free | Charts and live prices come from Kite, which needs the paid Kite Connect plan (₹500 a month) for market data; the free Personal API has none. Without Kite, backtests use Yahoo's delayed data; the scanner and sector history always do. |
 | Short stocks | It is long-only: it buys, then sells what it bought. |
 | Trade futures, or write (sell short) options | Index options can be **bought** and later sold (paper and live). Futures orders and option writing are not offered; both can be **backtested** (index futures, straddles, condors, spreads). |
 | Give fundamentals from Kite | Kite's API has no fundamentals (P/E, market cap, ROE…). Those come from Yahoo Finance, refreshed every 3 days, and the financial statements from the companies' own filings on NSE. Prices, quotes and charts come from Kite. |
@@ -643,7 +643,7 @@ How far back each candle size goes on a chart:
 Kite has no 2 or 4-minute candles, so the desk builds them from Kite's 1-minute candles (3 and 30 minutes are Kite's own). Every size lines up with the session open, as Kite's do: a 4-minute chart reads 09:15, 09:19, 09:23 … and its last candle of the day, 15:27, holds the 3 minutes left before 15:30. On MCX the candles start at 09:00. Live charts, backtests and algos use the same candles.
 | 1 day | about 5 years |
 
-Kite's daily candles are not adjusted for splits and bonuses, so an old split shows as a sudden drop. Backtests use adjusted prices and are not affected.
+Kite's daily candles are not always adjusted for splits and bonuses, so an old split can show as a sudden drop on a chart. Backtests fold those gaps back (see Intraday backtests).
 
 **Pivots** are traditional (floor) pivots: P = (H + L + C) / 3, R1 = 2P − L, S1 = 2P − H, R2 = P + (H − L), S2 = P − (H − L), R3 = H + 2(P − L), S3 = L − 2(H − P), from the previous day's, week's or month's high, low and close. Tick **daily**, **weekly** and **monthly** separately; each draws P solid and R1-R3, S1-S3 dashed. Kite does not publish pivot levels (neither does the exchange), so the desk computes them from the candles. The table under the chart lists today's levels (on a 1D chart, the daily row is for the next session). A level appears only when the whole previous period is in the chart's data: weekly pivots on a 1-minute chart need the last full week, monthly pivots need a 15-minute or longer chart.
 
@@ -841,11 +841,15 @@ Choose a 1, 2, 3, 4, 5, 15, 30-minute or 1-hour candle. The backtest then trades
 - Sells everything at the **Sell everything at** time. Nothing is held overnight.
 - Uses intraday (MIS) charges.
 
-**With Kite logged in**, intraday backtests use Kite's candles, which go back much further: up to 1 year of 1-minute candles, 3 years of 5-minute, 5 years of 15-minute and hourly. The note above the chart says "Candles from Kite" and how many were used. A long 1-minute test downloads a lot of data and can take a minute.
+**With Kite logged in**, every stock backtest, daily or intraday, uses Kite's candles. Kite keeps intraday candles of every size from early 2015, and the desk sets no limit of its own: it asks for them in pieces Kite accepts (60 days of 1-minute candles a request, 100 days of 3 and 5-minute, 200 of 15 and 30-minute, 400 of hourly), about three requests a second. A range that starts before 2015 is tested from where Kite's history starts, and the page says so. Years of 1-minute candles take a minute or two to download; a second run on the same dates (other stoploss or target) reuses them for 30 minutes.
 
-**Without Kite**, the free feed keeps only 7 days of 1-minute candles, 60 days of 5 and 15-minute and 2 years of hourly, and the note says so. Treat such short tests with caution.
+Kite's prices are not always adjusted for splits and bonuses. When a day opens at a usual split or bonus ratio below the previous close (half for a 1:1 bonus, a tenth for a ten-for-one split), the desk checks the free feed's adjusted prices for that day: no fall there means a corporate action, and earlier prices are divided by the ratio so the gap does not fire a stoploss. The page lists each one it adjusted.
 
-Daily (1 day) backtests always use the free feed, because its prices are adjusted for splits and bonuses and Kite's are not.
+**Without Kite**, the free feed (Yahoo) keeps only 7 days of 1, 3 and 4-minute candles, 60 days of 2, 5, 15 and 30-minute, and 2 years of hourly.
+
+**Prices from** (a tile above the results) names the source and the dates the candles cover. When they cover less than the dates you chose, or Kite could not serve them, **Can you trust this result?** says so first: the figures are for the shorter period only.
+
+**Stoploss and target that never fired.** If you set a stoploss or target and no trade reached it, the trust box says so, with the deepest fall and highest rise any trade had from its entry. The trade list shows both for each trade (**Lowest / highest**, in % of the entry price). An intraday trade that never moved 3% cannot hit a 15% stoploss, so the results are the same as with none. Re-entry happens only after a stoploss, so it changes nothing either until the stoploss fires. Re-entries are marked "(re-entry)" in the trade list.
 
 ### Optimise a strategy (walk-forward)
 
