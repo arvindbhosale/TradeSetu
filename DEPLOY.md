@@ -76,9 +76,13 @@ KITE_API_SECRET=your_kite_api_secret
   should print `200`.
   The option history download (Backtest → Option strategy → Real option prices)
   uses the same proxy. Check NSE's archive through it with
-  `curl -x http://user:pass@100.64.0.5:8888 -s -o /dev/null -w "%{http_code}\n" -A "Mozilla/5.0" "https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_20241101_F_0000.csv.zip"`
+  `curl -x http://user:pass@100.64.0.5:8888 -s -o /dev/null -w "%{http_code}\n" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0" -H "Referer: https://www.nseindia.com/" "https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_20241101_F_0000.csv.zip"`
   (`200`). The history file, `option_history.db`, lives in the desk's data
   volume; 10 years of NIFTY, BANKNIFTY and FINNIFTY is about 700 MB.
+  A `403` whose body says "Access denied" or names Tinyproxy comes from the
+  proxy, not the exchange: add the server's address to the proxy's `Allow`
+  list (Tinyproxy allows only `127.0.0.1` by default) and restart it.
+  `curl -x <proxy> -s https://ifconfig.me` should print the home address.
 
 ## 5. Domain and HTTPS
 
