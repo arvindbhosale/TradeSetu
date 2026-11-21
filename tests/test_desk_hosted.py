@@ -672,12 +672,18 @@ def test_intraday_backtests_use_kites_longer_history_when_signed_in(hosted):
     account = hosted.get("/api/kite/account", headers=headers).json()
     assert account["market_data"]["ok"] and "working" in account["market_data"]["detail"]
     result = hosted.post("/api/backtest/strategy", json=body, headers=headers).json()
-    assert "Candles from Kite" in result["data_note"], result.get("error")
+    assert "Prices from Kite" in result["data_note"], result.get("error")
     assert result["period"]["start"] == "2026-03-02" and result["period"]["end"] == "2026-11-13"
     assert result["period"]["days"] > 170 and result["period"]["bars"] == result["period"]["days"] * 25   # 25 candles a day
     assert all("09:30" <= t["entry_date"][11:] < "15:00" for t in result["trades"]) and result["trades"]
-    too_long = hosted.post("/api/backtest/strategy", json={**body, "interval": "1m", "start": "2024-01-01"}, headers=headers).json()
-    assert "at most 365 days" in too_long.get("data_note", "") or "at most 365 days" in too_long.get("error", "")
+    assert result["data_source"]["name"] == "Kite" and not result["data_source"]["short"]
+    # Years of 3-minute candles: Kite serves them in 100-day requests; the desk sets no cap of its own.
+    years = hosted.post("/api/backtest/strategy", json={**body, "interval": "3m", "start": "2021-01-04"}, headers=headers).json()
+    assert years["data_source"]["name"] == "Kite", years.get("error") or years.get("data_note")
+    assert years["period"]["start"] == "2021-01-04" and "Prices from Kite" in years["data_note"]
+    # Day candles come from Kite too when it is logged in.
+    daily = hosted.post("/api/backtest/strategy", json={**body, "interval": "1d"}, headers=headers).json()
+    assert daily["data_source"]["name"] == "Kite", daily.get("error")
 
 
 # -- installable app (PWA) and F&O expiries --------------------------------------

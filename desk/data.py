@@ -6,6 +6,7 @@ import logging
 import time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from tradingagents.dataflows.symbols import normalize_symbol, safe_ticker_component
@@ -226,38 +227,118 @@ def kite_bars(kite, symbol: str, interval: str, now, raw: bool = False) -> pd.Da
     return frame
 
 
-# Kite's limit on the span of one historical request, in days, and how far back a backtest may reach.
+# Kite's limit on the span of one historical request, in days (its "interval exceeds max limit" error). 2 and
+# 4-minute candles are built from minute candles, so they take the minute limit.
 KITE_CHUNK = {"1m": 60, "2m": 60, "3m": 100, "4m": 60, "5m": 100, "15m": 200, "30m": 200, "1h": 400, "1d": 2000}
-KITE_MAX_DAYS = {"1m": 365, "2m": 365, "3m": 3 * 365, "4m": 365, "5m": 3 * 365, "15m": 5 * 365, "30m": 5 * 365,
-                 "1h": 5 * 365, "1d": 2000}
+# Kite keeps minute-level candles (every intraday size) from early 2015; day candles go back further. This is
+# Kite's limit, not the desk's: an intraday range that starts earlier is tested from here.
+KITE_INTRADAY_FROM = pd.Timestamp("2015-02-02")
+_range_cache: dict = {}
+_RANGE_CACHE_SIZE = 6
+
+# Price ratios a split or bonus leaves between one day's close and the next day's open (1:1 bonus 2, 1:2 bonus
+# 1.5, 1:4 bonus 1.25, ten-for-one split 10). Under 1.4 a ratio is too close to a real fall (a stock opening at
+# its 20% lower circuit reads 1.25), so those are adjusted only when the adjusted feed shows no such fall.
+_SPLIT_RATIOS = (1.2, 1.25, 4 / 3, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 20.0, 25.0, 50.0, 100.0)
 
 
-def kite_range(kite, symbol: str, interval: str, start: str, end: str) -> pd.DataFrame:
+def adjust_splits(frame: pd.DataFrame, reference=None) -> tuple[pd.DataFrame, list[tuple[str, float]]]:
+    """Bars with unadjusted splits and bonuses folded back into the earlier prices, and the gaps it adjusted.
+
+    A day that opens at 1/N of the previous close, N one of the usual split or bonus ratios (within 3%), is
+    read as a corporate action: every earlier price is divided by N (volume multiplied), so the gap does not
+    fire a stoploss that was never hit. ``reference()`` may return adjusted daily bars (Yahoo's) to check each
+    gap against: the same gap there is a real fall and is left alone; none there confirms the corporate action.
+    A ratio under 1.4 is adjusted only when confirmed. Already adjusted data has no such gaps and is unchanged.
+    """
+    if len(frame) < 2:
+        return frame, []
+    day = frame.index.normalize()
+    starts = np.flatnonzero(np.r_[False, day[1:] != day[:-1]])
+    closes, opens = frame["Close"].to_numpy(float), frame["Open"].to_numpy(float)
+    found, ref, looked = [], None, False
+    for i in starts:
+        ratio = closes[i - 1] / opens[i]
+        match = next((r for r in _SPLIT_RATIOS if abs(ratio / r - 1) < 0.03), None) if ratio >= 1.15 else None
+        if not match:
+            continue
+        if not looked:
+            looked = True
+            try:
+                ref = reference() if reference else None
+            except Exception:  # noqa: BLE001 - no reference is "unconfirmed", not a failure
+                ref = None
+        verdict = None
+        if ref is not None and len(ref):
+            before, on = ref[ref.index < day[i]], ref[ref.index == day[i]]
+            if len(before) and len(on):
+                verdict = float(before["Close"].iloc[-1]) / float(on["Open"].iloc[0]) < 1.1   # no gap: a split
+        if verdict or (verdict is None and match >= 1.4):
+            found.append((i, match))
+    if not found:
+        return frame, []
+    frame = frame.copy()
+    prices = [frame.columns.get_loc(c) for c in ("Open", "High", "Low", "Close")]
+    for i, ratio in found:
+        frame.iloc[:i, prices] /= ratio
+        if "Volume" in frame:
+            frame.iloc[:i, frame.columns.get_loc("Volume")] *= ratio
+    return frame, [(frame.index[i].strftime("%d %b %Y"), ratio) for i, ratio in found]
+
+
+def kite_range(kite, symbol: str, interval: str, start: str, end: str, raw: bool = False,
+               continuous: bool = False, reference=None) -> pd.DataFrame:
     """Kite candles between two dates (inclusive), fetched in as many requests as Kite's limits need.
 
-    Intraday history on Kite reaches back years, against days or weeks on the
-    free feed, which is what makes an intraday backtest worth running.
+    Intraday history on Kite reaches back to 2015, against days or weeks on the free feed, which is what makes
+    an intraday backtest worth running. ``raw`` takes ``symbol`` as Kite's own ``EXCHANGE:NAME``. A stock's
+    splits and bonuses are adjusted (``adjust_splits``). ``frame.attrs`` carries ``from_clipped`` when the
+    range started before Kite's intraday history, and ``adjusted`` (the corporate-action gaps folded back).
+    ``reference`` is passed to ``adjust_splits``.
     """
-    instrument = kite_instrument_for(symbol)
+    instrument = symbol if raw else kite_instrument_for(symbol)
     if not instrument:
         raise NoData(f"Kite has no instrument for {normalize_symbol(symbol)}.")
     first, last = pd.Timestamp(start), pd.Timestamp(end) + pd.Timedelta(hours=23, minutes=59)
-    if (last - first).days > KITE_MAX_DAYS[interval]:
-        raise NoData(f"{INTERVALS[interval]['label'].capitalize()} candles: choose a range of at most "
-                     f"{KITE_MAX_DAYS[interval]} days.")
+    clipped = None
+    if interval != "1d" and first < KITE_INTRADAY_FROM:
+        clipped, first = first, KITE_INTRADAY_FROM
+    if first > last:
+        raise NoData(f"Kite keeps {INTERVALS[interval]['label']} candles from {KITE_INTRADAY_FROM:%d %b %Y} only.")
+    key = (instrument, interval, first, last, continuous)
+    hit = _range_cache.get(key)
+    # A finished range is kept 30 minutes (re-running with other exits fetches nothing); one that reaches today
+    # keeps growing during the session, so it is kept a minute.
+    ttl = 60 if last.normalize() >= pd.Timestamp.now().normalize() else 1800
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1].copy()
     frames, cursor = [], first
     while cursor <= last:
         stop = min(cursor + pd.Timedelta(days=KITE_CHUNK[interval]) - pd.Timedelta(seconds=1), last)
-        frames.append(kite_frame(kite.candles(instrument, interval, cursor.to_pydatetime(), stop.to_pydatetime())))
+        if continuous:
+            rows = kite.candles(instrument, interval, cursor.to_pydatetime(), stop.to_pydatetime(), continuous=True)
+        else:
+            rows = kite.candles(instrument, interval, cursor.to_pydatetime(), stop.to_pydatetime())
+        frames.append(kite_frame(rows))
         cursor = stop + pd.Timedelta(seconds=1)
         if cursor <= last:
-            time.sleep(0.4)          # Kite allows about three historical requests a second
+            time.sleep(0.35)         # Kite allows three historical requests a second
     frame = pd.concat([f for f in frames if not f.empty]) if any(not f.empty for f in frames) \
         else pd.DataFrame(columns=COLUMNS)
     frame = frame[~frame.index.duplicated(keep="last")].sort_index()
+    if interval == "1d":
+        frame.index = frame.index.normalize()
     if frame.empty:
         raise NoData(f"Kite returned no {INTERVALS[interval]['label']} candles for {instrument} in that range.")
-    return frame
+    adjusted = []
+    exchange = instrument.split(":", 1)[0]
+    if exchange in ("NSE", "BSE") and instrument not in KITE_INDEX.values():
+        frame, adjusted = adjust_splits(frame, reference)
+    frame.attrs.update(from_clipped=clipped, adjusted=adjusted)
+    _range_cache[key] = (time.time(), frame)
+    while len(_range_cache) > _RANGE_CACHE_SIZE:
+        _range_cache.pop(next(iter(_range_cache)))
+    return frame.copy()
 
 
 def bars_for(symbol: str, interval: str = "1d", start: str | None = None, end: str | None = None,

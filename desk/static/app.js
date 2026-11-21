@@ -486,7 +486,8 @@
       tile("Profit factor", m.profit_factor == null ? "–" : m.profit_factor.toFixed(2), `In market ${m.exposure_pct}% of days`),
       tile("Final value", rupees(m.final_value), `from ${rupees(r.params.capital)}`),
       tile("Charges paid", rupees(m.total_charges), "STT, stamp, GST, DP"),
-      m.reentries ? tile("Re-entries", String(m.reentries), "after a stoploss") : null].filter(Boolean));
+      m.reentries ? tile("Re-entries", String(m.reentries), "after a stoploss") : null,
+      r.data_source ? tile("Prices from", r.data_source.name, `${r.data_source.first} to ${r.data_source.last}`) : null].filter(Boolean));
     renderChecks(r);
     $("#bt-chart-title").textContent = `Portfolio value · ${r.symbol} · ${r.strategy.name} · ${state.app.intervals[r.interval]} candles · ${r.period.start} to ${r.period.end}`;
     $("#bt-note").textContent = r.data_note || ""; $("#bt-note").hidden = !r.data_note;
@@ -514,12 +515,13 @@
       ...(r.structure ? [{ label: "Legs stopped out", num: true, get: (t) => t.legs_stopped }, { label: "Re-entries", num: true, get: (t) => t.reentries || 0 },
         { label: "Margin", num: true, get: (t) => rupees(t.margin) }] : []),
       ...(r.futures ? [{ label: "Side", get: (t) => t.side }, { label: "Rolls", num: true, get: (t) => t.rolls }] : []),
-      { label: "Entry", get: (t) => t.entry_date }, { label: "Exit", get: (t) => t.exit_date || "open" },
+      { label: "Entry", get: (t) => t.entry_date + (t.reentry ? " (re-entry)" : "") }, { label: "Exit", get: (t) => t.exit_date || "open" },
       { label: "Qty", num: true, get: (t) => inr.format(t.quantity) },
       { label: r.structure ? "Net credit (+) / debit (−) per unit" : "Entry ₹", num: true, get: (t) => inr2.format(t.entry_price) },
       { label: r.structure ? "Index at exit" : "Exit ₹", num: true, get: (t) => inr2.format(t.exit_price) },
       { label: "Net P&L", num: true, get: (t) => rupees(t.pnl), tone: (t) => tone(t.pnl) },
       { label: "Return", num: true, get: (t) => pct(t.return_pct), tone: (t) => tone(t.pnl) },
+      ...(r.trades.some((t) => t.worst_pct != null) ? [{ label: "Lowest / highest", num: true, get: (t) => `${pct(t.worst_pct, false)} / ${pct(t.best_pct)}` }] : []),
       { label: "Days", num: true, get: (t) => t.days }, { label: "Exit reason", get: (t) => t.exit },
     ], r.trades.slice().reverse(), "The strategy made no trades in this period."));
   }
@@ -3977,19 +3979,31 @@
 
   // -- backtest: can you trust it? -------------------------------------------------------------
 
+  const hasTrades = (r) => (r.trades || []).length > 0;
+
   function renderChecks(r) {
     const box = $("#bt-checks"), c = r.metrics && r.metrics.checks;
     box.hidden = !c;
     if (!c) return;
     const item = (cls, text) => h("li", { class: cls, text });
     const capital = r.params && r.params.capital, final = r.metrics.final_value;
-    const items = [
+    const items = [];
+    const src = r.data_source, ex = r.metrics.exits;
+    if (src && (src.short || src.kite_error)) items.push(item("warn", src.note));
+    if (ex && (ex.stop_unused || ex.target_unused) && hasTrades(r)) {
+      const u = ex.unit === "pct" ? "%" : " points", fall = ex.deepest_fall_pct, rise = ex.highest_rise_pct;
+      const parts = [];
+      if (ex.stop_unused) parts.push(`No trade fell ${ex.stop_loss}${u} below its entry (the deepest fall was ${Math.abs(fall).toFixed(2)}%), so the stoploss never sold anything`);
+      if (ex.target_unused) parts.push(`no trade rose ${ex.target}${u} above its entry (the highest rise was ${rise.toFixed(2)}%), so the target never sold anything`);
+      items.push(item("warn", parts.join("; ").replace(/^n/, "N") + ". The results are the same as with no stoploss or target. Try smaller values, or a longer period."));
+    }
+    items.push(
       c.few_trades
         ? item("warn", `Only ${c.trades} closed trade${c.trades === 1 ? "" : "s"}. Under ${c.min_trades}, the result can be luck: test a longer period or other stocks before trusting it.`)
         : item("ok", `${c.trades} closed trades: enough to read the averages, if the period has both rising and falling markets.`),
       c.beats_safe
         ? item("ok", `Beat a safe ${c.safe_rate_pct}% a year (the risk-free rate in Settings). ${rupees(capital)} at that rate would be ${rupees(c.safe_final)}; this ended at ${rupees(final)}.`)
-        : item("warn", `Did not beat a safe ${c.safe_rate_pct}% a year (the risk-free rate in Settings). ${rupees(capital)} at that rate would be ${rupees(c.safe_final)}; this ended at ${rupees(final)}. The risk bought nothing.`)];
+        : item("warn", `Did not beat a safe ${c.safe_rate_pct}% a year (the risk-free rate in Settings). ${rupees(capital)} at that rate would be ${rupees(c.safe_final)}; this ended at ${rupees(final)}. The risk bought nothing.`));
     const mc = c.monte_carlo;
     if (mc) {
       items.push(item(mc.loss_chance_pct >= 20 ? "warn" : "",

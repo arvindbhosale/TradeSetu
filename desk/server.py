@@ -706,22 +706,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             trade_end=str(payload.get("trade_end") or cfg["trade_end"]),
             square_off=str(payload.get("square_off") or cfg["square_off"]),
         )
-        source_note = None
-        bars = None
-        if interval != "1d" and kite.connected:
-            # Intraday candles from Kite reach back years; the free feed stops at days or weeks.
-            try:
-                bars = data.kite_range(kite, canonical, interval, start, end)
-                source_note = (f"Candles from Kite: {len(bars):,} {data.INTERVALS[interval]['label']} candles, "
-                               f"{bars.index[0]:%d %b %Y} to {bars.index[-1]:%d %b %Y}.")
-            except (KiteError, data.NoData) as exc:
-                reason = "Kite needs a login" if getattr(exc, "needs_login", False) else str(exc)[:160]
-                source_note = f"Kite could not serve these candles ({reason}); using the free feed's shorter history."
-        if bars is None:
-            bars = data.bars_for(canonical, interval, start, end, fetch=fetch)
-            if interval != "1d" and source_note is None:
-                source_note = ("Candles from the free feed, which keeps only a short intraday history. Log in to "
-                               "Kite on the Trade tab to test over months or years.")
+        bars, source = stock_bars(canonical, interval, start, end)
         index_symbol = "^BSESN" if canonical.endswith(".BO") else "^NSEI"
         benchmark, benchmark_note = None, None
         if canonical != index_symbol:
@@ -733,8 +718,52 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         result["symbol"], result["interval"] = canonical, interval
         result["benchmark_name"] = {"^NSEI": "Nifty 50", "^BSESN": "Sensex"}[index_symbol] if result["benchmark"] else None
         result["benchmark_note"] = benchmark_note
-        result["data_note"] = bars.attrs.get("note") or source_note
+        result["data_note"], result["data_source"] = source["note"], source
         return result
+
+    def stock_bars(canonical: str, interval: str, start: str, end: str):
+        """A stock's candles for a backtest: Kite first when it is logged in, the free feed (Yahoo) otherwise, and
+        a ``source`` saying which one served them and whether they cover the dates asked for."""
+        import pandas as pd
+
+        label = data.INTERVALS[interval]["label"]
+        bars, kite_reason, notes = None, None, []
+        status = kite.status() if kite.connected else {}
+        broker = "Kite" if status.get("broker", "kite") == "kite" else (status.get("broker_label") or "Your broker")
+        if kite.connected:
+            try:
+                bars = data.kite_range(kite, canonical, interval, start, end,
+                                       reference=lambda: data.history(canonical, fetch=fetch))
+                name = broker
+                if bars.attrs.get("from_clipped") is not None:
+                    notes.append(f"{name} keeps {label} candles from {data.KITE_INTRADAY_FROM:%d %b %Y}, so the test starts there.")
+                for day, ratio in bars.attrs.get("adjusted") or []:
+                    notes.append(f"The price opened {(1 - 1 / ratio) * 100:.0f}% lower on {day}, a split or bonus {name} had not "
+                                 f"adjusted; earlier prices are divided by {ratio:.3g} so it does not read as a loss.")
+            except (KiteError, data.NoData) as exc:
+                kite_reason = (f"{broker} needs a login on the Trade tab" if getattr(exc, "needs_login", False)
+                               else f"{broker} could not serve them: {str(exc)[:160]}")
+        else:
+            kite_reason = "your broker is not logged in"
+        if bars is None:
+            bars = data.bars_for(canonical, interval, start, end, fetch=fetch)
+            name = "Yahoo"
+            if bars.attrs.get("note"):
+                notes.append(bars.attrs["note"])
+        first, last = bars.index[0], bars.index[-1]
+        # Short: the candles start more than a week after the start date, or stop more than a week before the end.
+        short = first.normalize() > pd.Timestamp(start) + pd.Timedelta(days=7) \
+            or last.normalize() < min(pd.Timestamp(end), pd.Timestamp.now().normalize()) - pd.Timedelta(days=7)
+        head = f"Prices from {name}: {len(bars):,} {label} candles, {first:%d %b %Y} to {last:%d %b %Y}."
+        if name == "Yahoo":
+            head = (f"Prices from Yahoo ({kite_reason}): {len(bars):,} {label} candles, {first:%d %b %Y} to {last:%d %b %Y}."
+                    + (f" Yahoo keeps only {_PERIOD_WORDS.get(data.INTERVALS[interval]['period'], data.INTERVALS[interval]['period'])}"
+                       f" of {label} candles." if interval != "1d" else ""))
+        if short:
+            head += f" You asked for {pd.Timestamp(start):%d %b %Y} to {pd.Timestamp(end):%d %b %Y}: the results cover only the dates above."
+        return bars, {"name": name, "first": first.strftime("%Y-%m-%d"), "last": last.strftime("%Y-%m-%d"),
+                      "start": start, "end": end, "short": bool(short), "kite_error": kite_reason if kite.connected else None,
+                      "note": " ".join([head, *notes])}
 
     @app.get("/api/strategies")
     def strategy_list():
@@ -1308,13 +1337,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         min_trades = int(_number(payload, "min_trades", 3))
 
         def work(job):
-            bars = None
-            if interval != "1d" and kite.connected:
-                with contextlib.suppress(KiteError, data.NoData):
-                    bars = data.kite_range(kite, canonical, interval, start, end)
-            if bars is None:
-                bars = data.bars_for(canonical, interval, start, end, fetch=fetch)
-            job.log(f"{len(bars):,} candles, {bars.index[0]:%d %b %Y} to {bars.index[-1]:%d %b %Y}")
+            bars, source = stock_bars(canonical, interval, start, end)
+            job.log(source["note"])
             result = optimise(bars, strategy, ranges, params, objective, folds, train_pct, min_trades, progress=job.log)
             result.update(symbol=canonical, strategy=strategy.name, interval=interval)
             return result
@@ -2154,21 +2178,12 @@ def pd_ts(day: str):
     return pd.Timestamp(day) + (pd.Timedelta(hours=23, minutes=59) if len(day) == 10 else pd.Timedelta(0))
 
 
+_PERIOD_WORDS = {"7d": "the last 7 days", "60d": "the last 60 days", "730d": "the last 2 years"}
+
+
 def _kite_range_raw(kite, instrument: str, interval: str, start: str, end: str, continuous: bool = False):
     """Kite candles for an index or contract by its Kite name, over a date range."""
-    import pandas as pd
-    first, last = pd.Timestamp(start), pd.Timestamp(end) + pd.Timedelta(hours=23, minutes=59)
-    if (last - first).days > data.KITE_MAX_DAYS[interval]:
-        raise data.NoData(f"choose a range of at most {data.KITE_MAX_DAYS[interval]} days")
-    frames, cursor = [], first
-    while cursor <= last:
-        stop = min(cursor + pd.Timedelta(days=data.KITE_CHUNK[interval]) - pd.Timedelta(seconds=1), last)
-        rows = (kite.candles(instrument, interval, cursor.to_pydatetime(), stop.to_pydatetime(), continuous=True) if continuous
-                else kite.candles(instrument, interval, cursor.to_pydatetime(), stop.to_pydatetime()))
-        frames.append(data.kite_frame(rows))
-        cursor = stop + pd.Timedelta(seconds=1)
-    frame = pd.concat([f for f in frames if not f.empty]) if any(not f.empty for f in frames) else pd.DataFrame(columns=data.COLUMNS)
-    return frame[~frame.index.duplicated(keep="last")].sort_index()
+    return data.kite_range(kite, instrument, interval, start, end, raw=True, continuous=continuous)
 
 
 def _llm_models() -> dict:
