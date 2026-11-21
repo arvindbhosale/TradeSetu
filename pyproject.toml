@@ -51,6 +51,7 @@ desk = [
     "mcp>=2.0,<3",
     "segno>=1.5",
     "webauthn>=2.5,<4",
+    "openpyxl>=3.1",
 ]
 # A native window for the desk. Without it the desk opens in the web browser.
 window = [

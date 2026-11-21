@@ -1751,25 +1751,37 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
 
     # -- journal and tax export ---------------------------------------------------
 
-    @app.get("/api/export/{kind}.csv")
-    def export_csv(kind: str, mode: str = "live", fy: str = ""):
+    def _export_rows(kind: str, mode: str, fy: str):
         from . import taxreport as tax
         if mode not in ("paper", "live"):
             raise ValueError("mode must be paper or live")
         if kind == "journal":
-            rows = [r for r in reversed(desk.journal_rows(100000)) if r.get("mode") == mode]
-            text = tax.to_csv(rows, tax.JOURNAL_FIELDS)
-        elif kind == "fills":
-            text = tax.to_csv([f for f in desk.ledger.fills() if f.get("mode") == mode], tax.FILL_FIELDS)
-        elif kind == "pnl":
-            text = tax.to_csv(desk.ledger.closed_trades(mode), tax.PNL_FIELDS)
-        elif kind == "tax-lots":
-            lots = [lot for lot in tax.tax_lots(desk.ledger.fills(), mode) if not fy or lot["fy"] == fy]
-            text = tax.to_csv(lots, tax.LOT_FIELDS)
-        else:
-            raise HTTPException(404, "unknown export")
-        name = f"tradesetu-{kind}-{mode}{'-FY' + fy if fy else ''}.csv"
-        return Response(text, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{name}"'})
+            return [r for r in reversed(desk.journal_rows(100000)) if r.get("mode") == mode], tax.JOURNAL_FIELDS
+        if kind == "fills":
+            return [f for f in desk.ledger.fills() if f.get("mode") == mode], tax.FILL_FIELDS
+        if kind == "pnl":
+            return desk.ledger.closed_trades(mode), tax.PNL_FIELDS
+        if kind == "tax-lots":
+            return [lot for lot in tax.tax_lots(desk.ledger.fills(), mode) if not fy or lot["fy"] == fy], tax.LOT_FIELDS
+        raise HTTPException(404, "unknown export")
+
+    def _export_name(kind: str, mode: str, fy: str, ext: str) -> str:
+        return f"tradesetu-{kind}-{mode}{'-FY' + fy if fy else ''}.{ext}"
+
+    @app.get("/api/export/{kind}.csv")
+    def export_csv(kind: str, mode: str = "live", fy: str = ""):
+        from . import taxreport as tax
+        rows, fields = _export_rows(kind, mode, fy)
+        return Response(tax.to_csv(rows, fields), media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="{_export_name(kind, mode, fy, "csv")}"'})
+
+    @app.get("/api/export/{kind}.xlsx")
+    def export_xlsx(kind: str, mode: str = "live", fy: str = ""):
+        rows, _ = _export_rows(kind, mode, fy)
+        from . import xlsxexport
+        data = xlsxexport.workbook(kind, rows, mode, fy=fy)
+        return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="{_export_name(kind, mode, fy, "xlsx")}"'})
 
     @app.get("/api/tax")
     def tax_summary(mode: str = "live"):
