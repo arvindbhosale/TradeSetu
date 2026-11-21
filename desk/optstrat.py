@@ -273,11 +273,92 @@ class _Pricer:
         # A simple skew: volatility rises as the strike falls below the spot (puts and in-the-money calls).
         return max(base * (1 + self.skew * max(0.0, (spot - strike) / spot) * 10), 0.03)
 
+    source = "model"
+    used: dict | None = None
+
     def price(self, leg: dict, spot: float, stamp, expiry: pd.Timestamp) -> float:
         years = max((expiry - stamp).total_seconds(), 0.0) / (365 * 86400)
         if leg["type"] == "FUT":
             return spot * (1 + RATE * years)
         return max(bs_price(spot, leg["strike"], years, self.sigma(stamp, spot, leg["strike"]), leg["type"]), 0.05 if years > 0 else 0.0)
+
+    def range(self, leg: dict, stamp, first: float, low: float, high: float) -> tuple[float, float, float]:
+        """The leg's premium at a candle's open, lowest and highest point (from the index's open, low and high)."""
+        at = [self.price(leg, x, stamp, leg["expiry"]) for x in (first, low, high)]
+        return at[0], min(at), max(at)
+
+    def count(self) -> None:
+        """Note where the price just used for a fill came from."""
+        if self.used is not None:
+            self.used[self.source] = self.used.get(self.source, 0) + 1
+
+
+class _HistoryPricer(_Pricer):
+    """Real premiums where ``chainhistory`` has them, the model otherwise. Day candles read the NSE bhavcopy: the
+    option's open at 09:15, its close at 15:30 (NSE's settlement price for a strike that did not trade that day), its
+    own low and high for stops. Intraday candles read the live snapshots the recorder saved, at most 10 minutes old;
+    the move within a candle is the model's, scaled to the recorded price."""
+
+    def __init__(self, vol_by_day, iv_scale, skew, history, underlying: str, intraday: bool):
+        super().__init__(vol_by_day, iv_scale, skew)
+        self.history, self.underlying, self.intraday = history, underlying, intraday
+        self.used = {"traded": 0, "settle": 0, "recorded": 0, "model": 0, "expiry": 0}
+
+    def _row(self, leg, stamp, expiry):
+        if leg["type"] == "FUT" or stamp >= expiry:
+            return None
+        return self.history.eod(self.underlying, stamp.date(), expiry.date(), leg["strike"], leg["type"])
+
+    def _real(self, leg, stamp, expiry) -> tuple[float, str] | None:
+        if leg["type"] == "FUT" or stamp >= expiry:
+            return None
+        if self.intraday:
+            price = self.history.snapshot(self.underlying, stamp.to_pydatetime(), expiry.date(), leg["strike"], leg["type"])
+            return (price, "recorded") if price else None
+        row = self._row(leg, stamp, expiry)
+        if row is None:
+            return None
+        if stamp.hour * 60 + stamp.minute <= 9 * 60 + 15:
+            # At the open only the day's opening trade is known; a strike that did not trade falls back to the model.
+            return (row["open"], "traded") if row["volume"] > 0 and row["open"] > 0 else None
+        if row["volume"] > 0 and row["close"] > 0:
+            return row["close"], "traded"
+        return (row["settle"], "settle") if row["settle"] > 0 else None
+
+    def price(self, leg, spot, stamp, expiry) -> float:
+        real = self._real(leg, stamp, expiry)
+        if real is not None:
+            self.source = real[1]
+            return real[0]
+        self.source = "model"
+        return super().price(leg, spot, stamp, expiry)
+
+    def range(self, leg, stamp, first, low, high):
+        if not self.intraday:
+            row = self._row(leg, stamp, leg["expiry"])
+            if row is not None and row["volume"] > 0 and min(row["open"], row["low"], row["high"]) > 0:
+                self.source = "traded"
+                return row["open"], row["low"], row["high"]
+            self.source = "model"
+            return _Pricer.range(self, leg, stamp, first, low, high)
+        real = self._real(leg, stamp, leg["expiry"])
+        model = [_Pricer.price(self, leg, x, stamp, leg["expiry"]) for x in (first, low, high)]
+        if real is None or model[0] <= 0:
+            self.source = "model"
+            return model[0], min(model), max(model)
+        self.source = "recorded"
+        scale = real[0] / model[0]
+        return real[0], min(model) * scale, max(model) * scale
+
+    def expiries(self, stamp, kind: str) -> list[pd.Timestamp]:
+        """The expiries NSE listed that day, as 15:30 stamps; monthly keeps the last one of each month."""
+        days = self.history.expiries(self.underlying, stamp.date())
+        if kind == "monthly":
+            last: dict = {}
+            for d in days:
+                last[(d.year, d.month)] = d
+            days = sorted(last.values())
+        return [pd.Timestamp(d) + pd.Timedelta(hours=15, minutes=30) for d in days]
 
 
 def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, structure: str, mode: str, lot_size: int,
@@ -286,10 +367,14 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                   exit_days_before: int = 0, leg_sl_pct: float = 0.0, stop_pct: float = 0.0, target_pct: float = 0.0,
                   signal: pd.Series | None = None, margin_pct: float = 12.0, iv_scale: float = 1.0, skew: float = 0.0,
                   slippage_pct: float = 1.0, holidays=frozenset(), risk_free_rate_pct: float = 6.5,
-                  leg_exits: ExitRules | None = None, leg_scope: str = "sold") -> dict:
+                  leg_exits: ExitRules | None = None, leg_scope: str = "sold", history=None) -> dict:
     """Backtest one structure. ``leg_exits`` are each option leg's own exit rules (stoploss, target, trailing,
     stoploss to cost, re-entry; ``risk.ExitRules``, distances on the leg's premium) for the legs ``leg_scope``
-    names: ``sold``, ``bought`` or ``all``. Without them ``leg_sl_pct`` is a % stoploss on each sold leg."""
+    names: ``sold``, ``bought`` or ``all``. Without them ``leg_sl_pct`` is a % stoploss on each sold leg.
+
+    ``history`` (a ``chainhistory.ChainHistory``): price legs from NSE's bhavcopy (day candles) or recorded live
+    snapshots (intraday) where it has them, on the expiries NSE actually listed; the model fills the gaps. The
+    result's ``pricing`` counts where each fill's price came from."""
     if structure not in STRUCTURES:
         raise ValueError(f"structure must be one of {', '.join(STRUCTURES)}")
     if mode not in MODES:
@@ -329,7 +414,8 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
         raise ValueError("No India VIX history for this period; it is needed as the volatility.")
     if float(vol.max()) > 1.5:
         raise ValueError("The India VIX series does not look like VIX (values above 150).")
-    pricer = _Pricer(vol, iv_scale, skew)
+    pricer = (_HistoryPricer(vol, iv_scale, skew, history, underlying, intraday) if history is not None
+              else _Pricer(vol, iv_scale, skew))
     spec = STRUCTURES[structure]
     step = STRIKE_STEP.get(underlying, 50)
     qty = lots * lot_size
@@ -355,10 +441,19 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
             return futures_charges(side, qty * leg["ratio"], price, exchange).total
         return option_charges(side, qty * leg["ratio"], price, exchange)
 
+    def pick_expiry(stamp, after, least):
+        """The first expiry ``least`` days after ``after``: one NSE listed that day when the history has the day."""
+        if history is not None:
+            listed = [e for e in pricer.expiries(stamp, expiry_kind)
+                      if e >= after and (e - after).total_seconds() / 86400 >= least]
+            if listed:
+                return listed[0]
+        return expiry_after(underlying, after, expiry_kind, least, holidays)
+
     def open_book(i, spot, stamp):
         nonlocal cash, total_charges, skipped, book
-        expiry = expiry_after(underlying, stamp, expiry_kind, min_days if not intraday else 0.0, holidays)
-        far = (expiry_after(underlying, expiry + pd.Timedelta(minutes=1), expiry_kind, 0.0, holidays)
+        expiry = pick_expiry(stamp, stamp, min_days if not intraday else 0.0)
+        far = (pick_expiry(stamp, expiry + pd.Timedelta(minutes=1), 0.0)
                if any(x["series"] == "far" for x in specs) else None)
         atm = round(spot / step) * step
         legs = []
@@ -368,6 +463,9 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
             leg = {"action": x["action"], "type": kind, "strike": float(strike), "ratio": x["ratio"], "series": x["series"],
                    "expiry": far if x["series"] == "far" else expiry, "open": True, "off": x["off"]}
             mid = pricer.price(leg, spot, stamp, leg["expiry"])
+            if kind != "FUT":
+                pricer.count()
+                leg["source"] = pricer.source
             leg_slip = FUT_SLIP if kind == "FUT" else slip
             leg["entry"] = mid * (1 + leg_slip) if x["action"] > 0 else mid * (1 - leg_slip)
             leg["mid"] = leg["best"] = mid
@@ -376,6 +474,10 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
         margin = estimate_margin(legs, spot, qty, margin_pct)
         if margin > cash:
             skipped += 1
+            if pricer.used is not None:             # nothing was filled
+                for g in legs:
+                    if g["type"] != "FUT":
+                        pricer.used[g.get("source", "model")] -= 1
             return
         fees = sum(leg_fee(g, "BUY" if g["action"] > 0 else "SELL", g["entry"]) for g in legs)
         cash -= fees
@@ -409,12 +511,17 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                 if at_expiry and g["expiry"] > book["expiry"]:
                     # A later-expiry leg of a calendar or diagonal is sold back at the near expiry's close.
                     close_leg(g, pricer.price(g, spot, book["expiry"], g["expiry"]))
+                    pricer.count()
                 elif at_expiry:
                     price = (max(spot - g["strike"], 0) if g["type"] == "CE" else max(g["strike"] - spot, 0)
                              if g["type"] == "PE" else spot)
                     close_leg(g, price, side_fee=g["type"] == "FUT")
+                    if g["type"] != "FUT" and pricer.used is not None:
+                        pricer.used["expiry"] += 1
                 else:
                     close_leg(g, pricer.price(g, spot, stamp, g["expiry"]))
+                    if g["type"] != "FUT":
+                        pricer.count()
         pnl = book["realised"] - book["fees"]
         strikes = _label(book["legs"], book["expiry"])
         fmt = "%Y-%m-%d %H:%M" if intraday else "%Y-%m-%d"
@@ -430,9 +537,8 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
         return g["type"] != "FUT" and (leg_scope == "all" or (g["action"] < 0) == (leg_scope == "sold"))
 
     def premium_range(g, i, stamp) -> tuple[float, float, float]:
-        """The leg's premium at this candle's open, lowest and highest point (the index's low and high)."""
-        at = [pricer.price(g, x, stamp, g["expiry"]) for x in (opens[i], lows[i], highs[i])]
-        return at[0], min(at), max(at)
+        """The leg's premium at this candle's open, lowest and highest point."""
+        return pricer.range(g, stamp, opens[i], lows[i], highs[i])
 
     def reopen(g, i, stamp, price_mid):
         """Open the leg again (a re-entry), as a new leg of the same book."""
@@ -462,6 +568,7 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                 atm = round(opens[i] / step) * step
                 fresh = {**g, "strike": float(atm + _offset(g["off"], k, w) * step)}
                 reopen(fresh | {"rearm": rearm}, i, stamp, pricer.price(fresh, opens[i], stamp, g["expiry"]))
+                pricer.count()
                 g["rearm"] = None
                 continue
             # When the premium is back at the earlier entry price: the same strike, filled at that price.
@@ -469,8 +576,10 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
             level = rearm["price"]
             if g["action"] > 0 and high >= level:
                 reopen(g, i, stamp, max(first, level) if first >= level else level)
+                pricer.count()
             elif g["action"] < 0 and low <= level:
                 reopen(g, i, stamp, min(first, level) if first <= level else level)
+                pricer.count()
 
     def check_stops(i, stamp):
         """Each leg's own exit rules (at the candle's worst point), then the whole position's stop and target."""
@@ -488,6 +597,8 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                                                                for x in book["legs"]):
                     # A bought leg covers a sold one: never closed alone (as the live algo does), so all legs go.
                     return f"{kind if stop_hit else 'target'} on a bought leg"
+                if stop_hit or goal_hit:
+                    pricer.count()
                 if stop_hit:
                     gapped = (first - stop) * side <= 0
                     close_leg(g, first if gapped else stop)
@@ -577,7 +688,8 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
             "params": {**params.__dict__, "lots": lots, "lot_size": lot_size, "k": k, "w": w, "expiry_kind": expiry_kind,
                        "leg_sl_pct": leg_sl_pct, "stop_pct": stop_pct, "target_pct": target_pct, "iv_scale": iv_scale,
                        "leg_exits": leg_exits.as_dict(), "leg_scope": leg_scope},
-            "simulated": True, "symbol": underlying, "skipped_entries": skipped,
+            "simulated": pricer.used is None or pricer.used["model"] > 0, "pricing": pricer.used,
+            "symbol": underlying, "skipped_entries": skipped,
             "period": {"start": curve.index[0].strftime("%Y-%m-%d"), "end": curve.index[-1].strftime("%Y-%m-%d"),
                        "bars": len(bars), "days": len(curve)},
             "metrics": metrics, "buy_hold": _curve_stats(hold, params), "trades": trades, "equity": _points(curve),

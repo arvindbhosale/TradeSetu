@@ -515,8 +515,26 @@
   </div>
   <div id="bt-structures" hidden>
     <div class="panel">
-      <h2>Option strategies: straddles, strangles, condors, spreads, hedges (simulated)</h2>
-      <p class="hint">Multi-leg index option strategies on the index's real candles. Premiums are <strong>modelled</strong> (Black-Scholes on India VIX): Kite keeps no candles for expired contracts. Real premiums differ, most around events, on expiry day and for far strikes. Use it to compare structures and rules, not to forecast profit.</p>
+      <h2>Option strategies: straddles, strangles, condors, spreads, hedges</h2>
+      <p class="hint">Multi-leg index option strategies on the index's real candles. Brokers keep no prices for expired contracts, so premiums come from <strong>NSE's daily price files</strong> once you download them below (day candles), from the <strong>live chain the desk records</strong> (intraday), and are <strong>modelled</strong> (Black-Scholes on India VIX) where neither has a price. The result says how many fills used real prices.</p>
+      <details class="advanced" id="sbt-history"><summary>Real option prices (NSE history)</summary>
+        <p class="hint" id="sbt-history-status">Checking what is stored…</p>
+        <div class="row">
+          <label>From <input id="sbt-history-start" type="date"></label>
+          <label>To <input id="sbt-history-end" type="date"></label>
+          <fieldset class="days" id="sbt-history-under"><legend>Indices</legend></fieldset>
+          <button type="button" id="sbt-history-go">Download from NSE</button>
+          <button type="button" id="sbt-history-stop" hidden>Stop</button>
+        </div>
+        <p class="hint">One file a trading day, about a second each: 5 years is about 1,250 files and 40 minutes. Days already stored are skipped, so you can stop and continue later. NSE refuses many cloud servers; on a server set DESK_EXCHANGE_PROXY (see the user manual).</p>
+        <div class="row">
+          <label>Record the live chain of <input id="sbt-rec-under" placeholder="NIFTY" size="22"></label>
+          <label>every (minutes) <input id="sbt-rec-min" type="number" min="1" max="60" value="5"></label>
+          <button type="button" id="sbt-rec-save">Save</button>
+        </div>
+        <p class="hint" id="sbt-rec-status"></p>
+        <div id="sbt-history-error" class="error" hidden></div>
+      </details>
       <form id="form-sbt">
         <div class="row">
           <label>Option strategy <select name="structure"></select></label>
@@ -557,6 +575,7 @@
           <label>Volatility: India VIX × <input name="iv_scale" type="number" min="0.3" max="3" step="0.05" value="1"></label>
           <label>Extra volatility on puts (skew) <input name="skew" type="number" min="0" max="2" step="0.1" value="0"></label>
           <label>Slippage, % of premium <input name="slippage_pct" type="number" min="0" max="20" step="0.25" value="1"></label>
+          <label>Premiums <select name="premiums"><option value="real">Real prices where stored</option><option value="model">Modelled only</option></select></label>
         </div>
         </details>
         <div class="row">

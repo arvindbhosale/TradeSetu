@@ -2597,7 +2597,65 @@
       h("span", { class: "regime " + (markets.includes(m) ? "yes" : "no"), text: `${markets.includes(m) ? "✓" : "✗"} ${m[0].toUpperCase() + m.slice(1)}` })));
   }
 
+  // -- real option prices: NSE history import and the live chain recorder --------------------------------------
+  const chainHistory = { timer: null, ready: false };
+
+  function historyText(d) {
+    const cover = d.underlyings.map((u) => `${u.underlying} ${u.first} to ${u.last} (${u.days.toLocaleString("en-IN")} days)`);
+    const snaps = d.snapshots.map((u) => `${u.underlying} live chain ${u.first} to ${u.last}`);
+    let text = cover.length ? `Stored: ${cover.join("; ")}.` : "No NSE history stored yet: premiums are modelled.";
+    if (snaps.length) text += ` Recorded: ${snaps.join("; ")}.`;
+    if (d.size_mb) text += ` ${d.size_mb} MB on disk.`;
+    const j = d.job || {}, c = j.counts || {};
+    if (j.running) text += ` Downloading ${j.day || j.start}: ${j.done || 0} of ${j.total ?? "…"} days (${c.ok || 0} stored, ${c.none || 0} holidays, ${c.error || 0} errors).`;
+    else if (j.finished && !j.error) text += ` Last download finished: ${c.ok || 0} days stored, ${c.none || 0} holidays, ${c.error || 0} errors.`;
+    if ((d.days || {}).error && !j.running) text += ` ${d.days.error} days failed and are tried again on the next download.`;
+    return text;
+  }
+
+  async function loadChainHistory() {
+    let d;
+    try { d = await api("/options/history"); } catch (err) { showError("#sbt-history-error", err); return; }
+    $("#sbt-history-status").textContent = historyText(d);
+    const j = d.job || {};
+    showError("#sbt-history-error", j.error ? new Error(j.error) : null);
+    $("#sbt-history-go").hidden = !!j.running; $("#sbt-history-stop").hidden = !j.running;
+    if (!chainHistory.ready) {
+      chainHistory.ready = true;
+      $("#sbt-history-under").replaceChildren(h("legend", { text: "Indices" }), ...d.choices.map((u) =>
+        h("label", { class: "check" }, h("input", { type: "checkbox", value: u, checked: d.defaults.includes(u) }), ` ${u}`)));
+      $("#sbt-rec-under").value = d.recorder.underlyings.join(", "); $("#sbt-rec-min").value = d.recorder.minutes;
+    }
+    const last = Object.entries(d.recorder.last || {}).map(([u, x]) => `${u} at ${x.at} (${x.rows} prices)`);
+    $("#sbt-rec-status").textContent = d.recorder.underlyings.length
+      ? `Recording ${d.recorder.underlyings.join(", ")} every ${d.recorder.minutes} minutes while the market is open and your broker is connected.${last.length ? " Last: " + last.join("; ") + "." : ""}`
+      : "The live chain recorder is off.";
+    clearTimeout(chainHistory.timer);
+    if (j.running) chainHistory.timer = setTimeout(loadChainHistory, document.hidden ? 15000 : 3000);
+  }
+
+  function startChainHistory() {
+    const today = state.app.today, from = new Date(today); from.setFullYear(from.getFullYear() - 5);
+    $("#sbt-history-start").value = from.toISOString().slice(0, 10); $("#sbt-history-end").value = today;
+    $("#sbt-history").addEventListener("toggle", () => { if ($("#sbt-history").open) loadChainHistory(); });
+    $("#sbt-history-go").addEventListener("click", async (event) => {
+      const underlyings = $$("#sbt-history-under input:checked").map((c) => c.value);
+      showError("#sbt-history-error", null); busy(event.target, true, "Starting…");
+      try { await api("/options/history/import", { method: "POST", body: { start: $("#sbt-history-start").value, end: $("#sbt-history-end").value, underlyings } }); }
+      catch (err) { showError("#sbt-history-error", err); }
+      busy(event.target, false); loadChainHistory();
+    });
+    $("#sbt-history-stop").addEventListener("click", async () => { await api("/options/history/stop", { method: "POST" }).catch(() => {}); loadChainHistory(); });
+    $("#sbt-rec-save").addEventListener("click", async (event) => {
+      showError("#sbt-history-error", null); busy(event.target, true, "Saving…");
+      try { await api("/settings", { method: "PUT", body: { chain_recorder: $("#sbt-rec-under").value, chain_recorder_minutes: Number($("#sbt-rec-min").value || 5) } }); }
+      catch (err) { showError("#sbt-history-error", err); }
+      busy(event.target, false); loadChainHistory();
+    });
+  }
+
   function startStructures() {
+    startChainHistory();
     const form = $("#form-sbt");
     $("#sbt-exits").replaceWith(Object.assign(exitRulesBox(true), { id: "sbt-exits" }));
     const list = state.app.structures;
@@ -2633,7 +2691,8 @@
         expiry_kind: form.expiry_kind.value, interval: form.interval.value, entry_time: form.entry_time.value, exit_time: form.exit_time.value,
         min_days: num("min_days"), exit_days_before: num("exit_days_before"), strategy: form.strategy.value, weekdays,
         k: num("k"), w: num("w"), leg_exits: $("#sbt-exits").read(), leg_scope: form.leg_scope.value, stop_pct: num("stop_pct"), target_pct: num("target_pct"), lots: num("lots"),
-        margin_pct: num("margin_pct"), iv_scale: num("iv_scale"), skew: num("skew"), slippage_pct: num("slippage_pct"), capital: num("capital") };
+        margin_pct: num("margin_pct"), iv_scale: num("iv_scale"), skew: num("skew"), slippage_pct: num("slippage_pct"), capital: num("capital"),
+        premiums: form.premiums.value };
       try { const r = await api("/backtest/structure", { method: "POST", body }); $("#bt-structures").append($("#bt-result")); renderBacktest(r); offerDeploy("structure", body, r); }
       catch (err) { showError("#sbt-error", err); }
       busy(button, false);

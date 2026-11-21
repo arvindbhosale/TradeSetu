@@ -98,6 +98,10 @@ DEFAULTS: dict = {
     # "kite_then_yahoo" (Yahoo's delayed data when Kite cannot serve the chart).
     "chart_source": "kite",
     # Backtest
+    # The live option chain of these indices is saved every chain_recorder_minutes during the session (near two
+    # expiries, ATM ± 20 strikes), so intraday option backtests can use real premiums later. Empty switches it off.
+    "chain_recorder": ["NIFTY"],
+    "chain_recorder_minutes": 5,
     "risk_free_rate_pct": 6.5,   # annual, roughly the 91-day T-bill yield
     "slippage_bps": 5.0,
 }
@@ -316,6 +320,17 @@ def _validated(key: str, value, current):
             except ValueError:
                 raise ValueError(f"“{str(item)[:20]}” is not a date as YYYY-MM-DD") from None
         return sorted(out)
+    if key == "chain_recorder":
+        from .options import SPOT
+        if isinstance(value, str):
+            value = [v for v in re.split(r"[\s,;]+", value.strip().upper()) if v]
+        if not isinstance(value, list) or len(value) > 4 or not all(isinstance(v, str) and v.upper() in SPOT for v in value):
+            raise ValueError(f"chain_recorder must be up to 4 of {', '.join(SPOT)}")
+        return list(dict.fromkeys(v.upper() for v in value))
+    if key == "chain_recorder_minutes":
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value or not 1 <= value <= 60:
+            raise ValueError("chain_recorder_minutes must be a whole number from 1 to 60")
+        return int(value)
     if key == "telegram_chat_id":
         text = str(value).strip()
         if text and not re.fullmatch(r"-?\d{3,20}|@[A-Za-z0-9_]{4,40}", text):

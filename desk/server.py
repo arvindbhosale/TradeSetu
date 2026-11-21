@@ -47,6 +47,12 @@ from .auth import COOKIE, SESSION_SECONDS, Auth
 from .backtest import BacktestParams, run_strategy
 from .broker import Desk, OrderRejected
 from .brokers import Switch, catalog as broker_catalog
+from .chainhistory import (
+    DEFAULT_UNDERLYINGS as HISTORY_DEFAULT,
+    INDEX_OPTIONS as HISTORY_UNDERLYINGS,
+    ChainHistory,
+    Recorder,
+)
 from .custom import OPS as RULE_OPS, TIME_OPS as RULE_TIME_OPS, CustomStrategies
 from .financials import Financials, peer_rows
 from .fno import BSE_INDICES, Derivatives, exchange_of
@@ -55,7 +61,7 @@ from .fundamentals import LABELS as FUNDAMENTAL_LABELS, Fundamentals
 from .indices import Indices
 from .kite import KiteError, KiteMCP
 from .markettools import MarketTools, finite
-from .nse import NseClient
+from .nse import NseClient, exchange_proxy as nse_proxy
 from .optimiser import OBJECTIVES, optimise
 from .passkeys import PasskeyError, Passkeys, relying_party
 from .scanner import Scanner
@@ -136,6 +142,11 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     algos.extra_ticks.append(settle_paper_options)
     fno_algos = FnoAlgoEngine(desk, derivatives, fetch=fetch, library=library)
     algos.extra_ticks.append(fno_algos.tick)
+    chain_history = ChainHistory(desk.ledger.path.parent / "option_history.db",
+                                 client=NseClient(get_json=offline_json, download=lambda url: (_ for _ in ()).throw(OSError("offline")))
+                                 if fetch is not None else None, now=lambda: market.now_ist().replace(tzinfo=None))
+    chain_recorder = Recorder(chain_history, kite, derivatives, settings)
+    algos.extra_ticks.append(chain_recorder.tick)
     algos.extra_live.append(fno_algos.live_names)
     desk.algo_claims = fno_algos.claimed
     algos.extra_ticks.append(desk.close_paper_mcx)
@@ -146,6 +157,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
 
     app = FastAPI(title=APP_NAME, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.token, app.state.settings, app.state.kite, app.state.desk = token, settings, kite, desk
+    app.state.chain_history = chain_history
     app.state.algos, app.state.auth, app.state.scanner = algos, auth, scanner
     app.state.sectors, app.state.indices, app.state.fundamentals = sectors, indices, fundamentals
     app.state.derivatives = derivatives
@@ -1605,8 +1617,13 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         for t in times:
             if not re.fullmatch(r"(0?9|1[0-5]):[0-5]\d", t):
                 raise ValueError("Entry and exit times must be between 09:15 and 15:30, like 09:20")
+        premiums = str(payload.get("premiums") or "real")
+        if premiums not in ("real", "model"):
+            raise ValueError("premiums must be real or model")
+        stored_days = chain_history.covers(underlying, bars.index[0].date(), bars.index[-1].date()) if premiums == "real" else 0
         result = optstrat.run_structure(
             underlying, bars, vix, structure=str(payload.get("structure", "")), mode=mode, lot_size=lot,
+            history=chain_history if stored_days else None,
             lots=int(_number(payload, "lots", 1)), capital=_number(payload, "capital", cfg["paper_capital"]),
             k=int(_number(payload, "k", 2)), w=int(_number(payload, "w", 4)), expiry_kind=str(payload.get("expiry_kind", "weekly")),
             min_days=_number(payload, "min_days", 0 if mode == "intraday" else 1), weekdays=tuple(weekdays),
@@ -1619,8 +1636,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                                         legacy={"stop_loss": _number(payload, "leg_sl_pct", 0)}),
             leg_scope=str(payload.get("leg_scope") or "sold"))
         m = result["metrics"]
-        notes = [f"Index candles from {source}. Every premium is simulated (Black-Scholes on India VIX × "
-                 f"{_number(payload, 'iv_scale', 1.0):g}); Kite keeps no candles for expired contracts."]
+        notes = [f"Index candles from {source}.", _premium_note(result.get("pricing"), premiums, mode, underlying,
+                                                              _number(payload, "iv_scale", 1.0))]
         if m["skipped_entries"]:
             notes.append(f"{m['skipped_entries']} entries skipped: equity did not cover the margin.")
         if m.get("legs_stopped"):
@@ -1631,6 +1648,61 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             notes.append(f"Average margin blocked ₹{m['avg_margin']:,.0f}; trade returns are on that margin.")
         result.update(interval=interval, data_note=" ".join(notes), benchmark_name=None, benchmark_note=None)
         return result
+
+    def _premium_note(used: dict | None, premiums: str, mode: str, underlying: str, iv_scale: float) -> str:
+        model = f"Black-Scholes on India VIX × {iv_scale:g}"
+        if premiums == "model":
+            return f"Every premium is modelled ({model}), as you chose."
+        if not used:
+            where = ("no live chain recorded for these days" if mode == "intraday"
+                     else "no NSE history imported for this period")
+            return (f"Every premium is modelled ({model}): {where} for {underlying}. "
+                    "Import NSE history under Real option prices to use traded prices.")
+        fills = used["traded"] + used["settle"] + used["recorded"] + used["model"]
+        parts = []
+        if used["traded"]:
+            parts.append(f"{used['traded']} from NSE traded prices")
+        if used["settle"]:
+            parts.append(f"{used['settle']} from NSE settlement prices (strike did not trade that day)")
+        if used["recorded"]:
+            parts.append(f"{used['recorded']} from recorded live prices")
+        if used["model"]:
+            parts.append(f"{used['model']} modelled ({model}) where no real price was stored")
+        text = f"Premiums of {fills} fills: " + "; ".join(parts) + "."
+        if used["expiry"]:
+            text += f" {used['expiry']} legs settled at expiry against the index close."
+        if mode == "intraday" and used["recorded"] == 0:
+            text += " The NSE bhavcopy has one price a day, so intraday entries need the live chain recorder."
+        return text
+
+    @app.get("/api/options/history")
+    def option_history_status():
+        cfg = settings.all()
+        return {**chain_history.status(), "recorder": {"underlyings": cfg["chain_recorder"],
+                                                       "minutes": cfg["chain_recorder_minutes"],
+                                                       "last": chain_recorder.last},
+                "choices": list(HISTORY_UNDERLYINGS), "defaults": list(HISTORY_DEFAULT), "proxy": bool(nse_proxy())}
+
+    @app.post("/api/options/history/import")
+    def option_history_import(payload: dict):
+        payload = body_of(payload)
+        start = datetime.strptime(date_of(payload.get("start"), "From"), "%Y-%m-%d").date()
+        end = datetime.strptime(date_of(payload.get("end"), "To"), "%Y-%m-%d").date()
+        today = market.now_ist().date()
+        if start > end or end > today:
+            raise ValueError("From must be before To, and To no later than today.")
+        if start.year < 2010:
+            raise ValueError("NSE's archive of these files starts around 2000, but weekly options began in 2016-2019; "
+                             "start from 2010 or later.")
+        underlyings = payload.get("underlyings") or list(HISTORY_DEFAULT)
+        if not isinstance(underlyings, list) or not underlyings or not set(underlyings) <= set(HISTORY_UNDERLYINGS):
+            raise ValueError(f"underlyings must be some of {', '.join(HISTORY_UNDERLYINGS)}")
+        return chain_history.start_import(start, end, underlyings)
+
+    @app.post("/api/options/history/stop")
+    def option_history_stop():
+        chain_history.stop()
+        return chain_history.job
 
     @app.post("/api/options/payoff")
     def option_payoff(payload: dict):

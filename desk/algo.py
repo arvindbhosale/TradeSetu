@@ -56,6 +56,7 @@ JOB_NAMES = {                               # the engines the server drives from
     "FnoAlgoEngine.tick": "F&O algos",
     "Desk.close_paper_mcx": "Paper MCX square-off",
     "create_app.<locals>.settle_paper_options": "Paper option expiry settlement",
+    "Recorder.tick": "Option chain recorder",
 }
 
 
