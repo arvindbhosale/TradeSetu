@@ -811,6 +811,25 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
     finite = at_expiry + [floor, pnl_at(far_up, True)]
     max_profit = None if unlimited_profit else max(finite)
     max_loss = None if unlimited_loss else min(finite)
+    # Where on the index each extreme sits, as runs of levels {"from", "to"} at the near expiry. "from" 0 means the
+    # run reaches down to a crash; "to" None means it carries on above the chart (flat beyond the last strike).
+    levels = [(0.0, floor)] + list(zip(grid, at_expiry, strict=True)) + [(None, pnl_at(far_up, True))]
+
+    def where(best: float | None) -> list[dict]:
+        if best is None:
+            return []
+        tol = 0.01 + 1e-6 * abs(best)
+        runs, run = [], None
+        for lvl, p in levels:
+            if abs(p - best) <= tol:
+                run = run or {"from": lvl, "to": lvl}
+                run["to"] = None if lvl is None else round(lvl, 2)
+            elif run:
+                runs.append(run)
+                run = None
+        if run:
+            runs.append(run)
+        return [r for r in runs if r["from"] is not None]   # far-out only: not a level a trader can act on
 
     # Chance of profit at the near expiry: lognormal index at iv with drift r (risk-neutral), over the profit zones.
     pop = None
@@ -847,6 +866,7 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
         "credit": net > 0, "max_profit": None if max_profit is None else round(max_profit, 2),
         "max_loss": None if max_loss is None else round(max_loss, 2),
         "unlimited_profit": unlimited_profit, "unlimited_loss": unlimited_loss,
+        "max_profit_at": where(max_profit), "max_loss_at": where(max_loss),
         "breakevens": [round(b, 2) for b in breakevens], "pop_pct": pop, "greeks": greeks,
         "margin": round(margin, 0),
         "reward_risk": (round(max_profit / -max_loss, 2) if max_profit is not None and max_loss not in (None, 0) and max_loss < 0
