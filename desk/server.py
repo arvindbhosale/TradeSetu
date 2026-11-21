@@ -270,7 +270,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         return _manual_page()
 
     @app.get("/notes", response_class=HTMLResponse)
-    def notes():
+    def notes_view():
         return notes_page()
 
     @app.get("/notes.pdf")
