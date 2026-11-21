@@ -1119,8 +1119,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                 return hit[0], f"{hit[1]} (saved copy)"
             bars, source = stock_bars(symbol, "1d", start, end)
             cache.put(symbol, start, end, bars, source["name"])
-            if source["name"] == "Kite":
-                time_module.sleep(0.35)               # Kite allows three historical requests a second
+            if source["name"] != "Yahoo":
+                time_module.sleep(0.35)               # brokers cap history requests (Kite: three a second)
             return bars, source["name"]
 
         def work(job):

@@ -868,7 +868,7 @@ Verdicts: **Beats buy and hold**, **Works** (passed, but holding the same stocks
 
 **Download Excel** gives a colour-coded workbook: the ranking (Summary), the method and caveats (Read me), each stock, the stoploss and target trials, every backtest run, and stocks left out. The explanation is written from the numbers by fixed rules; no AI model invents figures.
 
-Notes: day candles only (intraday across 50+ stocks would hit Kite's limit of three history requests a second). Prices come from Kite when it is logged in, else Yahoo, and are saved, so a second scan of the same dates loads faster. A Nifty 50 scan at the Standard search is about 12,000 backtests and takes a few minutes; it runs in the background and **Stop** keeps what was tested so far. Today's index members are the stocks that did well enough to be in it, so every past result is flattered (survivorship). Set `DESK_SCAN_WORKERS` to change how many processor cores it uses (default: all but one, at most 4).
+Notes: day candles only (intraday across 50+ stocks would hit the broker's history limits, three requests a second on Kite). Prices come from your broker when it is signed in, else Yahoo, and are saved, so a second scan of the same dates loads faster. A Nifty 50 scan at the Standard search is about 12,000 backtests and takes a few minutes; it runs in the background and **Stop** keeps what was tested so far. Today's index members are the stocks that did well enough to be in it, so every past result is flattered (survivorship). Set `DESK_SCAN_WORKERS` to change how many processor cores it uses (default: all but one, at most 4).
 
 ### Optimise a strategy (walk-forward)
 

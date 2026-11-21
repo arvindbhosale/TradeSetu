@@ -375,7 +375,7 @@ SCAN_RUNS = [
 SCAN_ROWS_MAX = 250_000
 
 
-def scan_workbook(r: dict, app_name: str = "Bharat Desk") -> bytes:
+def scan_workbook(r: dict, app_name: str = "TradeSetu") -> bytes:
     """The AI strategy scan as a workbook: the ranking, the method and caveats, each stock, the stoploss and
     target trials, and every backtest run."""
     period = f"{r['start']} to {r['end']}"
