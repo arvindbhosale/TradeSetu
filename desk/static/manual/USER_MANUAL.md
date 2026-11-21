@@ -411,6 +411,8 @@ The **Download** panel on the P&L tab. All on the account selected at the top; t
 | **Fills** | Every fill with price, product and charges. |
 | **Tax lots** | Each sale matched to its buys first-in first-out, with buy and sell dates, days held, cost, proceeds, charges, gain and category. |
 
+Each button downloads an Excel file (.xlsx) that opens in Excel, Google Sheets or LibreOffice. Profit is shaded green and loss red, Buy and Long are green, Sell and Short red, failed orders are a red row, and each tax head has its own shade. The header row stays in view with a filter on every column, and the **Total (rows shown)** line at the bottom adds up only the rows the filter leaves, so filtering one algo or one month gives that algo's or month's total. Profit/Loss also has a **By source** sheet (trades, wins, losses and net for each algo and for manual trades); Tax lots has a **By financial year** sheet with the tax estimate. Tick **Plain CSV instead** for a plain CSV file.
+
 **Tax summary by financial year (April–March):**
 
 | Category | Rule used |

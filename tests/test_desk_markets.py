@@ -581,6 +581,25 @@ def test_api_options_backtest_optimiser_and_exports(client):
     assert len(lots) == 2 and lots[1].split(",")[1] == "STCG"
     years = client.get("/api/tax?mode=paper").json()["years"]
     assert years[0]["trades"] == 1 and client.get("/api/export/other.csv").status_code == 404
+    assert client.get("/api/export/other.xlsx").status_code == 404
+
+    import io
+
+    from openpyxl import load_workbook
+    for kind, sheets, rows in (("pnl", ["Closed trades", "By source"], 1), ("journal", ["Order journal"], 2),
+                               ("fills", ["Fills"], 2), ("tax-lots", ["Tax lots", "By financial year"], 1)):
+        response = client.get(f"/api/export/{kind}.xlsx?mode=paper")
+        assert response.status_code == 200 and response.headers["content-type"].startswith("application/vnd.openxmlformats"), kind
+        assert f'filename="tradesetu-{kind}-paper.xlsx"' in response.headers["content-disposition"]
+        book = load_workbook(io.BytesIO(response.content))
+        assert book.sheetnames == sheets, kind
+        ws = book[sheets[0]]
+        assert ws.freeze_panes == "A5" and ws.auto_filter.ref.startswith("A4:"), kind
+        assert sum(1 for r in ws.iter_rows(min_row=5, max_row=4 + rows) if r[0].value) == rows, kind
+    trades = load_workbook(io.BytesIO(client.get("/api/export/pnl.xlsx?mode=paper").content))["Closed trades"]
+    header = [c.value for c in trades[4]]
+    assert header[:4] == ["Closed on (IST)", "From", "Stock / contract", "Side"] and trades["D5"].value == "Long"
+    assert trades["B5"].value == "Manual" and trades["H7"].value == "=SUBTOTAL(109,H5:H5)"
 
 
 def test_api_indices_and_stock_detail(client):

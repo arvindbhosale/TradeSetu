@@ -1747,7 +1747,8 @@
   $$("[data-export]").forEach((button) => button.addEventListener("click", async () => {
     const kind = button.dataset.export, mode = state.mode;
     showError("#export-error", null); busy(button, true, "Downloading…");
-    try { await download(`/export/${kind}.csv?mode=${mode}`, `${kind}-${mode}.csv`); }
+    const ext = $("#export-csv").checked ? "csv" : "xlsx";
+    try { await download(`/export/${kind}.${ext}?mode=${mode}`, `${kind}-${mode}.${ext}`); }
     catch (err) { showError("#export-error", err); }
     busy(button, false);
   }));
