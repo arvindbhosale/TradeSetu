@@ -23,6 +23,11 @@ from .charges import commodity_charges, futures_charges, order_charges
 from .settings import home
 
 
+def trade_key(mode: str, source: str, exchange: str, symbol: str, opened_at: str) -> str:
+    """Names one trade: a position from the fill that opened it until it is flat again. Partial exits share it."""
+    return f"{mode}|{source}|{exchange}|{symbol}|{opened_at}"
+
+
 class Ledger:
     def __init__(self, path: Path | None = None, now=market.now_ist):
         self.path = path or home() / "fills.jsonl"
@@ -94,7 +99,8 @@ class Ledger:
             source, day = fill["source"], fill["time_ist"][:10]
             key = (source, fill["exchange"], fill["tradingsymbol"])
             factor = fill.get("multiplier") or 1
-            book = books.setdefault(key, {"quantity": 0, "cost": 0.0, "opened": day, "factor": factor, "realized": 0.0,
+            book = books.setdefault(key, {"quantity": 0, "cost": 0.0, "opened": day, "opened_at": fill["time_ist"],
+                                          "factor": factor, "realized": 0.0,
                                           "charges": 0.0, "bought": 0, "buy_value": 0.0, "sold": 0, "sell_value": 0.0,
                                           "fills": []})
             lots = fill["quantity"]
@@ -131,6 +137,9 @@ class Ledger:
                 stats["wins"] += profit > 0
                 days[day] += profit
                 closed.append({"time_ist": fill["time_ist"], "source": source, "symbol": fill["tradingsymbol"],
+                               "exchange": fill["exchange"], "opened_at": book["opened_at"],
+                               "key": trade_key(mode, source, fill["exchange"], fill["tradingsymbol"], book["opened_at"]),
+                               **({"multiplier": factor} if factor != 1 else {}),
                                "quantity": round(closing / factor, 6) if factor != 1 else closing, "side": "SHORT" if buying else "LONG",
                                "buy_price": round(price if buying else average, 2),
                                "sell_price": round(average if buying else price, 2),
@@ -139,7 +148,7 @@ class Ledger:
             rest = quantity - closing
             if rest and (buying or fill["exchange"] in ("NFO", "BFO", "MCX")):
                 if book["quantity"] == 0:
-                    book["opened"] = day
+                    book["opened"], book["opened_at"] = day, fill["time_ist"]
                 part = charge * rest / quantity
                 book["quantity"] += rest if buying else -rest
                 book["cost"] += rest * price + part if buying else -(rest * price - part)
@@ -164,7 +173,8 @@ class Ledger:
             open_rows.append({"source": source, "symbol": symbol, "exchange": exchange,
                               "quantity": int(round(lots)) if book["factor"] != 1 else book["quantity"],
                               "average": round(average, 2), "last": last, "unrealized": None if gain is None else round(gain, 2),
-                              "opened": book["opened"]})
+                              "opened": book["opened"], "opened_at": book["opened_at"],
+                              "key": trade_key(mode, source, exchange, symbol, book["opened_at"])})
 
         curve, running, peak, drawdown = [], 0.0, 0.0, 0.0
         for day in sorted(days):

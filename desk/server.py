@@ -38,6 +38,7 @@ from . import (
     jobs as jobs_module,
     market,
     mcx,
+    results,
     risk,
 )
 from .algo import AlgoEngine, AlgoError, arm_phrase
@@ -60,6 +61,7 @@ from .scanner import Scanner
 from .sectors import Sectors
 from .settings import Settings, home
 from .stockinfo import stock_view
+from .tradenotes import MISTAKES, TradeNotes
 
 logger = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"
@@ -87,6 +89,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     desk = desk or Desk(settings, kite, price_lookup=lambda symbol: data.last_close(symbol, fetch=fetch))
     token = token or secrets.token_urlsafe(32)
     runner = jobs_module.Jobs()
+    notes = TradeNotes(desk.ledger.path.parent / "trade_notes.json", now=desk._now)
     library = CustomStrategies()
     algos = AlgoEngine(desk, fetch=fetch, library=library)
     scanner = Scanner(desk, fetch=fetch)
@@ -1009,7 +1012,22 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     @app.post("/api/order/preview")
     def order_preview(payload: dict):
         payload = body_of(payload)
-        return desk.preview(body_of(payload.get("order")), str(payload.get("mode", "paper")))
+        return desk.preview(body_of(payload.get("order")), str(payload.get("mode", "paper")), stop=payload.get("stop"),
+                            manual=True)
+
+    @app.post("/api/order/size")
+    def order_size(payload: dict):
+        from . import sizing
+        payload = body_of(payload)
+        cfg = settings.all()
+        if payload.get("risk_pct") in (None, ""):
+            payload = {**payload, "risk_pct": cfg["risk_per_trade_pct"]}
+        capital = payload.get("capital")
+        if capital in (None, "", 0):
+            capital = cfg["risk_capital"] or cfg["paper_capital"]
+        if isinstance(capital, bool) or not isinstance(capital, (int, float)):
+            raise ValueError("Capital must be a number")
+        return sizing.size(payload, float(capital), cfg["max_order_value"])
 
     @app.post("/api/order/place")
     def order_place(payload: dict):
@@ -1753,6 +1771,47 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     @app.get("/api/order/journal")
     def order_journal():
         return {"orders": desk.journal_rows()}
+
+    # -- trade journal and your results ------------------------------------------
+
+    def journal_trades(mode: str) -> list[dict]:
+        report = desk.pnl(mode)
+        closed, open_rows = desk.ledger.closed_trades(mode), report["open"]
+        linked = notes.attach([{"key": r["key"], "mode": mode, "source": r["source"], "exchange": r["exchange"],
+                                "symbol": r["symbol"], "opened_at": r["opened_at"]} for r in [*closed, *open_rows]])
+        return results.positions(closed, open_rows, linked)
+
+    @app.get("/api/journal")
+    def journal(mode: str = "paper"):
+        if mode not in ("paper", "live"):
+            raise ValueError("mode must be paper or live")
+        if mode == "live":
+            desk.sync_live_fills()
+        trades = journal_trades(mode)
+        other = "live" if mode == "paper" else "paper"
+        return {"mode": mode, "trades": trades[:500], "pending": notes.pending(mode)[-50:],
+                "results": results.report(trades),
+                "other": {"mode": other, **results.summarize([t for t in journal_trades(other) if t["status"] == "Closed"])},
+                "setups": notes.setups(), "mistakes": list(MISTAKES)}
+
+    @app.post("/api/journal")
+    def journal_add(payload: dict):
+        return notes.add(body_of(payload))
+
+    @app.put("/api/journal/{note_id}")
+    def journal_update(note_id: str, payload: dict):
+        try:
+            return notes.update(note_id, body_of(payload))
+        except KeyError:
+            raise HTTPException(404, "no such note") from None
+
+    @app.delete("/api/journal/{note_id}")
+    def journal_delete(note_id: str):
+        try:
+            notes.delete(note_id)
+        except KeyError:
+            raise HTTPException(404, "no such note") from None
+        return {"ok": True}
 
     @app.get("/api/quote")
     def quote(symbol: str):

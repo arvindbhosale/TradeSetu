@@ -530,13 +530,16 @@ class Desk:
 
     # -- the order path ----------------------------------------------------
 
-    def preview(self, raw: dict, mode: str, allow_short: bool = False, source: str = "") -> dict:
+    def preview(self, raw: dict, mode: str, allow_short: bool = False, source: str = "", stop=None,
+                manual: bool = False) -> dict:
         """Check an order and, if it passes, issue the token that places it.
 
         ``allow_short`` lets an F&O order with intent "open" sell: write an option or short a future. Only the F&O
         algo engine passes it, for a leg of a structure the user armed; a manual order never opens a short.
         ``source`` names the algo placing the order: a closing order from an F&O algo is checked against that
         algo's share of the account's position, not the account's net, which other algos' legs also make up.
+        ``stop`` is the stoploss price the user plans for a manual order (``manual``): the loss at that stoploss is
+        checked against the risk limit per trade in Settings.
         """
         if mode not in ("paper", "live"):
             raise OrderRejected(["mode must be paper or live"])
@@ -569,6 +572,8 @@ class Desk:
         if reference is None:
             errors.append("No price is available to value this order. Connect Kite or use a LIMIT price.")
         value = (reference or 0) * order.quantity * order.multiplier
+
+        risk = self._risk_check(order, reference, stop, cfg, errors) if manual and order.opens else None
 
         # The size and count limits cap new risk. They never stand in the way of
         # an exit: a position that has grown past the limit must still be closable.
@@ -712,7 +717,7 @@ class Desk:
         result = {
             "ok": not errors, "mode": mode, "order": asdict(order), "errors": errors, "warnings": warnings,
             "last_price": ltp, "last_price_source": ltp_source, "value": round(value, 2),
-            "charges": charges, "session": session, "phrase": order.phrase, "token": None,
+            "charges": charges, "session": session, "phrase": order.phrase, "token": None, "risk": risk,
         }
         if not errors:
             token = secrets.token_urlsafe(24)
@@ -723,6 +728,35 @@ class Desk:
                                        "fill_price": fill_price}
             result["token"], result["expires_in"] = token, TOKEN_SECONDS
         return result
+
+    def _risk_check(self, order: Order, entry: float | None, stop, cfg: dict, errors: list) -> dict | None:
+        """The loss if a manual order's planned stoploss is hit, against the risk limit per trade."""
+        capital = cfg["risk_capital"] or cfg["paper_capital"]
+        if stop in (None, "", 0):
+            if cfg["require_stoploss"] and order.exchange not in DERIVATIVES:
+                errors.append("Your Settings ask for a stoploss on every buy. Enter the stoploss price on the ticket "
+                              "(Work out quantity sizes the buy from it).")
+            return None
+        if isinstance(stop, bool) or not isinstance(stop, (int, float)) or not math.isfinite(stop) or stop <= 0:
+            errors.append("The stoploss must be a price above zero.")
+            return None
+        stop = float(stop)
+        if not entry:
+            return None
+        if (order.side == "BUY" and stop >= entry) or (order.side == "SELL" and stop <= entry):
+            errors.append(f"The stoploss ₹{stop:,.2f} must be {'below' if order.side == 'BUY' else 'above'} the "
+                          f"entry price ₹{entry:,.2f}.")
+            return None
+        from .sizing import trade_risk
+        loss = trade_risk(order.side, order.quantity, entry, stop, order.product, order.exchange, order.tradingsymbol,
+                          order.multiplier)
+        share = loss / capital * 100 if capital else 0.0
+        if cfg["max_risk_pct"] and share > cfg["max_risk_pct"]:
+            errors.append(f"If the stoploss ₹{stop:,.2f} is hit this trade loses about ₹{loss:,.0f}, {share:.1f}% of "
+                          f"your ₹{capital:,.0f} capital. Your limit is {cfg['max_risk_pct']:g}% a trade (Settings). "
+                          f"Buy fewer: Work out quantity on the ticket gives the size.")
+        return {"stop": stop, "loss": round(loss, 2), "of_capital_pct": round(share, 2), "capital": round(capital, 2),
+                "limit_pct": cfg["max_risk_pct"]}
 
     def mcx_window_status(self) -> dict:
         """Where the clock stands against the MCX trade window in Settings (inside the MCX session)."""
