@@ -656,3 +656,37 @@ def test_api_market_tools(client):
     assert "rows" in client.get("/api/tools/rotation?period=weekly").json()
     radar = client.get("/api/tools/radar").json()
     assert isinstance(radar["rows"], list) and "universe" in radar
+
+
+def test_api_payoff_fills_premiums_and_greeks_from_kite(client, monkeypatch):
+    moment = datetime(2026, 11, 16, 10, 0, tzinfo=market.IST)          # the fake Kite's anchor day, in session
+    monkeypatch.setattr(market, "now_ist", lambda: moment)
+    body = {"underlying": "NIFTY", "structure": "iron_condor", "expiry_kind": "monthly", "k": 2, "w": 4}
+    model = client.post("/api/options/payoff", json=body).json()
+    assert all(g["source"] == "model" for g in model["legs"]), model.get("error")
+    assert any("Log in to Kite" in n for n in model["notes"])
+    client.post("/api/kite/connect")
+    client.post("/api/kite/login")
+    live = client.post("/api/options/payoff", json=body).json()
+    assert all(g["source"] == "Kite live" for g in live["legs"]), live.get("error") or live["notes"]
+    assert live["lot_size"] == 75                                       # the lot size comes from the contract list
+    assert live["spot"] == 24500.0 and live["max_loss"] < 0 < live["max_profit"]
+    for g in live["legs"]:
+        assert g["iv_implied"] and 10 < g["iv_pct"] < 16 and g["gamma"] >= 0        # the fake prices at 13%
+    assert set(live["greeks"]) == {"delta", "gamma", "theta", "vega"} and live["greeks"]["theta"] > 0   # short premium
+    assert any("from Kite" in x for x in live["sources"]) and not any("Black-Scholes" in n for n in live["notes"])
+    # Typed premiums win, keep their labels, and reprice the Greeks at the typed price.
+    typed = [g["premium"] for g in live["legs"]]
+    typed[0] += 20
+    labels = ["typed"] + [g["source"] for g in live["legs"][1:]]
+    again = client.post("/api/options/payoff", json={**body, "spot": live["spot"], "days": live["days"],
+                                                     "iv_pct": live["iv_pct"], "premiums": typed, "labels": labels}).json()
+    assert again["legs"][0]["premium"] == typed[0] and again["legs"][0]["source"] == "typed"
+    assert again["legs"][1]["source"] == "Kite live" and again["legs"][0]["iv_pct"] != live["legs"][0]["iv_pct"]
+    # A typed spot is a what-if: premiums stay modelled, and the note says why.
+    what_if = client.post("/api/options/payoff", json={**body, "spot": 24000}).json()
+    assert all(g["source"] == "model" for g in what_if["legs"]) and any("you typed Spot" in n for n in what_if["notes"])
+    # After the close the last traded prices are used, with a plain note.
+    monkeypatch.setattr(market, "now_ist", lambda: datetime(2026, 11, 16, 18, 0, tzinfo=market.IST))
+    shut = client.post("/api/options/payoff", json=body).json()
+    assert all(g["source"] == "Kite last price" for g in shut["legs"]) and any("Market closed" in n for n in shut["notes"])

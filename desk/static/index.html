@@ -601,10 +601,14 @@
       <div class="legend" id="sbt-payoff-legend"></div>
       <div class="chart" id="sbt-payoff-chart"></div>
       <h3>Legs</h3>
-      <p class="hint">Type the real premiums from the option chain into the Premium boxes and press Recalculate for figures on market prices.</p>
+      <p class="hint">When Kite is logged in, each premium is that contract's price from Kite, and its IV and Greeks are worked out from that price.</p>
       <div class="scroll" id="sbt-payoff-legs"></div>
-      <div class="row"><button type="button" id="sbt-payoff-again">Recalculate with these premiums</button></div>
       <p class="hint" id="sbt-payoff-note"></p>
+      <details class="advanced" id="sbt-payoff-own"><summary>Advanced: type your own premiums</summary>
+        <p class="hint">Change any premium and press Recalculate. A box you leave as it is keeps its price and where it came from.</p>
+        <div class="row" id="sbt-payoff-inputs"></div>
+        <div class="row"><button type="button" id="sbt-payoff-again">Recalculate with these premiums</button></div>
+      </details>
     </div>
   </div>
   <div id="bt-portfolio" hidden>
