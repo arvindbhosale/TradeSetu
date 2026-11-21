@@ -2868,6 +2868,14 @@
       busy(button, false);
     };
     $("#sbt-payoff").addEventListener("click", (event) => payoff(event.currentTarget, null));
+    let resizeTimer = null, drawnWidth = 0;
+    window.addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        const host = $("#sbt-payoff-chart"), w = host.clientWidth;
+        if (lastPayoff && !$("#sbt-payoff-result").hidden && Math.abs(w - drawnWidth) > 24) { drawnWidth = w; drawPayoff(host, $("#sbt-payoff-legend"), lastPayoff); }
+      }, 200);
+    });
     $("#sbt-payoff-again").addEventListener("click", (event) => {
       const boxes = $$("#sbt-payoff-inputs input[name=premium]"), legs = lastPayoff ? lastPayoff.legs : [];
       const values = [], labels = [];
@@ -2888,8 +2896,9 @@
     $("#sbt-payoff-title").textContent = `${r.name} · ${r.underlying} ${inr2.format(r.spot)} · IV ${r.iv_pct}% · ${r.days.toFixed(1)} days to expiry${far}`;
     $("#sbt-payoff-tiles").replaceChildren(
       tile(r.credit ? "Net credit" : "Net debit", rupees(Math.abs(r.net_rupees)), `${inr2.format(Math.abs(r.net_premium))} per unit × ${r.quantity}`, r.credit ? "pos" : "neg"),
-      tile("Max profit", r.unlimited_profit ? "Unlimited" : rupees(r.max_profit), "at the near expiry", "pos"),
-      tile("Max loss", r.unlimited_loss ? "Unlimited" : rupees(r.max_loss), r.reward_risk != null ? `reward : risk ${r.reward_risk}` : null, "neg"),
+      tile("Max profit", r.unlimited_profit ? "Unlimited" : rupees(r.max_profit), extremeWhere(r, r.unlimited_profit, r.max_profit_at) + " at expiry", "pos"),
+      tile("Max loss", r.unlimited_loss ? "Unlimited" : rupees(r.max_loss),
+        [extremeWhere(r, r.unlimited_loss, r.max_loss_at), r.reward_risk != null ? `reward : risk ${r.reward_risk}` : null].filter(Boolean).join(" · "), "neg"),
       tile("Breakeven" + (r.breakevens.length === 1 ? "" : "s"), r.breakevens.length ? r.breakevens.map((b) => inr.format(b)).join(" / ") : "–",
         r.breakevens.length ? r.breakevens.map((b) => pct((b / r.spot - 1) * 100)).join(" / ") + " from spot" : "none in range"),
       tile("Chance of profit", r.pop_pct == null ? "–" : r.pop_pct + "%", "lognormal at this IV"),
@@ -2920,6 +2929,20 @@
     $("#sbt-payoff-result").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  // Index level(s) of a maximum, in words: a run {from, to}; from 0 reaches down to a crash, to null carries on above.
+  function levelWords(run) {
+    if (run.from === 0 && run.to === 0) return "on a fall to 0";
+    if (run.from === 0) return `${inr.format(run.to)} or lower`;
+    if (run.to == null) return `${inr.format(run.from)} or higher`;
+    if (run.from === run.to) return `at ${inr.format(run.from)}`;
+    return `${inr.format(run.from)} to ${inr.format(run.to)}`;
+  }
+
+  function extremeWhere(r, unlimited, runs) {
+    if (unlimited) return `as ${r.underlying} rises`;
+    return runs && runs.length ? `${r.underlying} ${runs.map(levelWords).join(runs.length > 1 && runs.some((x) => x.from === 0 || x.to == null) ? ", or " : " or ")}` : "";
+  }
+
   function premiumSource(source) {
     return { "Kite live": "Kite, live", "Kite last price": "Kite, last trade", "Kite previous close": "Kite, previous close",
       model: "Model", given: "Typed", typed: "Typed" }[source] || source;
@@ -2927,7 +2950,9 @@
 
   function drawPayoff(host, legend, r) {
     const NS = "http://www.w3.org/2000/svg";
-    const W = 1000, H = 340, pad = { l: 78, r: 16, t: 12, b: 26 };
+    // Drawn at the box's own width (labels stay 11px on a phone), redrawn when the window is resized.
+    const W = Math.round(Math.min(Math.max(host.clientWidth || 1000, 340), 1000)), H = W < 640 ? 330 : 396;
+    const pad = { l: W < 640 ? 62 : 78, r: 16, t: 42, b: 42 };
     const svg = (tag, attrs) => { const el = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el; };
     const pts = r.payoff, xs = pts.map((p) => p.spot), all = pts.flatMap((p) => [p.expiry, p.today]);
     let lo = Math.min(0, ...all), hi = Math.max(0, ...all);
@@ -2942,9 +2967,10 @@
       root.append(svg("line", { class: "grid", x1: pad.l, x2: W - pad.r, y1: yy, y2: yy }));
       const label = svg("text", { x: pad.l - 8, y: yy + 4, "text-anchor": "end" }); label.textContent = compact(value); root.append(label);
     }
-    for (let i = 0; i <= 5; i++) {
-      const v = x0 + ((x1 - x0) * i) / 5;
-      const label = svg("text", { x: x(v), y: H - 6, "text-anchor": i === 0 ? "start" : i === 5 ? "end" : "middle" }); label.textContent = inr.format(v); root.append(label);
+    const ticks = W < 640 ? 3 : 5;
+    for (let i = 0; i <= ticks; i++) {
+      const v = x0 + ((x1 - x0) * i) / ticks;
+      const label = svg("text", { x: x(v), y: H - pad.b + 16, "text-anchor": i === 0 ? "start" : i === ticks ? "end" : "middle" }); label.textContent = inr.format(v); root.append(label);
     }
     // Profit shaded green, loss red, under the expiry line.
     const area = (keep, color) => {
@@ -2956,12 +2982,57 @@
     area((v) => Math.max(v, 0), "var(--good)"); area((v) => Math.min(v, 0), "var(--bad)");
     root.append(svg("line", { x1: pad.l, x2: W - pad.r, y1: y(0), y2: y(0), stroke: "var(--muted)", "stroke-width": 1 }));
     root.append(svg("line", { x1: x(r.spot), x2: x(r.spot), y1: pad.t, y2: H - pad.b, stroke: "var(--s4)", "stroke-width": 1, "stroke-dasharray": "4 3" }));
-    r.breakevens.forEach((b) => root.append(svg("circle", { cx: x(b), cy: y(0), r: 4, fill: "var(--surface)", stroke: "var(--text2)", "stroke-width": 2 })));
+    r.breakevens.forEach((b) => root.append(svg("line", { x1: x(b), x2: x(b), y1: pad.t - 4, y2: y(0), stroke: "var(--text2)", "stroke-width": 1, "stroke-dasharray": "2 3", opacity: 0.7 })));
     const line = (key, color, dash) => {
       const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p.spot).toFixed(1)},${y(p[key]).toFixed(1)}`).join("");
       root.append(svg("path", { d, fill: "none", stroke: color, "stroke-width": 2, "stroke-dasharray": dash || "none", "stroke-linejoin": "round" }));
     };
     line("today", "var(--s2)", "6 4"); line("expiry", "var(--s1)");
+    r.breakevens.forEach((b) => root.append(svg("circle", { cx: x(b), cy: y(0), r: 4, fill: "var(--surface)", stroke: "var(--text2)", "stroke-width": 2 })));
+    const left = pad.l, right = W - pad.r;
+    // Bold, with a halo in the page colour so a label stays readable where it crosses a line.
+    const text = (str, attrs) => { const el = svg("text", { "font-weight": 600, "paint-order": "stroke", stroke: "var(--surface)", "stroke-width": 4, "stroke-linejoin": "round", ...attrs });
+      el.textContent = str; root.append(el); return el; };
+    const width = (str) => str.length * 6.4;
+    // Breakevens: labels above the plot, in two rows, pushed right when both rows are taken. Spot: under the axis.
+    const rowEnds = [-Infinity, -Infinity];
+    r.breakevens.forEach((b) => {
+      const str = `Breakeven ${inr.format(b)} (${pct((b / r.spot - 1) * 100)})`, w = width(str);
+      let cx = Math.min(Math.max(x(b), left + w / 2), right - w / 2);
+      let row = rowEnds.findIndex((end) => cx - w / 2 > end + 8);
+      if (row < 0) { row = rowEnds[0] <= rowEnds[1] ? 0 : 1; cx = rowEnds[row] + 8 + w / 2; }
+      rowEnds[row] = cx + w / 2;
+      text(str, { x: cx, y: 14 + row * 16, "text-anchor": "middle", style: "fill:var(--text)" });
+    });
+    const spotStr = `Spot ${inr.format(r.spot)}`, sw = width(spotStr);
+    text(spotStr, { x: Math.min(Math.max(x(r.spot), left + sw / 2), right - sw / 2), y: H - 4, "text-anchor": "middle", style: "fill:var(--s4)" });
+    // Max profit and max loss: highlight the index range on the expiry line and say the index level(s).
+    // Profit labels go above the line and loss labels below it: at an extreme the rest of the curve is on the other side.
+    // A label that would overlap one already placed goes to the other side of the line.
+    const placed = [];
+    const extreme = (runs, value, title, color, above) => runs.forEach((run) => {
+      const from = Math.max(run.from, x0), to = run.to == null ? x1 : Math.min(run.to, x1), yy = y(value);
+      const words = `${title} ${compact(Math.abs(value))} · ${levelWords(run)}`, w = width(words);
+      let cx, anchor = "middle";
+      if (to < x0) { cx = left + 4; anchor = "start"; }
+      else if (from > x1) { cx = right - 4; anchor = "end"; }
+      else {
+        root.append(svg("line", { x1: x(from), x2: x(Math.max(to, from)), y1: yy, y2: yy, stroke: color, "stroke-width": 6, "stroke-linecap": "round", opacity: 0.45 }));
+        root.append(svg("circle", { cx: x((from + to) / 2), cy: yy, r: 4, fill: color }));
+        cx = Math.min(Math.max(x((from + to) / 2), left + w / 2 + 2), right - w / 2 - 2);
+      }
+      const x0b = anchor === "start" ? cx : anchor === "end" ? cx - w : cx - w / 2;
+      let ty = above ? yy - 10 : yy + 17;
+      if (placed.some((b) => b.y === ty && x0b < b.x1 + 8 && x0b + w > b.x0 - 8)) ty = above ? yy + 17 : yy - 10;
+      placed.push({ x0: x0b, x1: x0b + w, y: ty });
+      text((to < x0 ? "← " : "") + words + (from > x1 ? " →" : ""), { x: cx, y: ty, "text-anchor": anchor, style: `fill:${color}` });
+    });
+    const unlimited = (title, color, up) => {
+      const last = pts[pts.length - 1];
+      text(`${title} unlimited as ${r.underlying} rises →`, { x: right - 4, y: Math.min(Math.max(y(last.expiry) + (up ? -10 : 17), pad.t - 2), H - pad.b + 2), "text-anchor": "end", style: `fill:${color}` });
+    };
+    if (r.unlimited_profit) unlimited("Profit", "var(--good)", true); else extreme(r.max_profit_at || [], r.max_profit, "Max profit", "var(--good)", true);
+    if (r.unlimited_loss) unlimited("Loss", "var(--bad)", false); else extreme(r.max_loss_at || [], r.max_loss, "Max loss", "var(--bad)", false);
     const cross = svg("line", { class: "cross", y1: pad.t, y2: H - pad.b, visibility: "hidden" });
     root.append(cross);
     const tip = $("#tooltip");
@@ -2980,7 +3051,8 @@
     root.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); tip.hidden = true; });
     host.replaceChildren(root);
     legend.replaceChildren(h("span", {}, h("i", { style: "background:var(--s1)" }), "At expiry"), h("span", {}, h("i", { style: "background:var(--s2)" }), "Today (T+0)"),
-      h("span", {}, h("i", { style: "background:var(--s4)" }), "Spot now"), h("span", {}, "○ Breakeven"));
+      h("span", {}, h("i", { style: "background:var(--s4)" }), "Spot now"), h("span", {}, "○ Breakeven (no profit, no loss)"),
+      h("span", {}, h("i", { style: "background:var(--good)" }), "Max profit"), h("span", {}, h("i", { style: "background:var(--bad)" }), "Max loss"));
   }
 
   function startPortfolios() {
