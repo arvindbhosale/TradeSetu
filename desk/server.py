@@ -546,6 +546,12 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         report["loss_limit"] = settings.get("daily_loss_limit")
         return report
 
+    @app.get("/api/funds")
+    def funds(mode: str = "paper"):
+        if mode not in ("paper", "live"):
+            raise ValueError("mode must be paper or live")
+        return desk.funds(mode)
+
     # -- futures and options --------------------------------------------------
 
     @app.get("/api/fno")

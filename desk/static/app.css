@@ -317,3 +317,7 @@ dialog#note-dialog::backdrop { background: rgba(8, 11, 18, .55); }
 .checklist { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
 .checklist li { padding: 8px 12px; border-radius: 10px; background: var(--surface-2); }
 .checklist li.ok { background: var(--good-bg); } .checklist li.warn { background: var(--warn-bg); color: var(--warn-ink); }
+/* Account funds on the P&L tab: rupee amounts to the paisa must not push a phone screen sideways. */
+#funds-tiles .tile { min-width: 0; }
+#funds-tiles h3 { margin: 4px 0 8px; }
+@media (max-width: 480px) { #funds-tiles .tile .v { font-size: 17px; } }

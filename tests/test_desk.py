@@ -478,6 +478,28 @@ def test_api_order_flow_paper_and_live(client, monkeypatch):
     assert [row["mode"] for row in journal] == ["live", "paper"]
 
 
+def test_api_funds_for_paper_and_live(client, monkeypatch):
+    monkeypatch.setattr(market, "session_status", lambda *a: OPEN)
+    paper = client.get("/api/funds?mode=paper").json()
+    assert paper["cash"] == paper["capital"] == paper["value"] and paper["invested"] == 0 and paper["change"] == 0
+    ticket = {"exchange": "NSE", "tradingsymbol": "TCS", "side": "BUY", "quantity": 2, "order_type": "MARKET"}
+    review = client.post("/api/order/preview", json={"mode": "paper", "order": ticket}).json()
+    client.post("/api/order/place", json={"token": review["token"], "phrase": "BUY 2 TCS"})
+    paper = client.get("/api/funds?mode=paper").json()
+    assert paper["positions"] == 1 and paper["invested"] > 0 and not paper["unpriced"]
+    assert 0 < paper["capital"] - paper["cash"] - paper["invested"] < 50                     # only the charges are gone
+    assert paper["value"] == pytest.approx(paper["capital"] + paper["change"], abs=0.02)
+
+    assert client.get("/api/funds?mode=live").json()["connected"] is False
+    client.post("/api/kite/connect")
+    assert client.get("/api/funds?mode=live").json()["needs_login"]
+    client.post("/api/kite/login")
+    live = client.get("/api/funds?mode=live").json()
+    assert [s["segment"] for s in live["segments"]] == ["equity", "commodity"]
+    assert live["segments"][0]["net"] == 250000.0 and live["segments"][0]["used"] == 0.0
+    assert client.get("/api/funds?mode=both").status_code == 400
+
+
 def test_an_analysis_job_runs_and_reports_its_result(client, monkeypatch):
     import time
 
