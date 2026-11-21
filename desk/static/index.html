@@ -462,6 +462,7 @@
       <label>What to test <select id="bt-what">
         <optgroup label="Backtest">
           <option value="strategy">Stocks: buy and sell shares</option>
+          <option value="aiscan">AI scan: find a winning strategy across an index</option>
           <option value="structures">Option strategy: straddle, strangle, iron condor…</option>
           <option value="options">Buy index options: calls or puts</option>
           <option value="futures">Index futures</option>
@@ -475,6 +476,43 @@
       <label class="bt-shared">From <input id="bt-from" type="date" required></label>
       <label class="bt-shared">To <input id="bt-to" type="date" required></label>
       <label class="bt-shared">Capital (₹) <input id="bt-capital" type="number" min="10000" step="10000" required></label>
+    </div>
+  </div>
+  <div id="bt-aiscan" hidden>
+    <div class="panel">
+      <h2>AI scan: every stock of an index, every strategy</h2>
+      <p class="hint">Backtests each built-in strategy, over a small range of its settings, on every stock of the index, with brokerage, taxes and slippage. Settings are chosen on the earlier part of the period; strategies are ranked only on the later part, which the choice never saw. Each strategy runs as one portfolio (the same settings on every stock, equal money in each), and the winner must also pass a luck test that counts how many strategies were tried. The manual backtest is unchanged.</p>
+      <form id="form-scan">
+        <div class="row">
+          <label>Index <select name="index" required></select></label>
+          <label>From <input name="start" type="date" required></label>
+          <label>To <input name="end" type="date" required></label>
+          <label>Capital (₹) <input name="capital" type="number" min="10000" step="10000" required></label>
+          <label>Search <select name="depth"></select></label>
+          <button class="primary" type="submit">Run AI scan</button>
+        </div>
+        <details class="advanced"><summary>Advanced</summary>
+          <div class="row">
+            <label>Unseen part of the period (%) <input name="oos_pct" type="number" min="10" max="50" value="30" required></label>
+            <label>Slippage (basis points) <input name="slippage_bps" type="number" min="0" max="500" step="1"></label>
+          </div>
+        </details>
+        <p class="hint" id="scan-estimate"></p>
+      </form>
+      <div id="scan-error" class="error" hidden></div>
+    </div>
+    <div class="panel" id="scan-job" hidden>
+      <div class="jobhead"><h3 id="scan-title"></h3><span class="pill" id="scan-status"></span><button type="button" id="scan-stop">Stop</button></div>
+      <progress id="scan-progress" max="1" value="0"></progress>
+      <pre class="log" id="scan-log"></pre>
+    </div>
+    <div id="scan-result" hidden>
+      <div class="tiles" id="scan-tiles"></div>
+      <div class="panel"><div class="jobhead"><h3>What the scan found</h3><button type="button" class="primary" id="scan-download">Download Excel</button></div><div id="scan-explain"></div></div>
+      <div class="panel"><h3>Winner against buy and hold, equal money in every stock</h3><p class="hint" id="scan-chart-note"></p><div class="tvchart short" id="scan-chart"></div></div>
+      <div class="panel"><h3>Every strategy, ranked on unseen results</h3><div class="scroll" id="scan-ranking"></div></div>
+      <div class="panel"><h3>Stoploss and target, tried on the top three</h3><div class="scroll" id="scan-exits"></div></div>
+      <div class="panel"><h3>Each stock</h3><p class="hint">A strategy chosen for one stock usually does worse on unseen data than one strategy that works on many. Compare the two unseen columns.</p><div class="scroll" id="scan-stocks"></div></div>
     </div>
   </div>
   <div id="bt-optimise" hidden>

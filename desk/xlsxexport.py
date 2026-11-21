@@ -31,6 +31,10 @@ INT = "#,##0"
 NAVY, WHITE = "1F3A5F", "FFFFFF"
 GREEN_FILL, GREEN_TEXT = "E2F4E6", "1B7A34"
 RED_FILL, RED_TEXT = "FBE3E3", "B3261E"
+AMBER_FILL, AMBER_TEXT = "FFF1D6", "8A5A00"
+VERDICT_GOOD = ("Beats buy and hold", "Works", "Yes")
+VERDICT_WARN = ("Could be luck", "Fragile", "Below a fixed deposit", "Too few trades")
+VERDICT_BAD = ("Loses money",)
 BAND = {"LTCG": "E3EDFB", "STCG": "FFF4D6", "Speculative (intraday)": "F1E6FA", "F&O (non-speculative)": "E0F4F4"}
 
 HEADER_ROW = 4                       # rows 1-2 title, row 3 blank, row 4 header, data from row 5
@@ -45,10 +49,11 @@ class Col:
     width: int = 12
     total: bool = False              # sum in the totals row
     get: Callable[[dict], object] | None = None
-    tone: str | None = None          # "pnl" green/red by sign, "side" Buy green / Sell red
+    tone: str | None = None          # "pnl" green/red by sign, "side" Buy green / Sell red, "verdict" scan verdicts
 
 
-FORMATS = {"time": TIME, "date": DATE, "money": RUPEE, "price": PRICE, "qty": QTY, "pct": PCT, "int": INT}
+RATIO = "0.00"
+FORMATS = {"time": TIME, "date": DATE, "money": RUPEE, "price": PRICE, "qty": QTY, "pct": PCT, "int": INT, "ratio": RATIO}
 
 
 def source_label(source: str) -> str:
@@ -142,7 +147,7 @@ def _value(col: Col, row: dict):
     value = col.get(row) if col.get else row.get(col.key)
     if col.kind in ("time", "date"):
         return _when(value, col.kind)
-    if col.kind in ("money", "price", "qty", "pct", "int"):
+    if col.kind in ("money", "price", "qty", "pct", "int", "ratio"):
         if value in (None, ""):
             return None
         try:
@@ -217,6 +222,12 @@ def _sheet(ws: Worksheet, title: str, subtitle: str, cols: list[Col], rows: list
             ws.conditional_formatting.add(f"A{first}:{last_col}{last}",
                                           FormulaRule(formula=[f'${letter}{first}="Failed"'], stopIfTrue=True,
                                                       fill=PatternFill("solid", fgColor=RED_FILL), font=Font(color=RED_TEXT)))
+        elif col.tone == "verdict":
+            for words, fill, text in ((VERDICT_GOOD, GREEN_FILL, GREEN_TEXT), (VERDICT_WARN, AMBER_FILL, AMBER_TEXT),
+                                      (VERDICT_BAD, RED_FILL, RED_TEXT)):
+                test = "OR(" + ",".join(f'{letter}{first}="{w}"' for w in words) + ")"
+                ws.conditional_formatting.add(cells, FormulaRule(formula=[test], stopIfTrue=True,
+                                                                 fill=PatternFill("solid", fgColor=fill), font=Font(bold=True, color=text)))
         elif col.tone == "band":
             for name, color in BAND.items():
                 ws.conditional_formatting.add(cells, FormulaRule(formula=[f'{letter}{first}="{name}"'],
@@ -309,4 +320,128 @@ def workbook(kind: str, rows: list[dict], mode: str, *, fy: str = "", years: lis
     return out.getvalue()
 
 
-__all__ = ["KINDS", "TITLES", "workbook", "source_label"]
+# -- AI strategy scan ------------------------------------------------------------------------------------
+
+def _get(*path):
+    def read(row):
+        for key in path:
+            row = row.get(key) if isinstance(row, dict) else None
+        return row
+    return read
+
+
+SCAN_RANKING = [
+    Col("rank", "Rank", "int", 6), Col("verdict", "Verdict", width=20, tone="verdict"), Col("name", "Strategy", width=34),
+    Col("settings", "Settings (chosen in-sample)", width=36), Col("exits_text", "Exits", width=22),
+    Col("oos_return", "Unseen return", "pct", 11, get=_get("unseen", "return_pct"), tone="pnl"),
+    Col("oos_cagr", "Unseen return a year", "pct", 11, get=_get("unseen", "cagr_pct"), tone="pnl"),
+    Col("vs_buy_hold_pct", "Vs buy and hold, a year", "pct", 12, tone="pnl"),
+    Col("oos_sharpe", "Unseen Sharpe ratio", "ratio", 10, get=_get("unseen", "sharpe"), tone="pnl"),
+    Col("oos_dd", "Unseen worst fall", "pct", 10, get=_get("unseen", "max_drawdown_pct")),
+    Col("luck", "Chance it is not luck", "pct", 11, get=lambda r: None if r.get("luck_test") is None else r["luck_test"] * 100),
+    Col("robust", "Neighbouring settings that also made money", "pct", 14,
+        get=lambda r: None if r.get("robust") is None else r["robust"] * 100),
+    Col("stocks_profitable", "Stocks in profit (unseen)", "int", 10), Col("stocks", "Stocks", "int", 8),
+    Col("oos_trades", "Unseen trades", "int", 9), Col("is_trades", "In-sample trades", "int", 10),
+    Col("is_return", "In-sample return", "pct", 11, get=_get("in_sample", "return_pct"), tone="pnl"),
+    Col("is_sharpe", "In-sample Sharpe ratio", "ratio", 10, get=_get("in_sample", "sharpe")),
+    Col("tried", "Settings tried", "int", 9), Col("charges", "Charges paid", "money", 14),
+]
+SCAN_STOCKS = [
+    Col("symbol", "Stock", width=14), Col("name", "Company", width=30),
+    Col("best", "Best fit for this stock (in-sample)", width=34), Col("best_settings", "Its settings", width=34),
+    Col("best_is_return_pct", "Its in-sample return", "pct", 12, tone="pnl"),
+    Col("best_oos_return_pct", "Its unseen return", "pct", 12, tone="pnl"),
+    Col("winner_oos_return_pct", "Winner's unseen return", "pct", 12, tone="pnl"),
+    Col("bh_oos_return_pct", "Buy and hold, unseen", "pct", 12, tone="pnl"),
+]
+SCAN_EXITS = [
+    Col("strategy", "Strategy", width=34), Col("settings", "Settings", width=34), Col("exits", "Exits", width=24),
+    Col("chosen", "Chosen (in-sample)", width=10, tone="verdict"),
+    Col("is_return_pct", "In-sample return", "pct", 12, tone="pnl"), Col("is_sharpe", "In-sample Sharpe ratio", "ratio", 11),
+    Col("oos_return_pct", "Unseen return", "pct", 12, tone="pnl"), Col("oos_sharpe", "Unseen Sharpe ratio", "ratio", 11, tone="pnl"),
+    Col("oos_max_drawdown_pct", "Unseen worst fall", "pct", 11), Col("oos_trades", "Unseen trades", "int", 10),
+]
+SCAN_RUNS = [
+    Col("symbol", "Stock", width=13), Col("strategy", "Strategy", width=32), Col("settings", "Settings", width=34),
+    Col("exits", "Exits", width=20),
+    Col("is_return_pct", "In-sample return", "pct", 11, tone="pnl"), Col("is_sharpe", "In-sample Sharpe ratio", "ratio", 10),
+    Col("is_trades", "In-sample trades", "int", 9),
+    Col("oos_return_pct", "Unseen return", "pct", 11, tone="pnl"), Col("oos_sharpe", "Unseen Sharpe ratio", "ratio", 10, tone="pnl"),
+    Col("oos_max_drawdown_pct", "Unseen worst fall", "pct", 10), Col("oos_trades", "Unseen trades", "int", 9),
+    Col("return_pct", "Whole-period return", "pct", 11, tone="pnl"), Col("max_drawdown_pct", "Whole-period worst fall", "pct", 10),
+    Col("trades", "Trades", "int", 8), Col("win_rate_pct", "Win rate", "pct", 9), Col("charges", "Charges", "money", 12, True),
+]
+SCAN_ROWS_MAX = 250_000
+
+
+def scan_workbook(r: dict, app_name: str = "TradeSetu") -> bytes:
+    """The AI strategy scan as a workbook: the ranking, the method and caveats, each stock, the stoploss and
+    target trials, and every backtest run."""
+    period = f"{r['start']} to {r['end']}"
+    head = f"{app_name} · {r['index'] or 'Index'} · {r['stocks_tested']} stocks · {period} · made {_stamp()} IST"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Summary"
+    w = r.get("winner")
+    winner = (f"Winner: {w['name']} ({w['settings']}; {w['exits_text'].lower()}) · {w['verdict']}" if w
+              else "No strategy passed every check: see the Read me sheet")
+    _sheet(ws, f"AI strategy scan: {r['index'] or 'index'}", f"{head} · {winner}", SCAN_RANKING, r["ranking"], totals=False)
+    bh = r["buy_hold"]["unseen"]
+    note_row = HEADER_ROW + len(r["ranking"]) + 2
+    ws.cell(note_row, 1, f"Buy and hold of the same stocks, unseen part: return {bh['return_pct']}%, "
+                         f"{bh['cagr_pct']}% a year, Sharpe ratio {bh['sharpe']}, worst fall {bh['max_drawdown_pct']}%. "
+                         f"Ranked on unseen results only ({r['period']['unseen'][0]} to {r['period']['unseen'][1]}).").font = \
+        Font(italic=True, color="5B6675")
+
+    about = wb.create_sheet("Read me")
+    facts = [
+        ("Result", r["explanation"]),
+        ("Index", r["index"]), ("Stocks tested", f"{r['stocks_tested']} of {r['stocks_asked']}"),
+        ("Period", period), ("Settings chosen on (in-sample)", " to ".join(r["period"]["in_sample"])),
+        ("Strategies judged on (unseen)", " to ".join(r["period"]["unseen"]) + f" ({r['oos_pct']:g}% of the period)"),
+        ("Search", r["depth_text"]), ("Settings tried", f"{r['settings_tried']} across {r['strategies_compared']} strategies"),
+        ("Backtests run", f"{r['trials']:,}"),
+        ("Luck test", f"Deflated Sharpe ratio counting {r['luck_trials']} choices made with the unseen results; "
+                      f"a strategy passes at 95%."),
+        ("Capital", f"₹{r['capital']:,.0f}, split equally: ₹{r['money_per_stock']:,.0f} a stock"),
+        ("Charges", f"Delivery (CNC) brokerage, STT, stamp duty, exchange and SEBI fees, GST and DP charges on every fill, "
+                    f"plus {r['slippage_bps']:g} basis points of slippage"),
+        ("Prices from", ", ".join(f"{k}: {v} stocks" for k, v in r["sources"].items()) or "–"),
+        ("How it trades", "Day candles. A signal on a day's close is traded at the next day's open. Long only, whole "
+                          "shares, one position per stock."),
+    ] + [(f"Verdict: {name}", meaning) for name, (_, meaning) in _verdicts().items()]
+    _sheet(about, "How to read this scan", head, [Col("item", "Item", width=30), Col("value", "Details", width=120)],
+           [{"item": k, "value": v} for k, v in facts], totals=False)
+    for row in about.iter_rows(min_row=HEADER_ROW + 1):
+        row[1].alignment = Alignment(wrap_text=True, vertical="top", indent=1)
+        row[0].alignment = Alignment(vertical="top", indent=1)
+        row[0].font = Font(bold=True)
+
+    _sheet(wb.create_sheet("Best per stock"), "Each stock: its own best fit against the one winner",
+           "A best fit chosen for one stock usually does worse on unseen data than one strategy that works on many: "
+           "compare the two unseen columns.", SCAN_STOCKS, r["per_stock"], totals=False)
+    _sheet(wb.create_sheet("Stoploss and target"), "Stoploss and target levels, chosen in-sample",
+           "Tried on the three strategies with the best unseen Sharpe ratio. Each line runs on every stock.",
+           SCAN_EXITS, r["exit_trials"], totals=False, empty="Not tried (the scan was stopped early).")
+    runs = r["runs"][:SCAN_ROWS_MAX]
+    extra = f" · first {SCAN_ROWS_MAX:,} of {len(r['runs']):,}" if len(r["runs"]) > SCAN_ROWS_MAX else ""
+    _sheet(wb.create_sheet("All runs"), "Every backtest run", f"{head}{extra} · one row per stock, strategy and setting",
+           SCAN_RUNS, runs)
+    skipped = [{"symbol": s["symbol"].removesuffix(".NS"), "reason": s["reason"]} for s in r["skipped"]]
+    _sheet(wb.create_sheet("Notes"), "Stocks left out", "Not in any result above.",
+           [Col("symbol", "Stock", width=16), Col("reason", "Why", width=100)], skipped, totals=False,
+           empty="None: every stock was tested.")
+    wb.properties.creator = app_name
+    wb.properties.title = "AI strategy scan"
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def _verdicts() -> dict:
+    from .aiscan import VERDICTS
+    return VERDICTS
+
+
+__all__ = ["KINDS", "TITLES", "workbook", "scan_workbook", "source_label"]
