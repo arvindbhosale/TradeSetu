@@ -37,6 +37,7 @@ from . import (
     data,
     indicators,
     jobs as jobs_module,
+    margin as zerodha_margin,
     market,
     mcx,
     results,
@@ -577,6 +578,68 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     def fno_refresh():
         return derivatives.refresh()
 
+    @app.get("/api/margin/underlyings")
+    def margin_underlyings():
+        if derivatives.stale() and kite.connected:
+            with contextlib.suppress(KiteError):
+                derivatives.refresh()
+        return {"underlyings": derivatives.margin_underlyings(), "available": zerodha_margin.why_not(kite) is None,
+                "reason": zerodha_margin.why_not(kite)}
+
+    @app.get("/api/margin/contracts")
+    def margin_contracts(underlying: str):
+        return {"underlying": underlying.strip().upper(), "contracts": derivatives.chain(underlying)}
+
+    @app.post("/api/margin")
+    def margin_calculate(payload: dict):
+        """Zerodha's margin for legs picked in the calculator: {legs: [{underlying, tradingsymbol, side, lots}],
+        product, mode}. Lots become quantities from the contract's lot size."""
+        body = body_of(payload)
+        mode = body.get("mode", "paper")
+        if mode not in ("paper", "live"):
+            raise ValueError("mode must be paper or live")
+        product = str(body.get("product") or "NRML").upper()
+        if product not in ("NRML", "MIS"):
+            raise ValueError("product must be NRML or MIS")
+        raw = body.get("legs")
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("Add at least one leg.")
+        legs = []
+        for item in raw:
+            if not isinstance(item, dict):
+                raise ValueError("each leg must be an object")
+            symbol = str(item.get("tradingsymbol", "")).strip().upper()
+            contract = next((c for c in derivatives.chain(str(item.get("underlying", ""))) if c["tradingsymbol"] == symbol), None)
+            if contract is None:
+                raise ValueError(f"{symbol or 'A leg'} is not a live contract of {item.get('underlying')}.")
+            try:
+                lots = int(item.get("lots"))
+            except (TypeError, ValueError):
+                raise ValueError(f"Lots for {symbol} must be a whole number.") from None
+            if not 1 <= lots <= 500:
+                raise ValueError(f"Lots for {symbol} must be between 1 and 500.")
+            side = str(item.get("side", "")).upper()
+            if side not in ("BUY", "SELL"):
+                raise ValueError(f"Choose Buy or Sell for {symbol}.")
+            legs.append({"exchange": contract["exchange"], "tradingsymbol": symbol, "side": side, "lots": lots,
+                         "quantity": lots * int(contract.get("lot_size") or 1)})
+        try:
+            result = zerodha_margin.basket(kite, legs, product=product)
+        except zerodha_margin.MarginUnavailable as exc:
+            return JSONResponse({"error": str(exc), "needs_login": exc.needs_login}, status_code=409)
+        for row, leg in zip(result["legs"], legs, strict=True):
+            row["lots"] = leg["lots"]
+        segment = "commodity" if all(g["exchange"] == "MCX" for g in legs) else "equity"
+        if any(g["exchange"] == "MCX" for g in legs) and segment == "equity":
+            funds, funds_note = None, "MCX and NSE/BSE legs use different Kite funds; compare each part separately."
+        elif mode == "live":
+            funds = desk._live_cash(segment)
+            funds_note = None if funds is not None else "Kite did not report your available funds."
+        else:
+            funds, funds_note = desk.paper.cash, None
+        return {**result, "mode": mode, "funds": funds, "funds_note": funds_note,
+                "short": funds is not None and result["total"] > funds}
+
     # -- sectors -------------------------------------------------------------
 
     @app.get("/api/sectors")
@@ -923,6 +986,10 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     def fno_algo_delete(algo_id: str):
         fno_algos.delete(algo_id)
         return {"ok": True}
+
+    @app.get("/api/fno-algos/{algo_id}/margin")
+    def fno_algo_margin(algo_id: str):
+        return fno_algos.margin_check(algo_id)
 
     @app.get("/api/fno-algos/{algo_id}/phrase")
     def fno_algo_phrase(algo_id: str):

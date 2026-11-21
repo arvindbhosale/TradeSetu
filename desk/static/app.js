@@ -149,7 +149,7 @@
     if (name === "markets") { refreshSectors(); refreshPulse(); }
     if (name === "tools") showTool(toolState.tool);
     if (name === "mcx") { loadMcx(true); refreshMcxPositions(); }
-    if (name === "fno") { refreshFno(); if (!oc.underlyings.length) loadUnderlyings(); refreshOptionPositions(); loadFutures(true); }
+    if (name === "fno") { refreshFno(); if (!oc.underlyings.length) loadUnderlyings(); loadMarginUnderlyings(); refreshOptionPositions(); loadFutures(true); }
     if (name === "pnl") refreshPnl();
     if (name === "indices") refreshIndices();
     try { history.replaceState(null, "", "#" + name); } catch (err) { /* not allowed in this frame */ }
@@ -1411,8 +1411,12 @@
             h("tbody", {}, r.legs.map((g) => h("tr", {}, h("td", { text: g.order }), h("td", { class: g.side === "BUY" ? "up" : "down", text: g.side }),
               h("td", { text: g.tradingsymbol }), h("td", { text: g.expiry }), h("td", { class: "num", text: g.lots }), h("td", { class: "num", text: g.quantity }),
               h("td", { class: "num", text: rupees(g.ltp, 2) })))))),
-          h("p", {}, `Premium ${r.net_premium >= 0 ? "received" : "paid"}: ${rupees(Math.abs(r.net_premium))}. Margin about ${rupees(r.margin)}`,
-            r.expiry_day_margin ? " (with the 2% expiry-day extra)" : "", ` against ${rupees(r.funds)} available.`, r.margin > r.funds ? " Not enough: the entry would be skipped." : ""),
+          h("p", {}, `Premium ${r.net_premium >= 0 ? "received" : "paid"}: ${rupees(Math.abs(r.net_premium))}. `,
+            r.margin_source === "kite" ? `Margin needed (Zerodha): ${rupees(r.margin)}${r.hedge_benefit ? `, after a hedge benefit of ${rupees(r.hedge_benefit)}` : ""}`
+              : `Margin about ${rupees(r.margin)} (desk's estimate${r.expiry_day_margin ? ", with the 2% expiry-day extra" : ""})`,
+            ` against ${rupees(r.funds)} available.`),
+          ...(r.margin > r.funds ? [h("div", { class: "warnbox", text: "Not enough funds: the entry would be skipped." })] : []),
+          ...(r.margin_note ? [h("p", { class: "hint warn", text: r.margin_note })] : []),
           ...(r.naked ? [h("p", { class: "error", text: "Naked short: a sold option has no bought option covering it. The loss is unlimited or very large." })] : []),
           ...r.notes.map((n) => h("p", { class: "hint", text: n })));
         box.hidden = false;
@@ -1439,9 +1443,24 @@
   async function fnoAction(algo, action, button) {
     showError("#fno-algo-error", null);
     let body = {};
+    let marginLine = "";
+    if (action === "start") {
+      busy(button, true, "Checking margin…");
+      let m = null;
+      try { m = await api(`/fno-algos/${algo.id}/margin`); } catch (err) { m = { error: err.message }; }
+      busy(button, false);
+      if (m.error) marginLine = `Margin could not be worked out now: ${m.error}`;
+      else {
+        const what = m.margin_source === "kite" ? `Margin needed (Zerodha's figure): ${rupees(m.margin)}` : `Margin needed: about ${rupees(m.margin)} (desk's estimate)`;
+        marginLine = `${what}. ${m.mode === "live" ? "Available in Kite" : "Paper cash free"}: ${rupees(m.funds)}.`
+          + (m.short ? `\n\nWARNING: not enough funds. Short by ${rupees(m.margin - m.funds)}; entries will be skipped until funds are added.` : "")
+          + (m.margin_note ? `\n${m.margin_note}` : "");
+      }
+    }
+    if (action === "start" && algo.mode !== "live" && !window.confirm(`Start “${algo.name}” (paper)?\n\n${marginLine}`)) return;
     if (action === "start" && algo.mode === "live") {
       const { phrase } = await api(`/fno-algos/${algo.id}/phrase`);
-      const typed = window.prompt(`This algo will place LIVE F&O orders with real money, by itself: ${algo.structure_name}, ${algo.lots} lot(s) on ${algo.underlying}, closed at a loss of ${rupees(algo.max_loss)}.\n\nType  ${phrase}  to start it.`);
+      const typed = window.prompt(`This algo will place LIVE F&O orders with real money, by itself: ${algo.structure_name}, ${algo.lots} lot(s) on ${algo.underlying}, closed at a loss of ${rupees(algo.max_loss)}.\n\n${marginLine}\n\nType  ${phrase}  to start it.`);
       if (typed == null) return;
       body = { phrase: typed };
     }
@@ -2895,6 +2914,127 @@
     });
   }
 
+  // -- margin calculator: Zerodha's margin for a set of legs ------------------------------------------
+
+  const mc = { underlyings: [], contracts: [], legs: [], loaded: "" };
+
+  function startMarginCalc() {
+    const form = $("#form-mc");
+    form.underlying.addEventListener("change", () => loadMarginContracts());
+    form.expiry.addEventListener("change", fillMarginStrikes);
+    form.kind.addEventListener("change", fillMarginStrikes);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault(); showError("#mc-error", null);
+      const contract = marginContract();
+      if (!contract) { showError("#mc-error", new Error("Kite lists no such contract. Pick another strike or expiry.")); return; }
+      const lots = Number(form.lots.value);
+      if (!Number.isInteger(lots) || lots < 1 || lots > 500) { showError("#mc-error", new Error("Lots must be a whole number from 1 to 500.")); return; }
+      mc.legs.push({ underlying: form.underlying.value, contract, side: form.side.value, lots });
+      renderMarginLegs();
+    });
+    $("#mc-calc").addEventListener("click", calculateMargin);
+    $("#mc-clear").addEventListener("click", () => { mc.legs = []; renderMarginLegs(); });
+    $("#mc-product").addEventListener("change", () => { $("#mc-result").hidden = true; });
+    renderMarginLegs();
+  }
+
+  async function loadMarginUnderlyings() {
+    let r;
+    try { r = await api("/margin/underlyings"); } catch (err) { showError("#mc-error", err); return; }
+    const note = $("#mc-unavailable");
+    note.textContent = r.reason || ""; note.hidden = !r.reason;
+    mc.underlyings = r.underlyings;
+    const sel = $("#form-mc").underlying, keep = sel.value;
+    const groups = {};
+    r.underlyings.forEach((u) => { (groups[u.group] = groups[u.group] || []).push(u); });
+    sel.replaceChildren(...Object.entries(groups).map(([group, rows]) => h("optgroup", { label: group },
+      rows.map((u) => h("option", { value: u.name, text: u.group === "MCX" ? u.name : `${u.name} · lot ${u.lot_size}` })))));
+    if (!r.underlyings.length) { showError("#mc-error", new Error("No F&O contracts are loaded yet. Log in to Kite and refresh the F&O list below.")); return; }
+    if (keep && r.underlyings.some((u) => u.name === keep)) sel.value = keep;
+    if (mc.loaded !== sel.value) await loadMarginContracts();
+  }
+
+  async function loadMarginContracts() {
+    const form = $("#form-mc"), name = form.underlying.value;
+    if (!name) return;
+    showError("#mc-error", null);
+    form.expiry.replaceChildren(h("option", { value: "", text: "Loading…" }));
+    try { mc.contracts = (await api(`/margin/contracts?underlying=${encodeURIComponent(name)}`)).contracts; mc.loaded = name; }
+    catch (err) { mc.contracts = []; mc.loaded = ""; showError("#mc-error", err); }
+    const expiries = [...new Set(mc.contracts.map((c) => c.expiry))];
+    form.expiry.replaceChildren(...expiries.map((e) => h("option", { value: e, text: e })));
+    fillMarginStrikes();
+  }
+
+  function fillMarginStrikes() {
+    const form = $("#form-mc"), kind = form.kind.value;
+    const options = mc.contracts.filter((c) => c.expiry === form.expiry.value && c.type !== "FUT");
+    const futures = mc.contracts.some((c) => c.expiry === form.expiry.value && c.type === "FUT");
+    [...form.kind.options].forEach((o) => { o.disabled = o.value === "FUT" ? !futures : !options.length; });
+    if (form.kind.selectedOptions[0] && form.kind.selectedOptions[0].disabled) {
+      const usable = [...form.kind.options].find((o) => !o.disabled); if (usable) form.kind.value = usable.value;
+    }
+    const isFut = form.kind.value === "FUT";
+    $(".mc-strike", form).hidden = isFut;
+    if (isFut) return;
+    const strikes = [...new Set(options.filter((c) => c.type === form.kind.value).map((c) => c.strike))].sort((a, b) => a - b);
+    const keep = Number(form.strike.value);
+    form.strike.replaceChildren(...strikes.map((k) => h("option", { value: k, text: k.toLocaleString("en-IN") })));
+    if (strikes.includes(keep)) form.strike.value = keep;
+    else if (strikes.length) form.strike.value = strikes[Math.floor(strikes.length / 2)];
+  }
+
+  function marginContract() {
+    const form = $("#form-mc"), kind = form.kind.value;
+    return mc.contracts.find((c) => c.expiry === form.expiry.value && c.type === kind && (kind === "FUT" || c.strike === Number(form.strike.value)));
+  }
+
+  function renderMarginLegs() {
+    const host = $("#mc-legs");
+    $("#mc-result").hidden = true;
+    $("#mc-calc").disabled = $("#mc-clear").disabled = !mc.legs.length;
+    if (!mc.legs.length) { host.replaceChildren(h("p", { class: "hint", text: "No legs yet. Pick a contract above and press Add leg." })); return; }
+    const lotsInput = (leg) => { const input = h("input", { type: "number", min: 1, max: 500, value: leg.lots, "aria-label": "Lots", style: "width:5em" });
+      input.addEventListener("change", () => { const v = Number(input.value); if (Number.isInteger(v) && v >= 1 && v <= 500) leg.lots = v; else input.value = leg.lots; $("#mc-result").hidden = true; });
+      return input; };
+    host.replaceChildren(table([
+      { label: "Buy or Sell", get: (l) => h("span", { class: l.side === "BUY" ? "up" : "down", text: l.side === "BUY" ? "Buy" : "Sell" }) },
+      { label: "Contract", get: (l) => l.contract.tradingsymbol },
+      { label: "Expiry", get: (l) => l.contract.expiry },
+      { label: "Lots", get: lotsInput },
+      { label: "Quantity", num: true, get: (l) => l.lots * (l.contract.lot_size || 1) },
+      { label: "", get: (l) => h("button", { type: "button", text: "Remove", onclick: () => { mc.legs.splice(mc.legs.indexOf(l), 1); renderMarginLegs(); } }) },
+    ], mc.legs, ""));
+  }
+
+  async function calculateMargin() {
+    const button = $("#mc-calc"), box = $("#mc-result");
+    showError("#mc-error", null); busy(button, true, "Asking Zerodha…");
+    try {
+      const r = await api("/margin", { method: "POST", body: { mode: state.mode, product: $("#mc-product").value,
+        legs: mc.legs.map((l) => ({ underlying: l.underlying, tradingsymbol: l.contract.tradingsymbol, side: l.side, lots: l.lots })) } });
+      const tile = (k, v, sub, cls) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v " + (cls || ""), text: v }), sub ? h("div", { class: "s", text: sub }) : null);
+      const fundsLabel = state.mode === "live" ? "Available in Kite" : "Paper cash";
+      box.replaceChildren(
+        h("div", { class: "tiles" },
+          tile("Margin needed", rupees(r.total), "Zerodha's figure, with hedge benefit"),
+          tile("Without hedge", rupees(r.without_hedge), "If each leg were a separate order"),
+          tile("Hedge benefit", rupees(r.hedge_benefit), null, r.hedge_benefit > 0 ? "pos" : ""),
+          tile(fundsLabel, rupees(r.funds), r.funds_note, r.short ? "neg" : "")),
+        ...(r.short ? [h("div", { class: "warnbox", text: `Not enough funds: this needs ${rupees(r.total - r.funds)} more than the ${rupees(r.funds)} available.` })] : []),
+        h("details", { class: "advanced" }, h("summary", { text: "Breakdown by leg" }),
+          h("div", { class: "scroll" }, table([
+            { label: "Buy or Sell", get: (x) => (x.side === "BUY" ? "Buy" : "Sell") }, { label: "Contract", get: (x) => x.tradingsymbol },
+            { label: "Lots", num: true, get: (x) => x.lots }, { label: "SPAN", num: true, get: (x) => rupees(x.span) },
+            { label: "Exposure", num: true, get: (x) => rupees(x.exposure) }, { label: "Premium", num: true, get: (x) => rupees(x.premium) },
+            { label: "On its own", num: true, get: (x) => rupees(x.total) }], r.legs, "")),
+          h("p", { class: "hint", text: `Whole position: SPAN ${rupees(r.span)}, exposure ${rupees(r.exposure)}, premium ${rupees(r.premium)}${r.additional ? `, additional ${rupees(r.additional)}` : ""}. Product ${r.product}. Your open positions are not counted.` })),
+        h("p", { class: "hint", text: "Margins change through the day with prices and volatility. Zerodha checks again when each order is placed." }));
+      box.hidden = false;
+    } catch (err) { showError("#mc-error", err); box.hidden = true; }
+    busy(button, false);
+  }
+
   // -- option chain and options trading ------------------------------------------------------------
 
   const oc = { underlyings: [], chain: null, timer: null, contract: null, chart: null, interval: "5m", token: null };
@@ -3868,7 +4008,7 @@
     bta.start.value = iso(month); bta.end.value = today; bta.end.max = today;
     $("#form-order").product.value = state.app.settings.product;
     $("#form-order").risk_pct.value = state.app.settings.risk_per_trade_pct;
-    fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); startMarketTools(); renderTheme();
+    fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startMarginCalc(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); startMarketTools(); renderTheme();
     syncSharedDates(); showBacktestPane($("#bt-what").value);
     if (state.app.hosted) { $("#logout").hidden = false; $("#logout-2").hidden = false; $("#logout").title = "Signed in as " + state.app.user; }
     const wanted = location.hash.slice(1);        // an app shortcut or a reload opens the same section

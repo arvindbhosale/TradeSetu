@@ -1231,7 +1231,7 @@ Yahoo's intraday candles arrive late. A live intraday algo uses Kite's candles w
 | **Option strategy, on a signal** | Directional structures only | When a strategy on the index's day candles turns on (bearish structures: turns off) | When the signal changes, or at expiry (then it re-enters in the next expiry) |
 | **Index futures** | Long, short, or long and short | On the signal from the index's day candles, read at the entry time | When the signal changes; rolls to the next month at the exit time on expiry day |
 
-Strikes are counted from the at-the-money strike when the algo enters: **k** for the sold legs, **w** for the wings, exactly as in the backtest. Press **Preview entry now** to see the contracts, premiums, the order they would be sent in, and the margin estimate against your funds.
+Strikes are counted from the at-the-money strike when the algo enters: **k** for the sold legs, **w** for the wings, exactly as in the backtest. Press **Preview entry now** to see the contracts, premiums, the order they would be sent in, and the margin (Zerodha's, or the desk's estimate) against your funds.
 
 **How it enters and exits**
 
@@ -1252,7 +1252,9 @@ Strikes are counted from the at-the-money strike when the algo enters: **k** for
 | **Daily loss limit** (Settings) | Now counts sold options and short futures too. When it trips, F&O algos close their positions. |
 | **Allow naked F&O shorts** (Settings) | Off by default. Without it, a structure that sells an option no bought option covers (short straddle, strangle, guts, ratio spreads, jade lizard, synthetics) runs only in paper. |
 
-**Margin.** Before each entry the algo estimates the margin (the backtest's estimate, plus SEBI's 2% on a sold leg on its expiry day) and compares it with the funds Kite reports, or, in paper, the paper cash not used by other paper F&O algos. An entry that does not fit is skipped for the day. Kite's MCP server has no margin calculator, so this is an estimate; Zerodha's own check at order time decides.
+**Margin.** Before each entry the algo asks Zerodha's margin calculator for its legs (SPAN plus exposure and the premium of bought options, with the hedge benefit) and compares it with the funds Kite reports, or, in paper, the paper cash not used by other paper F&O algos. An entry that does not fit is skipped for the day. **Start** shows the margin needed and the funds first, and warns when they fall short. Zerodha's figure needs a Kite login (in paper too) and the desk's own kite-mcp-server (`deploy/kite-mcp`), which adds the margin calculator; with any other Kite server the desk uses its estimate (the backtest's, plus SEBI's 2% on a sold leg on its expiry day) and says so. Zerodha's own check at order time decides.
+
+**Margin calculator** (F&O tab). Add legs (an index, F&O stock or MCX metal, the expiry, Call, Put or Future, the strike, Buy or Sell, lots) and press **Work out margin** for Zerodha's margin: the total with the hedge benefit, what the legs would need as separate orders, and the benefit, against your funds (Kite's in live, paper cash in paper). **Breakdown by leg** shows SPAN, exposure and premium for each. The product (carry forward or intraday) is under **Advanced**. Your open positions are not counted. It needs a Kite login and the desk's kite-mcp-server.
 
 **Before you go live**
 

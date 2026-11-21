@@ -333,6 +333,38 @@ if not READ_ONLY:
         return json.dumps({"order_id": order_id})
 
     @server.tool()
+    def get_basket_margins(orders: list[dict], consider_positions: bool = False) -> str:
+        """Margins for a basket (the desk's kite-mcp-server build). Crude: sold options and futures need 9% SPAN and
+        3% exposure of their notional, bought options their premium; a basket with both gets 70% off the sold legs."""
+        _need_login()
+        if not orders:
+            raise ToolError("orders must be a non-empty list")
+        rows, bought = [], any(o.get("transaction_type") == "BUY" and not str(o.get("tradingsymbol", "")).endswith("FUT")
+                               for o in orders)
+        for o in orders:
+            symbol, quantity = str(o["tradingsymbol"]).upper(), float(o["quantity"])
+            price = _price(f"{o['exchange']}:{symbol}")
+            if price is None:
+                raise ToolError(f"Failed to calculate margins: Invalid `tradingsymbol` {symbol}")
+            future = symbol.endswith("FUT")
+            if o["transaction_type"] == "BUY" and not future:
+                span = exposure = 0.0
+                premium = price * quantity
+            else:
+                notional = (price if future else PRICES["NSE:NIFTY 50"]) * quantity
+                span, exposure, premium = notional * 0.09, notional * 0.03, 0.0
+            rows.append({"tradingsymbol": symbol, "exchange": o["exchange"], "span": span, "exposure": exposure,
+                         "option_premium": premium, "total": span + exposure + premium})
+        sold = sum(r["span"] + r["exposure"] for r in rows)
+        premium = sum(r["option_premium"] for r in rows)
+        cut = 0.7 if bought and sold else 0.0
+        initial = {"span": sum(r["span"] for r in rows), "exposure": sum(r["exposure"] for r in rows),
+                   "option_premium": premium, "total": sold + premium}
+        final = {"span": initial["span"] * (1 - cut), "exposure": initial["exposure"] * (1 - cut),
+                 "option_premium": premium, "total": sold * (1 - cut) + premium}
+        return json.dumps({"initial": initial, "final": final, "orders": rows})
+
+    @server.tool()
     def place_order(variety: str, exchange: str, tradingsymbol: str, transaction_type: str,
                     quantity: float, product: str, order_type: str, price: float = 0,
                     trigger_price: float = 0, validity: str = "DAY", tag: str = "") -> str:
