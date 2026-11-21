@@ -365,6 +365,11 @@ A sentence at the top says it in words, for example *Booked profit of ₹2,400 o
 | **Still holding** | What the positions not yet closed would make or lose at the current price. |
 | **Today** | Profit or loss today: what was closed today, plus the open result of positions opened today. This is the number the daily loss limit watches. |
 
+**Account funds** sits under the tiles, so you do not need the Trade tab to see your money:
+
+- **Paper:** Starting capital, Cash available (free to buy with), Invested (what you hold, at buy price), Account value (cash plus what you hold at the current price) and Change since start.
+- **Live:** read from your broker for Equity and F&O and for Commodity (MCX): Available to trade (after margin in use), Used margin, Cash (with the opening balance and money added today, where the broker reports them) and Collateral from pledged holdings when there is any. Your broker must be connected and logged in.
+
 Below: **Still holding** (each open position with its entry and current price), **Closed trades** (buy price, sell price, profit/loss), **Profit/Loss by algo** (each algo, the scanner, and your manual orders, so you can see which one earns its keep) and the running total day by day.
 
 **Advanced** (closed until you open it): win rate, best and worst day, the largest fall from a peak (max drawdown), charges paid, the daily loss limit, the tax estimate and what is counted.
