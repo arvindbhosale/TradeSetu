@@ -47,7 +47,7 @@ from .backtest import BacktestParams, _curve_stats, _metrics, _points
 from .charges import futures_charges
 from .fno import BSE_INDICES, exchange_of
 from .futures import monthly_expiries
-from .options import RATE, STRIKE_STEP, bs_greeks, bs_price, option_charges
+from .options import RATE, STRIKE_STEP, bs_greeks, bs_price, implied_vol, option_charges
 from .risk import ExitRules
 
 # (action, type, offset[, ratio[, series]]): action +1 buy / -1 sell; offset in strikes from the money, k = short
@@ -700,11 +700,13 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
 
 def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: float, far_days: float | None = None,
             k: int = 2, w: int = 4, lots: int = 1, lot_size: int = 65, margin_pct: float = 12.0,
-            premiums: list | None = None, rate: float = RATE, points: int = 241) -> dict:
+            premiums: list | None = None, labels: list | None = None, rate: float = RATE, points: int = 241) -> dict:
     """Legs, premiums, payoff, breakevens, maximum profit and loss, Greeks and margin of one structure, now.
 
     Premiums are Black-Scholes at ``iv`` (a fraction, 0.14 for 14%) unless ``premiums`` gives one per leg (for example
-    the last prices from the option chain; ``None`` in the list keeps the model price). ``days`` is the calendar days
+    the last prices from the option chain; ``None`` in the list keeps the model price). A given option premium is
+    valued at its own implied volatility (Greeks and today's curve), falling back to ``iv`` when no volatility gives
+    that price. ``labels`` names where each given premium came from (default "given"). ``days`` is the calendar days
     to the near expiry; calendars and diagonals also need ``far_days`` (default ``days`` + 7 for weekly, + 28 beyond).
     The expiry payoff is at the near expiry; a later-expiry leg is valued then at ``iv``. Rupee figures are for
     ``lots`` × ``lot_size``.
@@ -731,6 +733,8 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
             raise ValueError("the far expiry must be after the near one")
     if premiums is not None and (not isinstance(premiums, list) or len(premiums) != len(specs)):
         raise ValueError(f"premiums needs one value per leg ({len(specs)})")
+    if labels is not None and (not isinstance(labels, list) or len(labels) != len(specs)):
+        raise ValueError(f"labels needs one value per leg ({len(specs)})")
     step = STRIKE_STEP.get(underlying, 50)
     qty = lots * lot_size
     atm = round(spot / step) * step
@@ -743,22 +747,30 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
     def value(leg, s: float, years: float) -> float:
         if leg["type"] == "FUT":
             return s * (1 + rate * years)
-        return bs_price(s, leg["strike"], years, iv, leg["type"], rate)
+        return bs_price(s, leg["strike"], years, leg["vol"], leg["type"], rate)
 
     legs = []
     for n, x in enumerate(specs):
-        leg = {**x, "strike": float(atm + _offset(x["off"], k, w) * step) if x["type"] != "FUT" else 0.0}
+        leg = {**x, "strike": float(atm + _offset(x["off"], k, w) * step) if x["type"] != "FUT" else 0.0, "vol": iv,
+               "implied": None}
         years = years_left(leg, False)
         model = value(leg, spot, years)
         given = premiums[n] if premiums is not None else None
         if given is not None:
             if isinstance(given, bool) or not isinstance(given, (int, float)) or given < 0:
                 raise ValueError("each premium must be a number ≥ 0")
-            leg["entry"], leg["source"] = float(given), "given"
+            label = labels[n] if labels is not None and labels[n] else "given"
+            leg["entry"], leg["source"] = float(given), str(label)
+            if leg["type"] != "FUT":
+                leg["implied"] = implied_vol(float(given), spot, leg["strike"], years, leg["type"])
+                if leg["implied"] and 0.01 <= leg["implied"] <= 3:
+                    leg["vol"] = leg["implied"]
+                else:
+                    leg["implied"] = None
         else:
             leg["entry"], leg["source"] = model, "model"
         leg["days"] = far_days if x["series"] == "far" else days
-        greeks = (bs_greeks(spot, leg["strike"], years, iv, leg["type"], rate) if leg["type"] != "FUT"
+        greeks = (bs_greeks(spot, leg["strike"], years, leg["vol"], leg["type"], rate) if leg["type"] != "FUT"
                   else {"delta": 1.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0})
         leg["greeks"] = greeks
         legs.append(leg)
@@ -828,8 +840,9 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
         "legs": [{"side": "BUY" if g["action"] > 0 else "SELL", "type": g["type"], "strike": g["strike"] or None,
                   "lots": g["ratio"] * lots, "quantity": g["ratio"] * qty, "expiry": "far" if g["series"] == "far" else "near",
                   "days": g["days"], "premium": round(g["entry"], 2), "source": g["source"],
-                  "delta": round(g["greeks"]["delta"], 4), "theta": round(g["greeks"]["theta"], 2),
-                  "vega": round(g["greeks"]["vega"], 2)} for g in legs],
+                  "iv_pct": None if g["type"] == "FUT" else round(g["vol"] * 100, 2), "iv_implied": g["implied"] is not None,
+                  "delta": round(g["greeks"]["delta"], 4), "gamma": round(g["greeks"]["gamma"], 5),
+                  "theta": round(g["greeks"]["theta"], 2), "vega": round(g["greeks"]["vega"], 2)} for g in legs],
         "net_premium": round(net, 2), "net_rupees": round(net * qty, 2),
         "credit": net > 0, "max_profit": None if max_profit is None else round(max_profit, 2),
         "max_loss": None if max_loss is None else round(max_loss, 2),
@@ -839,9 +852,9 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
         "reward_risk": (round(max_profit / -max_loss, 2) if max_profit is not None and max_loss not in (None, 0) and max_loss < 0
                         else None),
         "payoff": [{"spot": round(s, 2), "expiry": round(e, 2), "today": round(t, 2)} for s, e, t in zip(grid, at_expiry, today, strict=True)],
-        "notes": ["Premiums are Black-Scholes at one volatility for every strike unless you type them in; real "
-                  "out-of-the-money puts are dearer (skew).",
-                  "Margin is an estimate. Check the broker's margin calculator (SPAN + exposure) before trading."]
-                 + (["The later-expiry leg is valued at the near expiry with the same volatility; a fall in volatility "
+        "notes": (["Premiums are Black-Scholes at one volatility for every strike unless you type them in; real "
+                   "out-of-the-money puts are dearer (skew)."] if any(g["source"] == "model" for g in legs) else [])
+                 + ["Margin is an estimate. Check the broker's margin calculator (SPAN + exposure) before trading."]
+                 + (["The later-expiry leg is valued at the near expiry at today's volatility; a fall in volatility "
                      "hurts a calendar or diagonal."] if has_far else []),
     }

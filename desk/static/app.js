@@ -2698,12 +2698,12 @@
       busy(button, false);
     });
     let lastPayoff = null;
-    const payoff = async (button, premiums) => {
+    const payoff = async (button, premiums, labels) => {
       showError("#sbt-error", null); busy(button, true, "Working…");
       const opt = (name) => (form[name].value === "" ? null : Number(form[name].value));
       const body = { structure: form.structure.value, underlying: form.underlying.value, expiry_kind: form.expiry_kind.value,
         k: Number(form.k.value || 0), w: Number(form.w.value || 1), lots: Number(form.lots.value || 1), margin_pct: Number(form.margin_pct.value || 12),
-        iv_scale: Number(form.iv_scale.value || 1), spot: opt("spot"), iv_pct: opt("iv_pct"), days: opt("days"), far_days: opt("far_days"), premiums };
+        iv_scale: Number(form.iv_scale.value || 1), spot: opt("spot"), iv_pct: opt("iv_pct"), days: opt("days"), far_days: opt("far_days"), premiums, labels };
       if (premiums && lastPayoff) Object.assign(body, { spot: lastPayoff.spot, iv_pct: lastPayoff.iv_pct, days: lastPayoff.days, far_days: lastPayoff.far_days });
       try { lastPayoff = await api("/options/payoff", { method: "POST", body }); renderPayoff(lastPayoff); }
       catch (err) { showError("#sbt-error", err); }
@@ -2711,8 +2711,15 @@
     };
     $("#sbt-payoff").addEventListener("click", (event) => payoff(event.currentTarget, null));
     $("#sbt-payoff-again").addEventListener("click", (event) => {
-      const values = $$("#sbt-payoff-legs input[name=premium]").map((el) => (el.value === "" ? null : Number(el.value)));
-      payoff(event.currentTarget, values);
+      const boxes = $$("#sbt-payoff-inputs input[name=premium]"), legs = lastPayoff ? lastPayoff.legs : [];
+      const values = [], labels = [];
+      boxes.forEach((el, n) => {
+        const leg = legs[n] || {}, same = el.value !== "" && Number(el.value) === leg.premium;
+        if (el.value === "" || (same && leg.source === "model")) { values.push(null); labels.push(null); return; }   // modelled
+        values.push(Number(el.value));
+        labels.push(same ? leg.source : "typed");
+      });
+      payoff(event.currentTarget, values, labels);
     });
   }
 
@@ -2739,14 +2746,25 @@
       { label: "Lots", num: true, get: (g) => g.lots }, { label: "Qty", num: true, get: (g) => g.quantity },
       { label: "Contract", get: (g) => (g.type === "FUT" ? "Futures" : `${inr.format(g.strike)} ${g.type}`) },
       { label: "Expiry", get: (g) => `${g.expiry === "far" ? "Far" : "Near"} (${g.days.toFixed(1)} d)` },
-      { label: "Premium", num: true, get: (g) => (g.type === "FUT" ? inr2.format(g.premium)
-        : h("input", { name: "premium", type: "number", min: "0", step: "0.05", value: g.premium, style: "width:7em", "aria-label": `Premium ${g.strike} ${g.type}` })) },
-      { label: "From", get: (g) => (g.source === "given" ? "typed" : "model") },
-      { label: "Delta", num: true, get: (g) => g.delta.toFixed(3) }, { label: "Theta/day", num: true, get: (g) => inr2.format(g.theta) },
-      { label: "Vega", num: true, get: (g) => inr2.format(g.vega) },
+      { label: "Premium", num: true, get: (g) => inr2.format(g.premium) },
+      { label: "Price from", get: (g) => premiumSource(g.source) },
+      { label: "IV %", num: true, get: (g) => (g.iv_pct == null ? "–" : g.iv_pct.toFixed(2) + (g.iv_implied || g.source === "model" ? "" : "*")) },
+      { label: "Delta", num: true, get: (g) => g.delta.toFixed(3) }, { label: "Gamma", num: true, get: (g) => g.gamma.toFixed(5) },
+      { label: "Theta/day", num: true, get: (g) => inr2.format(g.theta) }, { label: "Vega", num: true, get: (g) => inr2.format(g.vega) },
     ], r.legs, "No legs."));
-    $("#sbt-payoff-note").textContent = [...(r.sources || []).map((x) => x[0].toUpperCase() + x.slice(1) + "."), ...r.notes].join(" ");
+    $("#sbt-payoff-inputs").replaceChildren(...r.legs.map((g) => {
+      const name = `${g.side === "BUY" ? "Buy" : "Sell"} ${g.type === "FUT" ? "Futures" : `${inr.format(g.strike)} ${g.type}`}${g.expiry === "far" ? " (far)" : ""}`;
+      return h("label", { text: name + " " }, h("input", { name: "premium", type: "number", min: "0", step: "0.05", value: g.premium, style: "width:7em" }));
+    }));
+    const unpriced = r.legs.some((g) => g.iv_pct != null && !g.iv_implied && g.source !== "model")
+      ? ["* No volatility gives that premium, so that leg uses the IV in the title."] : [];
+    $("#sbt-payoff-note").textContent = [...(r.sources || []).map((x) => x[0].toUpperCase() + x.slice(1) + "."), ...r.notes, ...unpriced].join(" ");
     $("#sbt-payoff-result").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function premiumSource(source) {
+    return { "Kite live": "Kite, live", "Kite last price": "Kite, last trade", "Kite previous close": "Kite, previous close",
+      model: "Model", given: "Typed", typed: "Typed" }[source] || source;
   }
 
   function drawPayoff(host, legend, r) {

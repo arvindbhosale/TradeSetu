@@ -1756,14 +1756,47 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             far_days = (far - moment).total_seconds() / 86400
             sources.append(f"far expiry {far:%a %d %b}")
         contracts = derivatives.contracts(underlying)
+        if not contracts and kite.connected:
+            with contextlib.suppress(KiteError):
+                derivatives.refresh()
+                contracts = derivatives.contracts(underlying)
         lot = int(_number(payload, "lot_size", contracts[0]["lot_size"] if contracts else opt.LOT_DEFAULT.get(underlying, 50)))
-        premiums = payload.get("premiums")
-        result = optstrat.analyse(
-            underlying, structure, spot=spot, iv=iv_pct / 100, days=float(_number(payload, "days", days)),
-            far_days=None if far_days in (None, "") else float(_number({"far_days": far_days}, "far_days", 0)),
-            k=int(_number(payload, "k", 2)), w=int(_number(payload, "w", 4)), lots=int(_number(payload, "lots", 1)),
-            lot_size=lot, margin_pct=_number(payload, "margin_pct", 12), premiums=premiums if premiums else None)
+        premiums = payload.get("premiums") or None
+        labels = payload.get("labels") if premiums else None
+        args = {"k": int(_number(payload, "k", 2)), "w": int(_number(payload, "w", 4)), "lots": int(_number(payload, "lots", 1)),
+                "lot_size": lot, "margin_pct": _number(payload, "margin_pct", 12)}
+
+        def work(iv_now, near_days, far_now, given, given_labels):
+            return optstrat.analyse(
+                underlying, structure, spot=spot, iv=iv_now / 100, days=float(_number({"days": near_days}, "days", 0)),
+                far_days=None if far_now in (None, "") else float(_number({"far_days": far_now}, "far_days", 0)),
+                premiums=given, labels=given_labels, **args)
+
+        result = work(iv_pct, days, far_days, premiums, labels)
+        notes = []
+        if premiums is None:
+            typed = [name for name in ("spot", "days", "far_days") if payload.get(name) not in (None, "")]
+            if typed:
+                notes.append("Premiums are modelled because you typed " + " and ".join(
+                    {"spot": "Spot", "days": "Days to expiry", "far_days": "Days to far expiry"}[n] for n in typed)
+                    + ". Clear those boxes to fill premiums from Kite.")
+            else:
+                live = _kite_premiums(kite, derivatives, underlying, result["legs"], contracts, near,
+                                      None if far_days in (None, "") else moment + pd.Timedelta(days=float(far_days)))
+                notes += live["notes"]
+                if live["premiums"]:
+                    days = live["days"] if live["days"] is not None else days
+                    far_days = live["far_days"] if live["far_days"] is not None else far_days
+                    result = work(iv_pct, days, far_days, live["premiums"], live["labels"])
+                    implied = [g["iv_pct"] for g in result["legs"] if g.get("iv_implied")]
+                    if implied and payload.get("iv_pct") in (None, ""):
+                        iv_pct = sum(implied) / len(implied)
+                        sources = [x for x in sources if not x.startswith("volatility:")]
+                        sources.append("volatility: average implied volatility of the legs from Kite")
+                        result = work(iv_pct, days, far_days, live["premiums"], live["labels"])
+                    sources.append(live["source"])
         result["sources"] = sources
+        result["notes"] = notes + result["notes"]
         return result
 
     @app.post("/api/screens/run")
@@ -2103,6 +2136,85 @@ def _portfolios() -> list:
     from .portfolio import PORTFOLIOS
     return [{"key": k, "name": v["name"], "about": v["about"], "legend": v["legend"], "markets": list(v["markets"]),
              "weights": v["weights"]} for k, v in PORTFOLIOS.items()]
+
+
+def _kite_premiums(kite: KiteMCP, derivatives, underlying: str, legs: list, contracts: list,
+                   near, far) -> dict:
+    """Each leg's premium from Kite for the listed contract nearest the near (and far) expiry.
+
+    Returns premiums (one per leg, ``None`` where Kite had no price), labels, the days to the listed expiries and
+    plain notes. During the session the price is the last trade; after it, the last trade of the latest session,
+    or the previous close when there was none."""
+    import pandas as pd
+
+    from . import options as opt
+    out = {"premiums": None, "labels": None, "days": None, "far_days": None, "notes": [], "source": ""}
+    if not kite.connected or "get_quotes" not in kite.tools:
+        out["notes"].append("Premiums are modelled. Log in to Kite (Trade, Connect) to fill them with real prices.")
+        return out
+    moment = market.now_ist()
+    try:
+        today = moment.strftime("%Y-%m-%d")
+        listed = sorted({c["expiry"] for c in contracts if c["expiry"] >= today})
+
+        def nearest(target):
+            if target is None or not listed:
+                return None
+            day = pd.Timestamp(target).normalize()
+            best = min(listed, key=lambda d: abs(pd.Timestamp(d) - day))
+            return best if abs(pd.Timestamp(best) - day) <= pd.Timedelta(days=3) else None
+
+        dates = {"near": nearest(near), "far": nearest(far)}
+        by_key = {(c["expiry"], float(c["strike"]), c["type"]): c for c in contracts}
+        future = next((c for c in derivatives.futures() if c["underlying"] == underlying), None)
+        names = []
+        for g in legs:
+            if g["type"] == "FUT":
+                c = future
+            else:
+                expiry = dates["far" if g["expiry"] == "far" else "near"]
+                c = by_key.get((expiry, float(g["strike"] or 0), g["type"])) if expiry else None
+            names.append(f"{c['exchange']}:{c['tradingsymbol']}" if c else None)
+        wanted = sorted({n for n in names if n})
+        quotes = kite.quotes(wanted) if wanted else {}
+    except KiteError as exc:
+        out["notes"].append(f"Premiums are modelled. Kite did not answer ({exc}). Log in to Kite again to fill real prices.")
+        return out
+    session = market.session_status(moment)
+    premiums, labels, missing, closes = [], [], 0, 0
+    for name in names:
+        quote = (quotes.get(name) or {}) if name else {}
+        last = quote.get("last_price")
+        previous = (quote.get("ohlc") or {}).get("close")
+        if isinstance(last, (int, float)) and last > 0:
+            premiums.append(round(float(last), 2))
+            labels.append("Kite live" if session["open"] else "Kite last price")
+        elif isinstance(previous, (int, float)) and previous > 0:
+            premiums.append(round(float(previous), 2))
+            labels.append("Kite previous close")
+            closes += 1
+        else:
+            premiums.append(None)
+            labels.append(None)
+            missing += 1
+    if all(p is None for p in premiums):
+        out["notes"].append("Premiums are modelled. Kite had no price for these strikes"
+                            + ("" if dates["near"] else " (no listed expiry near the one asked for)") + ".")
+        return out
+    out.update(premiums=premiums, labels=labels)
+    for key, which in (("days", "near"), ("far_days", "far")):
+        if dates[which]:
+            out[key] = opt.years_to(dates[which], moment) * 365
+    if not session["open"]:
+        out["notes"].append("Market closed: premiums are Kite's last traded prices, from the latest session.")
+    if closes:
+        out["notes"].append(f"{closes} leg{'s' if closes > 1 else ''} had no trade today; the previous close is used.")
+    if missing:
+        out["notes"].append(f"Kite had no price for {missing} leg{'s' if missing > 1 else ''}; "
+                            f"{'they are' if missing > 1 else 'it is'} modelled.")
+    out["source"] = "premiums from Kite for the " + " and ".join(
+        pd.Timestamp(d).strftime("%a %d %b") for d in dict.fromkeys(v for v in dates.values() if v)) + " expiry"
+    return out
 
 
 def _number(payload: dict, key: str, default: float) -> float:
