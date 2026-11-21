@@ -510,6 +510,37 @@ def test_the_manual_is_served_inside_the_app(hosted):
         assert hosted.get(image).status_code == 200, image
 
 
+def test_the_trading_notes_and_their_pdf_are_served_inside_the_app(hosted):
+    import re
+
+    assert hosted.get("/notes").status_code == 303                         # behind the sign-in
+    assert hosted.get("/notes.pdf").status_code == 303
+    sign_in(hosted)
+    page = hosted.get("/notes")
+    assert page.status_code == 200 and 'id="18-option-strategies"' in page.text and 'href="/notes.pdf"' in page.text
+    assert "{{" not in page.text                                            # every number was filled in
+    images = set(re.findall(r'src="(/static/(?:notes|manual)/img/[^"]+)"', page.text))
+    assert any("/notes/img/" in i for i in images) and any("/manual/img/" in i for i in images)
+    for image in images:
+        assert hosted.get(image).status_code == 200, image
+    for anchor in set(re.findall(r'href="#([^"]+)"', page.text)):           # contents and cross-links all land
+        assert f'id="{anchor}"' in page.text, anchor
+    for target in set(re.findall(r'href="/manual#([^"]+)"', page.text)):    # links into the manual land too
+        assert f'id="{target}"' in hosted.get("/manual").text, target
+    pdf = hosted.get("/notes.pdf")
+    assert pdf.status_code == 200 and pdf.headers["content-type"] == "application/pdf"
+    assert pdf.content.startswith(b"%PDF")
+    assert 'href="/notes"' in hosted.get("/").text                          # linked under the User manual
+
+
+def test_the_printed_notes_drop_links_the_pdf_cannot_open():
+    from desk.server import notes_page
+
+    page = notes_page(for_print=True)
+    assert 'href="/manual' not in page and "(in the User manual)" in page
+    assert 'data-theme="light"' in page and "file://" in page
+
+
 def test_an_unusable_ai_service_is_explained_before_a_run(hosted, monkeypatch):
     headers = sign_in(hosted)
     hosted.put("/api/settings", json={"llm_provider": "openai_compatible", "backend_url": ""}, headers=headers)

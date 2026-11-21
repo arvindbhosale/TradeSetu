@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import hmac
+import html
 import logging
 import os
 import re
@@ -18,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import tradingagents
@@ -261,12 +262,23 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
-        html = (STATIC / "index.html").read_text(encoding="utf-8")
-        return html.replace("__DESK_TOKEN__", request.state.session["csrf"] if hosted else token)
+        page = (STATIC / "index.html").read_text(encoding="utf-8")
+        return page.replace("__DESK_TOKEN__", request.state.session["csrf"] if hosted else token)
 
     @app.get("/manual", response_class=HTMLResponse)
     def manual():
         return _manual_page()
+
+    @app.get("/notes", response_class=HTMLResponse)
+    def notes():
+        return notes_page()
+
+    @app.get("/notes.pdf")
+    def notes_pdf():
+        path = STATIC / "notes" / NOTES_PDF
+        if not path.exists():
+            raise HTTPException(404, "The PDF of the notes has not been built.")
+        return FileResponse(path, media_type="application/pdf", filename=NOTES_PDF)
 
     @app.get("/sw.js")
     def service_worker():
@@ -1856,28 +1868,55 @@ def _market_data(kite: KiteMCP) -> dict:
     return result
 
 
-def _manual_page() -> str:
-    """The user manual as a page of the app."""
-    import re
+NOTES_PDF = "trading-notes.pdf"
 
+
+def _render_markdown(source: str) -> str:
+    """Markdown to HTML with an id on every heading, the way the manual's links expect."""
     from markdown_it import MarkdownIt
 
-    source = (STATIC / "manual" / "USER_MANUAL.md").read_text(encoding="utf-8")
     body = MarkdownIt("commonmark").enable("table").render(source)
-    body = body.replace('src="img/', 'src="/static/manual/img/')
 
     def anchor(match):
-        text = re.sub(r"<[^>]+>", "", match.group(2))
+        text = html.unescape(re.sub(r"<[^>]+>", "", match.group(2)))       # "F&amp;O" slugs as "fo", as links expect
         slug = re.sub(r"[^a-z0-9 -]", "", text.lower()).strip().replace(" ", "-")
         return f'<h{match.group(1)} id="{slug}">{match.group(2)}</h{match.group(1)}>'
 
-    body = re.sub(r"<h([1-4])>(.*?)</h\1>", anchor, body)
-    return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    return re.sub(r"<h([1-4])>(.*?)</h\1>", anchor, body)
+
+
+def _doc_page(title: str, bar: str, body: str, static: str = "/static", theme: str = "") -> str:
+    head = (f'<script src="{static}/theme.js"></script>' if not theme else "")
+    return ('<!doctype html><html lang="en"' + (f' data-theme="{theme}"' if theme else "") + '><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
-            '<title>User manual · TradeSetu</title><script src="/static/theme.js"></script>'
-            '<link rel="stylesheet" href="/static/app.css"></head><body class="manual-page">'
-            '<div class="manual-bar"><a href="/">← Back to the desk</a><span>TradeSetu user manual</span></div>'
+            f'<title>{title}</title>{head}'
+            f'<link rel="stylesheet" href="{static}/app.css"></head><body class="manual-page">'
+            f'<div class="manual-bar">{bar}</div>'
             f'<main class="manual">{body}</main></body></html>')
+
+
+def _manual_page() -> str:
+    """The user manual as a page of the app."""
+    source = (STATIC / "manual" / "USER_MANUAL.md").read_text(encoding="utf-8")
+    body = _render_markdown(source).replace('src="img/', 'src="/static/manual/img/')
+    return _doc_page("User manual · TradeSetu",
+                     '<a href="/">← Back to the desk</a><span>TradeSetu user manual</span>', body)
+
+
+def notes_page(for_print: bool = False) -> str:
+    """The trading notes as a page of the app, or (``for_print``) as a standalone page for the PDF."""
+    source = (STATIC / "notes" / "LEARNING_NOTES.md").read_text(encoding="utf-8")
+    body = _render_markdown(source)
+    static = STATIC.as_uri() if for_print else "/static"
+    body = body.replace('src="img/', f'src="{static}/notes/img/').replace('src="manual/', f'src="{static}/manual/img/')
+    if for_print:
+        # Links into the app's manual cannot open from a PDF: keep the words, drop the link.
+        body = re.sub(r'<a href="/manual[^"]*">(.*?)</a>', r"\1 (in the User manual)", body)
+        return _doc_page("Trading Notes · TradeSetu", "<span>TradeSetu trading notes</span>", body, static,
+                         theme="light")
+    return _doc_page("Trading notes · TradeSetu",
+                     '<a href="/">← Back to the desk</a><span>TradeSetu trading notes</span>'
+                     '<a class="manual-pdf" href="/notes.pdf" download>Download PDF</a>', body)
 
 
 # Free or low-cost OpenAI-compatible LLM services, as starting points for Settings.
