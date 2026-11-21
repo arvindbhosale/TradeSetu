@@ -888,7 +888,7 @@ Settings: index, dates, candle, signal strategy, **Buy** (calls / puts / both), 
 **Backtest → What to test → Option strategy.** 34 multi-leg index option strategies. For each one you can do two things:
 
 - **Payoff now**: work the strategy out on today's market (strikes, premiums, profit and loss at expiry, breakevens, chance of profit, Greeks, margin) before you trade it.
-- **Run**: backtest it on the index's real candles with simulated premiums.
+- **Run**: backtest it on the index's real candles, with real option prices where the desk has them ([Real option prices](#real-option-prices-nse-history)) and modelled ones elsewhere.
 
 ![Option strategies backtest](img/40-option-strategies.png)
 
@@ -943,7 +943,38 @@ The model prices every leg with Black-Scholes at one volatility. For figures on 
 
 **Exit rules for the whole position**: **Stoploss** and **Target** as a % of the premium received (or paid) for the whole position. **Put skew** raises the volatility of lower strikes (puts below the money are dearer in real markets; 0 = none). A calendar or diagonal sells its later-expiry leg back at the model price when the near expiry settles.
 
-**This is a simulation.** Kite keeps no candles for expired options, so every premium is computed (Black-Scholes) from the index's real candles and India VIX. Real option sellers face things the model does not: volatility spikes and crush around events, skew, wide spreads in far strikes, and expiry-day gamma. Selling options wins often and loses big. The worst day matters more than the win rate, so look at **Max drawdown** first.
+**Modelled premiums are a simulation.** Kite keeps no candles for expired options, so without stored history every premium is computed (Black-Scholes) from the index's real candles and India VIX. Real option sellers face things the model does not: volatility spikes and crush around events, skew, wide spreads in far strikes, and expiry-day gamma. Selling options wins often and loses big. The worst day matters more than the win rate, so look at **Max drawdown** first.
+
+#### Real option prices (NSE history)
+
+The backtest can use the prices options really traded at instead of modelled ones. Open **Real option prices (NSE history)** above the form.
+
+**NSE history (day candles).** NSE publishes one price file a trading day (the F&O "bhavcopy") with every contract's open, high, low, close, settlement price, open interest and contracts traded. **Download from NSE** fetches them for the dates and indices you tick (NIFTY, BANKNIFTY, FINNIFTY by default; MIDCPNIFTY and NIFTYNXT50 too). It keeps index options within 15% of the index and up to 100 days to expiry, which is about 70 MB a year for the three default indices.
+
+- About one file a second: 5 years is about 1,250 files and 40 minutes. You can keep using the desk meanwhile.
+- Days already stored are skipped, so **Stop** and download again later to continue. Days that failed are tried again.
+- A missing file on a past weekday is an exchange holiday. NSE refusing ("403") is an error, never stored as prices; after 5 refusals in a row the download stops and says so.
+- NSE changed the file format on 8 July 2024; both formats are read.
+
+With history stored, a **positional** or **signal** backtest opens each leg at the option's real **open** price that day, values it at its real **close**, checks stoplosses and targets against the option's own **low and high**, and uses the **expiries NSE actually listed** (holiday-shifted ones included). A strike that did not trade that day uses NSE's settlement price; a strike or day not stored is modelled. The note under the result counts how many fills came from each.
+
+**Live chain (intraday).** NSE's file has one price a day, so an intraday entry at 09:20 cannot come from it. Instead the desk records the live chain from your broker while the market is open and the broker is connected: the near two expiries of each index in **Record the live chain of** (NIFTY by default), 20 strikes either side of the money, every 5 minutes (one quote request per index each time, well inside broker limits). Intraday backtests use these prices, at most 10 minutes old, from the day recording began; the move within a candle is the model's, scaled to the recorded price. Leave the box empty to stop recording.
+
+**Premiums** in Advanced settings chooses *Real prices where stored* (default) or *Modelled only*, for comparing the two.
+
+Things to know:
+
+- NIFTY had only monthly options before February 2019, FINNIFTY options began in January 2021, and BANKNIFTY and FINNIFTY have had only monthly expiries since November 2024. With history stored, *Weekly* in those periods takes the nearest expiry NSE listed.
+- A bhavcopy close is the last trade's price, not where you could have sold at 15:30. Keep slippage on, more so for far strikes.
+- Everything is in one file, `option_history.db`, in the desk's data folder. To use history downloaded on your computer on a server, copy that file into the server's data folder (the desk's volume) while the desk is stopped.
+
+**Downloading on a server.** NSE refuses many cloud and data-centre addresses. Set `DESK_EXCHANGE_PROXY` (see *Exchange data on a server* under [Market tools](#market-tools) and DEPLOY.md) and the download goes through it. From a terminal on your own computer (or inside the server's container) you can also run:
+
+```
+python -m desk.chainhistory import --from 2016-01-01 --underlyings NIFTY,BANKNIFTY,FINNIFTY
+python -m desk.chainhistory status
+```
+
 
 #### Every strategy: legs, payoff and when to use it
 

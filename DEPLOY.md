@@ -74,6 +74,11 @@ KITE_API_SECRET=your_kite_api_secret
   and BSE requests use it. Test from the VPS first:
   `curl -x http://user:pass@100.64.0.5:8888 -s -o /dev/null -w "%{http_code}\n" -H "Referer: https://www.bseindia.com/" "https://api.bseindia.com/BseIndiaAPI/api/Corpforthresults/w?fromdate=20261001&todate=20261120&scripcode="`
   should print `200`.
+  The option history download (Backtest → Option strategy → Real option prices)
+  uses the same proxy. Check NSE's archive through it with
+  `curl -x http://user:pass@100.64.0.5:8888 -s -o /dev/null -w "%{http_code}\n" -A "Mozilla/5.0" "https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_20241101_F_0000.csv.zip"`
+  (`200`). The history file, `option_history.db`, lives in the desk's data
+  volume; 10 years of NIFTY, BANKNIFTY and FINNIFTY is about 700 MB.
 
 ## 5. Domain and HTTPS
 
