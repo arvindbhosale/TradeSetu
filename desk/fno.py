@@ -51,6 +51,7 @@ class Derivatives:
         self._lock = threading.RLock()
         self._data: dict = {"fetched": None, "indices": [], "stocks": [], "contracts": {}}
         self._by_symbol: dict[tuple[str, str], dict] = {}
+        self._chains: dict[str, tuple[str, list]] = {}      # a stock's contracts, read from Kite once a day
         with contextlib.suppress(OSError, json.JSONDecodeError):
             stored = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(stored, dict) and "stocks" in stored:
@@ -226,6 +227,53 @@ class Derivatives:
                             "expiries": expiries})
         order = list(INDICES)
         return sorted(out, key=lambda u: order.index(u["name"]) if u["name"] in order else 99)
+
+    def margin_underlyings(self) -> list[dict]:
+        """Everything the margin calculator can price: indices, F&O stocks and MCX metals, with exchange and lot."""
+        with self._lock:
+            rows = [{"name": i["name"], "exchange": i["exchange"], "lot_size": i["lot_size"], "group": "Indices"}
+                    for i in self._data.get("indices", [])]
+            rows += [{"name": i["name"], "exchange": i["exchange"], "lot_size": i["lot_size"], "group": "Stocks"}
+                     for i in self._data.get("stocks", [])]
+        rows += [{"name": name, "exchange": mcx.EXCHANGE, "lot_size": 1, "group": "MCX"} for name in mcx.METALS
+                 if self.metal_contracts(name)]
+        return rows
+
+    def chain(self, name: str) -> list[dict]:
+        """Every live future and option of one underlying, nearest expiry first. Index and MCX contracts come from
+        the stored list; a stock's are read from Kite once a day."""
+        name = name.strip().upper()
+        today = self._now().strftime("%Y-%m-%d")
+        if name in mcx.METALS:
+            rows = self.metal_contracts(name)
+        elif name in self._data.get("contracts", {}):
+            rows = [c for c in self.contracts(name) + list(self._data.get("futures", {}).get(name, []))
+                    if c["expiry"] >= today]
+        else:
+            entry = next((i for group in ("stocks", "indices") for i in self._data.get(group, []) if i["name"] == name), None)
+            if entry is None:
+                raise KiteError(f"{name} has no futures or options in Kite's list. Refresh the F&O list.")
+            cached = self._chains.get(name)
+            if cached and cached[0] == today:
+                rows = cached[1]
+            else:
+                if not self.kite.connected or "search_instruments" not in self.kite.tools:
+                    raise KiteError(f"Log in to Kite to load {name}'s contracts.")
+                rows = []
+                for row in self._rows(f"{entry['exchange']}:{name}", "underlying"):
+                    expiry, kind = _date(row.get("expiry_date")), row.get("instrument_type")
+                    if (not expiry or expiry < today or kind not in ("FUT", "CE", "PE") or not row.get("tradingsymbol")
+                            or str(row.get("name") or name).strip().upper() != name):
+                        continue
+                    with contextlib.suppress(TypeError, ValueError):
+                        rows.append({"exchange": row.get("exchange") or entry["exchange"],
+                                     "tradingsymbol": str(row["tradingsymbol"]).upper(), "underlying": name, "type": kind,
+                                     "strike": float(row["strike"]) if kind != "FUT" else None, "expiry": expiry,
+                                     "lot_size": int(row.get("lot_size") or entry["lot_size"] or 1)})
+                if not rows:
+                    raise KiteError(f"Kite returned no live {name} contracts.")
+                self._chains[name] = (today, rows)
+        return sorted(rows, key=lambda c: (c["expiry"], c["type"] != "FUT", c.get("strike") or 0, c["type"]))
 
     @staticmethod
     def _view(name, exchange, lot_size, expiries, today) -> dict:

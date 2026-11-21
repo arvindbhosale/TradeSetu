@@ -381,7 +381,7 @@
       <div id="fno-list"></div>
     </div>
     <div class="panel note">
-      <strong>Before you run one live.</strong> Option prices come only from Kite, so a paper F&amp;O algo needs Kite too. <strong>MCX metals</strong> run in the MCX session (09:00 to 23:30, or 23:55 while the US is on winter time) with entry and exit times up to 23:25, take funds from Kite's commodity segment, and close every contract once it is within the delivery cut-off in Settings (8 days by default): gold and silver contracts are physically delivered and Zerodha does not take retail positions into delivery. Since 1 April 2026 Kite accepts API orders only from a static IP registered on your Kite Connect app (IP Whitelist), at most 10 a second: run kite-mcp-server on a machine with that IP. A live algo needs a maximum loss; when the position's loss with charges reaches it every leg is closed and the algo waits for the next day. Structures that sell options with no bought option to cover them run live only when Settings allows naked F&amp;O shorts. Margin is the desk's estimate (Kite's MCP server has no margin calculator); Zerodha decides at order time, and a refused leg unwinds the entry. Every leg is closed at the exit time on its expiry day. <strong>Exit</strong> closes everything now, even with the kill switch on.
+      <strong>Before you run one live.</strong> Option prices come only from Kite, so a paper F&amp;O algo needs Kite too. <strong>MCX metals</strong> run in the MCX session (09:00 to 23:30, or 23:55 while the US is on winter time) with entry and exit times up to 23:25, take funds from Kite's commodity segment, and close every contract once it is within the delivery cut-off in Settings (8 days by default): gold and silver contracts are physically delivered and Zerodha does not take retail positions into delivery. Since 1 April 2026 Kite accepts API orders only from a static IP registered on your Kite Connect app (IP Whitelist), at most 10 a second: run kite-mcp-server on a machine with that IP. A live algo needs a maximum loss; when the position's loss with charges reaches it every leg is closed and the algo waits for the next day. Structures that sell options with no bought option to cover them run live only when Settings allows naked F&amp;O shorts. Margin is Zerodha's own figure for the legs (SPAN plus exposure, with the hedge benefit) when the Kite server has the margin calculator, as the desk's own kite-mcp-server does; otherwise it is the desk's estimate, and says so. Zerodha decides at order time, and a refused leg unwinds the entry. Every leg is closed at the exit time on its expiry day. <strong>Exit</strong> closes everything now, even with the kill switch on.
     </div>
   </div>
 </section>
@@ -1004,6 +1004,30 @@
     </form>
     <div id="oc-order-error" class="error" hidden></div>
     <div id="oc-review" hidden></div>
+  </div>
+  <div class="panel" id="mc-panel">
+    <div class="jobhead"><h2>Margin calculator</h2></div>
+    <p class="hint">Zerodha's own margin for the legs you add (SPAN plus exposure, and the premium for bought options), with the hedge benefit when legs offset each other. Nothing is placed.</p>
+    <div id="mc-unavailable" class="hint warn" hidden></div>
+    <form id="form-mc" class="row">
+      <label>Index, stock or metal <select name="underlying" required></select></label>
+      <label>Expiry <select name="expiry" required></select></label>
+      <label>Contract <select name="kind"><option value="CE">Call</option><option value="PE">Put</option><option value="FUT">Future</option></select></label>
+      <label class="mc-strike">Strike <select name="strike"></select></label>
+      <label>Buy or Sell <select name="side"><option value="BUY">Buy</option><option value="SELL">Sell</option></select></label>
+      <label>Lots <input name="lots" type="number" min="1" max="500" value="1" required></label>
+      <button type="submit">Add leg</button>
+    </form>
+    <div id="mc-error" class="error" hidden></div>
+    <div class="scroll" id="mc-legs"></div>
+    <div class="row">
+      <details class="advanced"><summary>Advanced</summary>
+        <label>Product <select id="mc-product"><option value="NRML">Carry forward (NRML)</option><option value="MIS">Intraday (MIS)</option></select></label>
+      </details>
+      <button type="button" class="primary" id="mc-calc" disabled>Work out margin</button>
+      <button type="button" id="mc-clear" disabled>Clear legs</button>
+    </div>
+    <div id="mc-result" hidden></div>
   </div>
   <div class="panel">
     <div class="jobhead"><h2>Index futures</h2>

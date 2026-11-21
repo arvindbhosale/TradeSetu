@@ -27,10 +27,11 @@ Rules that matter with real money:
   desk's daily loss limit and kill switch apply as well. "Exit" closes everything now.
 - **Naked shorts.** A structure with a sold option not covered by a bought one (short straddle, strangle, guts, ratio
   spread, jade lizard, synthetics) runs live only when Settings allows it.
-- **Margin.** Before an entry the algo estimates the margin (``optstrat.estimate_margin``, plus 2% on a short leg on
-  its expiry day) and compares it with the funds Kite reports, or with the paper cash not already used by other
-  paper F&O algos. The Kite MCP server has no order-margin (basket margin) tool, so this is an estimate; Zerodha's
-  own check at order time is the authority, and a rejected leg unwinds the entry.
+- **Margin.** Before an entry the algo asks Zerodha's basket margin calculator for the legs (``desk.margin``: SPAN,
+  exposure and premium, with the hedge benefit) and compares it with the funds Kite reports, or with the paper cash
+  not already used by other paper F&O algos. A Kite server without that tool gets the desk's estimate instead
+  (``optstrat.estimate_margin``, plus 2% on a short leg on its expiry day), and says so. Zerodha's own check at
+  order time is the authority either way, and a rejected leg unwinds the entry.
 - **Prices.** Option premiums come from Kite, in paper mode too: there is no other source of live option prices.
 - **Expiry.** Every leg is closed at the exit time on its expiry day rather than left to settle (an in-the-money
   option left to expire pays STT on its full value).
@@ -53,6 +54,7 @@ from .algo import AlgoError
 from .broker import Desk, OrderRejected, fees
 from .fno import INDICES
 from .kite import KiteError
+from .margin import MarginUnavailable, basket as zerodha_basket, why_not as margin_why_not
 from .options import SPOT, STRIKE_STEP, YAHOO_SPOT
 from .settings import home
 
@@ -454,9 +456,10 @@ class FnoAlgoEngine:
                 return c
         return None
 
-    def plan(self, algo: dict, direction: int = 1) -> dict:
-        """The legs an entry would open now, with their contracts, last prices and the margin estimate.
-        Raises AlgoError with the reason when it cannot be worked out."""
+    def plan(self, algo: dict, direction: int = 1, exact: bool = False) -> dict:
+        """The legs an entry would open now, with their contracts, last prices and the margin: Zerodha's figure when
+        ``exact`` and the Kite server has the margin calculator, else the desk's estimate (``margin_source`` says
+        which, ``margin_note`` why). Raises AlgoError with the reason when it cannot be worked out."""
         u = algo["underlying"]
         if algo["kind"] == "futures":
             specs = [{"action": direction, "type": "FUT", "off": "0", "ratio": 1, "series": "near"}]
@@ -545,8 +548,27 @@ class FnoAlgoEngine:
         margin = optstrat.estimate_margin([{**g, "entry": g["ltp"]} for g in legs], spot, algo["lots"] * lot,
                                           margin_pct) * factor
         net = sum(-g["action"] * g["ratio"] * g["ltp"] for g in legs if g["type"] != "FUT") * algo["lots"] * lot * factor
-        return {"spot": spot, "atm": atm, "near": near, "far": far, "legs": legs, "margin": round(margin, 0),
-                "net_premium": round(net, 2), "expiry_day_margin": expiry_day}
+        out = {"spot": spot, "atm": atm, "near": near, "far": far, "legs": legs, "margin": round(margin, 0),
+               "net_premium": round(net, 2), "expiry_day_margin": expiry_day, "margin_source": "estimate",
+               "margin_estimate": round(margin, 0), "hedge_benefit": None, "margin_note": None}
+        if exact:
+            out.update(self._zerodha_margin(algo, legs))
+        return out
+
+    def _zerodha_margin(self, algo: dict, legs: list[dict]) -> dict:
+        """Zerodha's margin for an entry's legs, or the reason it is not available (the estimate then stands)."""
+        kite = self.desk.kite
+        reason = margin_why_not(kite)
+        if reason:
+            return {"margin_note": reason}
+        product = "MIS" if algo["schedule"] == "intraday" else "NRML"
+        try:
+            got = zerodha_basket(kite, [{"exchange": g["exchange"], "tradingsymbol": g["tradingsymbol"],
+                                         "side": "BUY" if g["action"] > 0 else "SELL", "quantity": g["quantity"],
+                                         "price": g["ltp"]} for g in legs], product=product)
+        except MarginUnavailable as exc:
+            return {"margin_note": f"{exc} The desk's estimate is used."}
+        return {"margin": round(got["total"], 0), "margin_source": "kite", "hedge_benefit": round(got["hedge_benefit"], 0)}
 
     def _funds(self, algo: dict) -> float | None:
         if algo["mode"] == "live":
@@ -560,18 +582,40 @@ class FnoAlgoEngine:
         algo = {**_copy(_BLANK), **self.validate(raw), "id": "preview"}
         direction = -1 if algo["kind"] == "futures" and algo["direction"] == "short" else 1
         with self._lock:
-            plan = self.plan(algo, direction)
+            plan = self.plan(algo, direction, exact=True)
             funds = self._funds(algo)
         order = sorted(plan["legs"], key=lambda g: g["action"] < 0)        # bought legs first
         return {"spot": plan["spot"], "atm": plan["atm"], "near_expiry": plan["near"], "far_expiry": plan["far"],
                 "margin": plan["margin"], "funds": funds, "net_premium": plan["net_premium"],
                 "naked": algo["naked"], "expiry_day_margin": plan["expiry_day_margin"],
+                "margin_source": plan["margin_source"], "margin_estimate": plan["margin_estimate"],
+                "hedge_benefit": plan["hedge_benefit"], "margin_note": plan["margin_note"],
                 "legs": [{"order": n + 1, "side": "BUY" if g["action"] > 0 else "SELL", "tradingsymbol": g["tradingsymbol"],
                           "type": g["type"], "strike": g["strike"], "expiry": g["expiry"], "quantity": g["quantity"],
                           "lots": g["quantity"] // g["lot_size"], "ltp": g["ltp"]} for n, g in enumerate(order)],
                 "notes": ["Bought legs are sent first; sold legs only after every bought leg has filled.",
-                          "Margin is the desk's estimate: the Kite MCP server has no margin calculator. Zerodha's check "
-                          "at order time decides; a rejected leg unwinds the entry."]}
+                          ("Margin is Zerodha's figure for these legs now, with the hedge benefit. "
+                           if plan["margin_source"] == "kite" else "Margin is the desk's estimate. ")
+                          + "Zerodha's check at order time decides; a rejected leg unwinds the entry."]}
+
+    def margin_check(self, algo_id: str) -> dict:
+        """The margin an algo's entry would need now and the funds it would be checked against, shown before it
+        starts. Never raises for a plan that cannot be worked out: ``error`` says why."""
+        with self._lock:
+            algo = self.get(algo_id)
+            out = {"id": algo_id, "mode": algo["mode"], "margin": None, "funds": None, "margin_source": None,
+                   "hedge_benefit": None, "margin_note": None, "short": False, "error": None}
+            direction = -1 if algo["kind"] == "futures" and algo["direction"] == "short" else 1
+            try:
+                plan = self.plan(algo, direction, exact=True)
+            except AlgoError as exc:
+                out["error"] = str(exc)
+                return out
+            funds = self._funds(algo)
+            out.update(margin=plan["margin"], funds=funds, margin_source=plan["margin_source"],
+                       hedge_benefit=plan["hedge_benefit"], margin_note=plan["margin_note"],
+                       short=funds is not None and plan["margin"] > funds)
+            return out
 
     # -- one step -------------------------------------------------------------------------------------------------
 
@@ -725,20 +769,23 @@ class FnoAlgoEngine:
         cfg, window = self.desk.settings.all(), self._window(algo)
         if cfg["enforce_trade_window"] and not window["entries"]:
             return f"Running: waiting for the trade window ({window['trade_start']}-{window['trade_end']})", True
-        plan = self.plan(algo, direction)
+        plan = self.plan(algo, direction, exact=True)
         funds = self._funds(algo)
         if funds is None:
             raise AlgoError("Could not read your available funds from Kite")
         if plan["margin"] > funds:
             algo["last_entry_day"] = self._now().strftime("%Y-%m-%d")
-            raise AlgoError(f"Margin of about ₹{plan['margin']:,.0f} is more than the ₹{funds:,.0f} available. Entry skipped today")
+            what = "Zerodha's margin of" if plan["margin_source"] == "kite" else "Margin of about"
+            raise AlgoError(f"{what} ₹{plan['margin']:,.0f} is more than the ₹{funds:,.0f} available. Entry skipped today")
         today = self._now().strftime("%Y-%m-%d")
         algo["last_entry_day"] = today
         algo["book"] = {"phase": "opening", "direction": direction, "opened": self._now().strftime("%Y-%m-%d %H:%M"),
                         "day": today, "spot": round(plan["spot"], 2), "near": plan["near"], "far": plan["far"],
                         "margin": plan["margin"], "legs": plan["legs"], "reason": None, "peak": 0.0}
         legs = ", ".join(f"{'+' if g['action'] > 0 else '−'}{g['quantity']} {g['tradingsymbol']} @ {g['ltp']:,.2f}" for g in plan["legs"])
-        self._log(algo, f"Entering at {algo['underlying']} {plan['spot']:,.2f}: {legs}. Margin about ₹{plan['margin']:,.0f}.")
+        margin = (f"Zerodha's margin ₹{plan['margin']:,.0f}" if plan["margin_source"] == "kite"
+                  else f"Margin about ₹{plan['margin']:,.0f} (estimate)")
+        self._log(algo, f"Entering at {algo['underlying']} {plan['spot']:,.2f}: {legs}. {margin}.")
         return self._work_open(algo)
 
     def _work_open(self, algo: dict) -> tuple[str, bool]:
