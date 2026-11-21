@@ -32,6 +32,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Algo details: the card said "Orders: None active, every order is closed" while legs were still held, which read as a contradiction. It now reads **Open positions** (how many legs or stocks are held) with **Pending orders** (orders still waiting at the broker) underneath, and a held leg shows **Open** instead of "Active".
 - Results Drift showed nothing when BSE refused the server (403). It now retries BSE with cookies, falls back to NSE's event calendar, retries every 30 minutes after a failure, says why in plain words, and can send exchange requests through `DESK_EXCHANGE_PROXY`.
 - Stock algos: a sell went ahead when cancelling the algo's target/stoploss GTT failed (the error was ignored), so the GTT could fire later and sell shares that were no longer the algo's. The sell now waits until the GTT is gone; if it has fired, nothing more is sold. A trailing or at-cost stoploss is not moved while the old GTT cannot be cancelled.
 - Background jobs (paper GTT check, live fill sync, daily loss limit, F&O algos, paper expiry settlement, MCX square-off, scanner) failed silently. A failure is now logged and alerted, once an hour; an algo that hits an unexpected error says so.

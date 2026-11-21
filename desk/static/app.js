@@ -1199,7 +1199,7 @@
     beginAlgoEdit("fno", a, note, a.book ? ["max_loss", "target", "limit_buffer_pct", "leg_scope", "exits"] : null);
   }
 
-  // -- one algo in detail: every leg's buy and sell price, booked and open P&L, orders still out ---------------------
+  // -- one algo in detail: every leg's buy and sell price, booked and open P&L, pending orders ---------------------
 
   const detailView = { kind: null, id: null, data: null, timer: null };
 
@@ -1231,14 +1231,17 @@
       : `${a.strategy_name} on ${a.symbol} · ${state.app.intervals[a.interval]} candles · budget ${rupees(a.budget)}`;
     const tile = (k, v, sub, cls) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v " + (cls || ""), text: v }), sub ? h("div", { class: "s", text: sub }) : null);
     const legs = d.legs, otherMode = (g) => (g.mode !== a.mode ? ` (${g.mode})` : "");
-    const status = (g) => h("span", { class: "pill " + (g.status === "Active" ? "good" : ""), text: g.status });
+    const noun = kind === "fno" ? "leg" : "stock";
+    // "Active" from the ledger means a position is still held, not that an order is working: say "Open".
+    const status = (g) => h("span", { class: "pill " + (g.status === "Active" ? "good" : ""), text: g.status === "Active" ? "Open" : g.status });
     $("#ad-body").replaceChildren(...[
       h("p", { class: "hint", text: what + (d.can_edit ? "" : " · Stop it to edit.") }),
       h("div", { class: "tiles" },
         tile("Realised P&L (booked)", money(t.realized), `${t.closed} closed, after charges`, tone(t.realized)),
         tile("Unrealised P&L (open)", money(t.unrealized), t.unrealized == null ? "no live price for a held leg" : `${t.held} still held, at current price`, tone(t.unrealized)),
         tile("Total", money(t.total), "realised + unrealised", tone(t.total)),
-        tile("Orders", d.orders.length ? `${d.orders.length} active` : "None active", d.orders.length ? "waiting at the broker or for the trade window" : "every order is closed")),
+        tile("Open positions", t.held ? `${t.held} ${noun}${t.held === 1 ? "" : "s"}` : "None",
+          d.orders.length ? `Pending orders: ${d.orders.length}, waiting at the broker or for the trade window` : "Pending orders: none")),
       h("h3", { text: kind === "fno" ? "Each leg" : "Each stock" }),
       h("div", { class: "scroll" }, table([
         { label: "Stock / contract", get: (g) => g.symbol + otherMode(g) }, { label: "Status", get: status },
@@ -1249,7 +1252,7 @@
         { label: "Realised P&L", num: true, get: (g) => money(g.realized), tone: (g) => tone(g.realized) },
         { label: "Unrealised P&L", num: true, get: (g) => (g.status === "Active" ? money(g.unrealized) : "–"), tone: (g) => tone(g.unrealized) }],
         legs, "Nothing bought or sold yet.")),
-      d.orders.length ? h("h3", { text: "Orders still active" }) : null,
+      d.orders.length ? h("h3", { text: "Pending orders" }) : null,
       d.orders.length ? h("div", { class: "scroll" }, table([
         { label: "Stock / contract", get: (o) => o.symbol }, { label: "Buy / Sell", get: (o) => (o.side === "BUY" ? "Buy" : "Sell"), tone: (o) => (o.side === "BUY" ? "pos" : "neg") },
         { label: "Qty", num: true, get: (o) => o.quantity ?? "–" }, { label: "Price ₹", num: true, get: (o) => price(o.price) },
