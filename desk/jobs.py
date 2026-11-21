@@ -56,6 +56,8 @@ class Job:
         self.counters: dict[str, int] = {}
         self.result: dict | None = None
         self.error: str | None = None
+        self.progress: dict | None = None        # {"done", "total"} for work that counts its steps
+        self.stop_requested = False              # set by the Stop button; work that can stop checks it
         self._lock = threading.Lock()
 
     def log(self, message: str) -> None:
@@ -71,7 +73,8 @@ class Job:
         with self._lock:
             out = {"id": self.id, "kind": self.kind, "title": self.title, "status": self.status,
                    "elapsed": round((self.finished or time.time()) - self.created, 1),
-                   "counters": dict(self.counters), "error": self.error}
+                   "counters": dict(self.counters), "error": self.error,
+                   "progress": dict(self.progress) if self.progress else None, "stopping": self.stop_requested}
             if full:
                 out["events"] = list(self.events)
                 out["result"] = self.result
@@ -79,8 +82,8 @@ class Job:
 
 
 class Jobs:
-    def __init__(self):
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="desk-job")
+    def __init__(self, name: str = "desk-job"):
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=name)
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
 

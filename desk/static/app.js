@@ -321,7 +321,7 @@
 
   // -- one Backtest screen: what to test, then one set of dates and capital ----------------
 
-  const BT_PANES = { strategy: "#bt-strategy", structures: "#bt-structures", options: "#bt-options", futures: "#bt-futures",
+  const BT_PANES = { strategy: "#bt-strategy", aiscan: "#bt-aiscan", structures: "#bt-structures", options: "#bt-options", futures: "#bt-futures",
     optimise: "#bt-optimise", portfolio: "#bt-portfolio", agents: "#bt-agents" };
   const BT_SHARED = ["#form-bt", "#form-sbt", "#form-obt", "#form-fbt"];     // these take From, To and Capital from the top
 
@@ -2503,6 +2503,140 @@
   $("#sd-chart").addEventListener("click", () => { $("#stock-dialog").close(); $("#form-chart").symbol.value = sd.symbol.replace(/\.NS$/, ""); selectTab("charts"); loadChart(true); });
   $("#sd-trade").addEventListener("click", () => { $("#stock-dialog").close(); $("#form-order").symbol.value = sd.symbol.replace(/\.NS$/, ""); selectTab("trade"); });
 
+  // -- AI scan: every stock of an index against every strategy ------------------------------------------------
+
+  const VERDICT_TONE = { "Beats buy and hold": "good", Works: "good", "Could be luck": "warn", Fragile: "warn",
+    "Below a fixed deposit": "warn", "Too few trades": "warn", "Loses money": "bad" };
+  const scanState = { options: null, job: null, result: null, chart: null };
+  const chance = (p) => (p == null ? "–" : p >= 0.995 ? ">99%" : Math.round(p * 100) + "%");
+
+  function scanEstimate() {
+    const form = $("#form-scan"), o = scanState.options;
+    if (!o) return;
+    const index = o.indices.find((x) => x.id === form.index.value);
+    const stocks = index ? index.stocks : 0, settings = o.settings[form.depth.value] || 0;
+    const runs = stocks * settings, minutes = Math.max(1, Math.round(runs * 0.035 / o.workers / 60 + stocks * 0.6 / 60));
+    const each = stocks ? Number(form.capital.value || 0) / stocks : 0;
+    $("#scan-estimate").textContent = stocks
+      ? `${stocks} stocks × ${settings} strategy settings = ${inr.format(runs)} backtests on day candles, about ${minutes} minute${minutes > 1 ? "s" : ""} (prices are saved, so a second scan of the same dates loads faster). ₹${inr.format(Math.round(each))} goes to each stock${each < 10000 ? ": too little, use at least ₹10,000 a stock" : ""}.`
+      : "This index's stock list has not loaded yet. Open Indices, wait a moment and come back.";
+  }
+
+  async function startAiScan() {
+    const form = $("#form-scan");
+    try { scanState.options = await api("/scan/options"); } catch (err) { showError("#scan-error", err); return; }
+    const o = scanState.options;
+    const groups = {};
+    o.indices.forEach((x) => { (groups[x.group] = groups[x.group] || []).push(x); });
+    form.index.replaceChildren(...Object.entries(groups).map(([group, list]) => h("optgroup", { label: group },
+      list.map((x) => h("option", { value: x.id, text: `${x.name}${x.stocks ? ` (${x.stocks})` : ""}` })))));
+    form.index.value = o.indices.some((x) => x.id === "nifty50") ? "nifty50" : (o.indices[0] || {}).id;
+    form.depth.replaceChildren(...Object.entries(o.depths).map(([k, label]) => h("option", { value: k, text: `${label} (${o.settings[k]} settings)` })));
+    form.depth.value = "standard";
+    const today = state.app.today, from = new Date(today); from.setFullYear(from.getFullYear() - 10);
+    form.start.value = from.toISOString().slice(0, 10); form.end.value = today;
+    form.slippage_bps.value = state.app.settings.slippage_bps ?? 5;
+    const fitCapital = () => { const x = o.indices.find((i) => i.id === form.index.value); form.capital.value = Math.max(1000000, (x ? x.stocks : 50) * 20000); };
+    fitCapital();
+    form.index.addEventListener("change", () => { fitCapital(); scanEstimate(); });
+    form.addEventListener("input", scanEstimate);
+    scanEstimate();
+    $("#scan-stop").addEventListener("click", async () => {
+      if (!scanState.job) return;
+      try { await api(`/jobs/${scanState.job}/stop`, { method: "POST" }); $("#scan-stop").disabled = true; } catch (err) { showError("#scan-error", err); }
+    });
+    $("#scan-download").addEventListener("click", async () => {
+      if (!scanState.result) return;
+      const button = $("#scan-download"); busy(button, true, "Preparing…");
+      try { await download(scanState.result.workbook.replace(/^\/api/, ""), "ai-strategy-scan.xlsx"); } catch (err) { showError("#scan-error", err); }
+      busy(button, false);
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = $("button[type=submit]", form); showError("#scan-error", null); busy(button, true, "Starting…");
+      try {
+        const { job } = await api("/scan", { method: "POST", body: { index: form.index.value, start: form.start.value, end: form.end.value,
+          capital: Number(form.capital.value), depth: form.depth.value, oos_pct: Number(form.oos_pct.value),
+          slippage_bps: Number(form.slippage_bps.value || 0) } });
+        scanState.job = job.id;
+        $("#scan-job").hidden = false; $("#scan-result").hidden = true; $("#scan-stop").disabled = false; $("#scan-stop").hidden = false;
+        watchScan(job.id, button);
+      } catch (err) { showError("#scan-error", err); busy(button, false); }
+    });
+  }
+
+  function watchScan(jobId, button) {
+    const bar = $("#scan-progress");
+    const ui = { title: $("#scan-title"), status: $("#scan-status"), log: $("#scan-log") };
+    const tick = async () => {
+      try {
+        const job = await api("/jobs/" + jobId);
+        if (job.progress) { bar.max = job.progress.total || 1; bar.value = job.progress.done; }
+      } catch (err) { /* watchJob reports it */ }
+    };
+    const timer = setInterval(tick, 1500);
+    watchJob(jobId, ui, (done) => {
+      clearInterval(timer); busy(button, false); $("#scan-stop").hidden = true;
+      if (done.status === "done") { bar.value = bar.max; renderScan(done.result); }
+    });
+  }
+
+  function renderScan(r) {
+    scanState.result = r;
+    $("#scan-result").hidden = false;
+    const w = r.winner, bh = r.buy_hold.unseen;
+    const tile = (k, v, sub, cls) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v " + (cls || ""), text: v }), sub ? h("div", { class: "s", text: sub }) : null);
+    const pctv = (v) => (v == null ? "–" : pct(v));
+    $("#scan-tiles").replaceChildren(
+      tile("Winner", w ? w.name : "None passed", w ? `${w.settings} · ${w.exits_text}` : "every strategy failed a check on unseen data", w ? "pos" : "neg"),
+      tile("Unseen return", w ? pctv(w.unseen.return_pct) : "–", `buy and hold ${pctv(bh.return_pct)} · ${r.period.unseen[0]} to ${r.period.unseen[1]}`, w ? tone(w.unseen.return_pct) : ""),
+      tile("Worst fall (unseen)", w ? pctv(w.unseen.max_drawdown_pct) : "–", `buy and hold ${pctv(bh.max_drawdown_pct)}`),
+      tile("Chance it is not luck", w ? chance(w.luck_test) : "–", `after ${r.luck_trials} choices made with unseen results; needs 95%`),
+      tile("Stocks in profit", w ? `${w.stocks_profitable} of ${w.stocks}` : "–", w ? `${inr.format(w.oos_trades)} unseen trades` : null),
+      tile("Backtests", inr.format(r.trials), `${r.strategies_compared} strategies, ${r.settings_tried} settings, ${r.stocks_tested} of ${r.stocks_asked} stocks`));
+    $("#scan-explain").replaceChildren(...r.explanation.split("\n\n").map((text) => h("p", { text })));
+    if (scanState.chart) scanState.chart.remove();
+    scanState.chart = null;
+    const days = r.equity.days;
+    $("#scan-chart-note").textContent = `Settings were chosen before ${days[r.equity.cut]}; from then on the line is unseen data. Both lines start with ₹${inr.format(r.capital)}.`;
+    scanState.chart = LightweightCharts.createChart($("#scan-chart"), { ...chartOptions(280), timeScale: { borderColor: cssVar("--line"), timeVisible: false }, localization: { priceFormatter: (v) => "₹" + inr.format(v) } });
+    const scale = (values) => values.map((v, i) => ({ time: days[i], value: v }));
+    const hold = scanState.chart.addLineSeries({ color: cssVar("--s3"), lineWidth: 1, title: "Buy and hold" });
+    hold.setData(scale(r.equity.buy_hold));
+    if (r.equity.winner) {
+      const line = scanState.chart.addLineSeries({ color: cssVar("--s1"), lineWidth: 2, title: w.name });
+      line.setData(scale(r.equity.winner));
+      line.setMarkers([{ time: days[r.equity.cut], position: "aboveBar", color: cssVar("--s4"), shape: "arrowDown", text: "Unseen from here" }]);
+    } else {
+      hold.setMarkers([{ time: days[r.equity.cut], position: "aboveBar", color: cssVar("--s4"), shape: "arrowDown", text: "Unseen from here" }]);
+    }
+    scanState.chart.timeScale().fitContent();
+    const verdict = (b) => h("span", { class: "pill " + (VERDICT_TONE[b.verdict] || ""), text: b.verdict, title: b.verdict });
+    $("#scan-ranking").replaceChildren(table([
+      { label: "Rank", num: true, get: (b) => b.rank }, { label: "Verdict", get: verdict }, { label: "Strategy", get: (b) => b.name },
+      { label: "Settings (chosen in-sample)", get: (b) => b.settings }, { label: "Exits", get: (b) => b.exits_text },
+      { label: "Unseen return", num: true, get: (b) => pctv(b.unseen.return_pct), tone: (b) => tone(b.unseen.return_pct) },
+      { label: "A year vs buy and hold", num: true, get: (b) => pctv(b.vs_buy_hold_pct), tone: (b) => tone(b.vs_buy_hold_pct) },
+      { label: "Unseen Sharpe ratio", num: true, get: (b) => (b.unseen.sharpe == null ? "–" : b.unseen.sharpe.toFixed(2)) },
+      { label: "Worst fall", num: true, get: (b) => pctv(b.unseen.max_drawdown_pct) },
+      { label: "Not luck", num: true, get: (b) => chance(b.luck_test) },
+      { label: "Neighbours in profit", num: true, get: (b) => (b.robust == null ? "–" : Math.round(b.robust * 100) + "%") },
+      { label: "Stocks in profit", num: true, get: (b) => `${b.stocks_profitable}/${b.stocks}` },
+      { label: "Unseen trades", num: true, get: (b) => inr.format(b.oos_trades) }], r.ranking, ""));
+    $("#scan-exits").replaceChildren(table([
+      { label: "Strategy", get: (x) => x.strategy }, { label: "Exits", get: (x) => x.exits },
+      { label: "Chosen", get: (x) => (x.chosen === "Yes" ? h("span", { class: "pill good", text: "Chosen" }) : "") },
+      { label: "In-sample Sharpe ratio", num: true, get: (x) => (x.is_sharpe == null ? "–" : x.is_sharpe.toFixed(2)) },
+      { label: "Unseen return", num: true, get: (x) => pctv(x.oos_return_pct), tone: (x) => tone(x.oos_return_pct) },
+      { label: "Unseen worst fall", num: true, get: (x) => pctv(x.oos_max_drawdown_pct) },
+      { label: "Unseen trades", num: true, get: (x) => inr.format(x.oos_trades) }], r.exit_trials, "Not tried: the scan was stopped early."));
+    $("#scan-stocks").replaceChildren(table([
+      { label: "Stock", get: (x) => x.symbol }, { label: "Best fit (in-sample)", get: (x) => x.best }, { label: "Its settings", get: (x) => x.best_settings },
+      { label: "Its unseen return", num: true, get: (x) => pctv(x.best_oos_return_pct), tone: (x) => tone(x.best_oos_return_pct) },
+      { label: "Winner, unseen", num: true, get: (x) => pctv(x.winner_oos_return_pct), tone: (x) => tone(x.winner_oos_return_pct) },
+      { label: "Buy and hold, unseen", num: true, get: (x) => pctv(x.bh_oos_return_pct), tone: (x) => tone(x.bh_oos_return_pct) }], r.per_stock, ""));
+  }
+
   // -- optimiser ---------------------------------------------------------------------------------
 
   function optRanges() {
@@ -4043,7 +4177,7 @@
     bta.start.value = iso(month); bta.end.value = today; bta.end.max = today;
     $("#form-order").product.value = state.app.settings.product;
     $("#form-order").risk_pct.value = state.app.settings.risk_per_trade_pct;
-    fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startMarginCalc(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); startMarketTools(); renderTheme();
+    fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startAiScan(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startMarginCalc(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); startMarketTools(); renderTheme();
     syncSharedDates(); showBacktestPane($("#bt-what").value);
     if (state.app.hosted) { $("#logout").hidden = false; $("#logout-2").hidden = false; $("#logout").title = "Signed in as " + state.app.user; }
     const wanted = location.hash.slice(1);        // an app shortcut or a reload opens the same section

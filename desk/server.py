@@ -97,6 +97,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     desk = desk or Desk(settings, kite, price_lookup=lambda symbol: data.last_close(symbol, fetch=fetch))
     token = token or secrets.token_urlsafe(32)
     runner = jobs_module.Jobs()
+    scan_runner = jobs_module.Jobs("desk-scan")      # long CPU work of its own, so it never queues an agent run
     notes = TradeNotes(desk.ledger.path.parent / "trade_notes.json", now=desk._now)
     library = CustomStrategies()
     algos = AlgoEngine(desk, fetch=fetch, library=library)
@@ -1043,14 +1044,117 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
 
     @app.get("/api/jobs")
     def list_jobs():
-        return {"jobs": runner.list()}
+        return {"jobs": scan_runner.list() + runner.list()}
+
+    def find_job(job_id: str):
+        job = runner.get(job_id) or scan_runner.get(job_id)
+        if not job:
+            raise HTTPException(404, "no such job")
+        return job
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):
-        job = runner.get(job_id)
-        if not job:
-            raise HTTPException(404, "no such job")
-        return job.view()
+        return find_job(job_id).view()
+
+    @app.post("/api/jobs/{job_id}/stop")
+    def stop_job(job_id: str):
+        job = find_job(job_id)
+        if job.status in ("queued", "running"):
+            job.stop_requested = True
+            job.log("Stopping…")
+        return job.view(full=False)
+
+    # -- AI strategy scan --------------------------------------------------------
+
+    def scan_indices() -> list[dict]:
+        out = []
+        for entry in indices.entries():
+            if not entry[3] or entry[3] == "bse":
+                continue
+            out.append({"id": entry[0], "name": entry[1], "group": entry[2], "stocks": len(indices.constituents(entry[0]))})
+        return out
+
+    @app.get("/api/scan/options")
+    def scan_options():
+        from . import aiscan
+        return {"indices": scan_indices(), "depths": {k: v[0] for k, v in aiscan.DEPTHS.items()},
+                "strategies": len(aiscan.strategy_keys()) - 1,
+                "settings": {k: len(aiscan.candidates(k)) for k in aiscan.DEPTHS}, "max_stocks": aiscan.MAX_STOCKS,
+                "workers": _scan_workers()}
+
+    @app.post("/api/scan")
+    def scan_start(payload: dict):
+        import time as time_module
+
+        from . import aiscan, xlsxexport
+        payload = body_of(payload)
+        index_id = str(payload.get("index", ""))
+        entry = indices.entry(index_id)
+        if entry is None or not entry[3] or entry[3] == "bse":
+            raise ValueError("Choose an NSE index with a published stock list")
+        rows = indices.constituents(index_id)
+        if not rows:
+            raise ValueError(f"The stock list of {entry[1]} has not loaded yet. Open Indices, wait a moment and try again.")
+        start, end = date_of(payload.get("start"), "Start date"), date_of(payload.get("end"), "End date")
+        if end <= start:
+            raise ValueError("End date must be after the start date")
+        depth = str(payload.get("depth", "standard"))
+        if depth not in aiscan.DEPTHS:
+            raise ValueError(f"depth must be one of {', '.join(aiscan.DEPTHS)}")
+        oos_pct = _number(payload, "oos_pct", 30.0)
+        cfg = settings.all()
+        params = BacktestParams(capital=_number(payload, "capital", max(cfg["paper_capital"], 20_000.0 * len(rows))),
+                                slippage_bps=_number(payload, "slippage_bps", cfg["slippage_bps"]),
+                                risk_free_rate_pct=cfg["risk_free_rate_pct"])
+        params.validate()
+        aiscan._cut_date(start, end, oos_pct)          # refuse a short period now, not inside the job
+        if params.capital / len(rows) < aiscan.MIN_STOCK_CAPITAL:
+            raise ValueError(f"Use at least ₹{aiscan.MIN_STOCK_CAPITAL * len(rows):,.0f} for {len(rows)} stocks "
+                             f"(₹{aiscan.MIN_STOCK_CAPITAL:,.0f} a stock).")
+        cache = aiscan.PriceCache(home() / "scan_cache")
+
+        def load(symbol: str):
+            hit = cache.get(symbol, start, end)
+            if hit:
+                return hit[0], f"{hit[1]} (saved copy)"
+            bars, source = stock_bars(symbol, "1d", start, end)
+            cache.put(symbol, start, end, bars, source["name"])
+            if source["name"] == "Kite":
+                time_module.sleep(0.35)               # Kite allows three historical requests a second
+            return bars, source["name"]
+
+        def work(job):
+            job.progress = {"done": 0, "total": len(rows)}
+
+            def progress(done, total):
+                job.progress = {"done": done, "total": total}
+
+            result = aiscan.scan(rows, load, params, start=start, end=end, depth=depth, oos_pct=oos_pct,
+                                 index_name=entry[1], log=job.log, progress=progress,
+                                 stopped=lambda: job.stop_requested, workers=_scan_workers())
+            job.log("Writing the Excel workbook")
+            folder = home() / "scans"
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / f"{job.id}.xlsx").write_bytes(xlsxexport.scan_workbook(result, APP_NAME))
+            for old in sorted(folder.glob("*.xlsx"), key=os.path.getmtime)[:-20]:
+                old.unlink(missing_ok=True)            # keep the last 20 workbooks
+            result.pop("runs")                         # every run is in the workbook; the page shows the summary
+            result["workbook"] = f"/api/scan/{job.id}.xlsx"
+            job.log("Done")
+            return result
+
+        job = scan_runner.submit("scan", f"AI scan: {entry[1]}, {len(rows)} stocks", work)
+        return {"job": job.view()}
+
+    @app.get("/api/scan/{job_id}.xlsx")
+    def scan_workbook(job_id: str):
+        if not re.fullmatch(r"[0-9a-f]{12}", job_id):
+            raise HTTPException(404, "no such scan")
+        path = home() / "scans" / f"{job_id}.xlsx"
+        if not path.exists():
+            raise HTTPException(404, "That scan's workbook is no longer kept. Run the scan again.")
+        return Response(path.read_bytes(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="ai-strategy-scan-{job_id}.xlsx"'})
 
     # -- broker ---------------------------------------------------------------
 
@@ -2297,6 +2401,15 @@ def _kite_premiums(kite: KiteMCP, derivatives, underlying: str, legs: list, cont
     out["source"] = "premiums from Kite for the " + " and ".join(
         pd.Timestamp(d).strftime("%a %d %b") for d in dict.fromkeys(v for v in dates.values() if v)) + " expiry"
     return out
+
+
+def _scan_workers() -> int:
+    """Worker processes for the AI scan: DESK_SCAN_WORKERS, else all cores but one (at most 4), so the app
+    itself stays responsive while it runs."""
+    raw = os.environ.get("DESK_SCAN_WORKERS", "")
+    if raw.isdigit() and int(raw) > 0:
+        return min(int(raw), 16)
+    return max(1, min(4, (os.cpu_count() or 2) - 1))
 
 
 def _number(payload: dict, key: str, default: float) -> float:

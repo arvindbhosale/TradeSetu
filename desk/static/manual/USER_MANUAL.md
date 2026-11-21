@@ -851,6 +851,25 @@ Kite's prices are not always adjusted for splits and bonuses. When a day opens a
 
 **Stoploss and target that never fired.** If you set a stoploss or target and no trade reached it, the trust box says so, with the deepest fall and highest rise any trade had from its entry. The trade list shows both for each trade (**Lowest / highest**, in % of the entry price). An intraday trade that never moved 3% cannot hit a 15% stoploss, so the results are the same as with none. Re-entry happens only after a stoploss, so it changes nothing either until the stoploss fires. Re-entries are marked "(re-entry)" in the trade list.
 
+### AI scan: find a winning strategy across an index
+
+**Backtest → What to test → AI scan.** Pick an index (Nifty 50, Nifty 100…), the dates, the capital and how wide to search, then **Run AI scan**. The desk backtests every built-in day-candle strategy on every stock of the index, over a small range of each strategy's settings, with delivery charges (brokerage, STT, stamp duty, exchange and SEBI fees, GST, DP charges) and slippage. The manual backtest is unchanged.
+
+How it avoids picking a lucky winner:
+
+- **Two parts of the period.** Settings are chosen on the earlier part (in-sample, 70% by default). Strategies are ranked only on the later part, which the choice never saw ("unseen").
+- **One strategy across all stocks.** Each strategy runs as one portfolio: the same settings on every stock, the capital split equally. A strategy that works on many stocks is worth more than a separate best fit for each stock (the **Each stock** table shows why).
+- **Luck test.** The winner's Sharpe ratio is corrected for how many strategies were compared (deflated Sharpe ratio). It must reach 95%.
+- **Neighbouring settings.** If most settings next to the chosen ones lost money on unseen data, the result is marked **Fragile**.
+- **Enough trades.** Fewer than 30 unseen trades across all stocks is **Too few trades**.
+- **Stoploss and target** levels (5% and 10% stoploss, 20% target) are tried on the three best strategies, chosen in-sample as well.
+
+Verdicts: **Beats buy and hold**, **Works** (passed, but holding the same stocks did better), **Could be luck**, **Fragile**, **Below a fixed deposit**, **Too few trades**, **Loses money**. If nothing passes, the page says so: then buying and holding was better, and the ranking is research, not a strategy to trade.
+
+**Download Excel** gives a colour-coded workbook: the ranking (Summary), the method and caveats (Read me), each stock, the stoploss and target trials, every backtest run, and stocks left out. The explanation is written from the numbers by fixed rules; no AI model invents figures.
+
+Notes: day candles only (intraday across 50+ stocks would hit Kite's limit of three history requests a second). Prices come from Kite when it is logged in, else Yahoo, and are saved, so a second scan of the same dates loads faster. A Nifty 50 scan at the Standard search is about 12,000 backtests and takes a few minutes; it runs in the background and **Stop** keeps what was tested so far. Today's index members are the stocks that did well enough to be in it, so every past result is flattered (survivorship). Set `DESK_SCAN_WORKERS` to change how many processor cores it uses (default: all but one, at most 4).
+
 ### Optimise a strategy (walk-forward)
 
 **Backtest → What to test → Find the best settings.** Finds settings for a strategy without fooling yourself.
