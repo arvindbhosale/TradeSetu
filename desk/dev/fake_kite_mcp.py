@@ -51,8 +51,12 @@ def get_profile() -> str:
 def get_margins() -> str:
     """Get margins."""
     _need_login()
-    return json.dumps({"equity": {"available": {"live_balance": 250000.0, "cash": 250000.0}, "net": 250000.0},
-                       "commodity": {"available": {"live_balance": 400000.0, "cash": 400000.0}, "net": 400000.0}})
+    return json.dumps({"equity": {"enabled": True, "net": 250000.0, "utilised": {"debits": 0.0},
+                                  "available": {"live_balance": 250000.0, "cash": 250000.0, "opening_balance": 250000.0,
+                                                "intraday_payin": 0.0, "collateral": 0.0}},
+                       "commodity": {"enabled": True, "net": 400000.0, "utilised": {"debits": 0.0},
+                                     "available": {"live_balance": 400000.0, "cash": 400000.0, "opening_balance": 400000.0,
+                                                   "intraday_payin": 0.0, "collateral": 0.0}}})
 
 
 @server.tool()

@@ -1677,8 +1677,53 @@
 
   const pnlView = { chart: null, series: null };
 
+  async function refreshFunds() {
+    const mode = state.mode;
+    let f;
+    try { f = await api("/funds?mode=" + mode); }
+    catch (err) { showError("#funds-error", err); return; }
+    if (mode !== state.mode) return;                        // switched Paper / Live while this was loading
+    showError("#funds-error", null);
+    const tile = (k, v, sub, cls) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v " + (cls || ""), text: v }), sub ? h("div", { class: "s", text: sub }) : null);
+    const cash = (v) => (v == null ? "–" : rupees(v, 2));
+    const signed = (v) => (v == null ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + "\u2060₹" + inr2.format(Math.abs(v)));   // word joiner: the sign stays with the number
+    const tiles = [], note = [];
+    if (mode === "paper") {
+      $("#funds-title").textContent = "Paper account funds";
+      $("#funds-source").textContent = "practice money";
+      const share = f.capital ? (f.change / f.capital) * 100 : 0;
+      const shareText = Math.abs(share) < 0.005 ? "0.00%" : `${share > 0 ? "+" : "−"}${Math.abs(share).toFixed(2)}%`;
+      tiles.push(h("div", { class: "tiles" },
+        tile("Starting capital", rupees(f.capital), "set in Settings, or on reset"),
+        tile("Cash available", cash(f.cash), "free to buy with"),
+        tile("Invested", cash(f.invested), `${f.positions} ${f.positions === 1 ? "position" : "positions"}, at buy price`),
+        tile("Account value", cash(f.value), "cash + what you hold, at current price"),
+        tile("Change since start", signed(f.change), `${shareText} of starting capital`, tone(f.change))));
+      if (f.unpriced.length) note.push(`No current price for ${f.unpriced.join(", ")}: valued at buy price.`);
+      note.push("Reset the paper account on the Trade tab.");
+    } else {
+      $("#funds-title").textContent = "Live account funds";
+      const broker = state.app.kite.broker_label || "your broker";
+      $("#funds-source").textContent = `real money, from ${broker}`;
+      if (!f.connected) note.push(`${broker} is not connected. Connect it in Settings to see your funds here.`);
+      else if (f.needs_login) note.push(`${broker} needs a login. Log in on the Trade tab; sessions expire every day.`);
+      else if (f.error) showError("#funds-error", new Error(f.error));
+      for (const s of f.segments) {
+        tiles.push(h("h3", { text: s.segment === "commodity" ? "Commodity (MCX)" : "Equity and F&O" }), h("div", { class: "tiles" },
+          tile("Available to trade", cash(s.net), "after margin in use"),
+          tile("Used margin", cash(s.used), "blocked by open orders and positions"),
+          tile("Cash", cash(s.cash), s.opening_balance == null ? null
+            : `opening balance ${cash(s.opening_balance)}${s.added_today ? `, added today ${cash(s.added_today)}` : ""}`),
+          s.collateral ? tile("Collateral", cash(s.collateral), "margin from pledged holdings") : null));
+      }
+      if (f.connected && !f.needs_login && !f.error && !f.segments.length) note.push(`${broker} returned no funds for this account.`);
+    }
+    $("#funds-tiles").replaceChildren(...tiles);
+    $("#funds-note").textContent = note.join(" ");
+  }
+
   async function refreshPnl() {
-    refreshTax(); refreshJournalPanel();
+    refreshTax(); refreshJournalPanel(); refreshFunds();
     let r, feed;
     try { [r, feed] = await Promise.all([api("/pnl?mode=" + state.mode), api("/alerts")]); }
     catch (err) { showError("#pnl-error", err); return; }

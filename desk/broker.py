@@ -1100,6 +1100,57 @@ class Desk:
     def pnl(self, mode: str) -> dict:
         return self.ledger.report(mode, lambda instrument: self.last_price(instrument)[0])
 
+    def funds(self, mode: str) -> dict:
+        """The account's money for the P&L screen: the paper book's capital and cash, or what Kite reports."""
+        return self._paper_funds() if mode == "paper" else self._live_funds()
+
+    def _paper_funds(self) -> dict:
+        book = self.paper.snapshot()
+        invested, held, unpriced = 0.0, 0.0, []
+        for instrument, position in book["positions"].items():
+            exchange, symbol = instrument.split(":", 1)
+            quantity, average = int(position["quantity"]), float(position["average_price"])
+            factor, future = multiplier(exchange, symbol), is_future(exchange, symbol)
+            if quantity > 0 and not future:
+                invested += quantity * average * factor
+            last = self.last_price(instrument)[0]
+            if not last:
+                unpriced.append(symbol)
+                last = average
+            # Cash already carries an option's premium (paid or received) and a share's cost; a future moved
+            # cash only by its booked profit, so only its open profit counts on top.
+            held += (last - average) * quantity * factor if future else quantity * last * factor
+        value = book["cash"] + held
+        return {"mode": "paper", "capital": round(book["capital"], 2), "cash": round(book["cash"], 2),
+                "invested": round(invested, 2), "value": round(value, 2), "change": round(value - book["capital"], 2),
+                "positions": len(book["positions"]), "unpriced": sorted(unpriced)}
+
+    def _live_funds(self) -> dict:
+        out = {"mode": "live", "connected": self.kite.connected, "needs_login": False, "error": None, "segments": []}
+        if not self.kite.connected:
+            return out
+        try:
+            margins = self.kite.margins()
+        except KiteError as exc:
+            out["needs_login"], out["error"] = exc.needs_login, None if exc.needs_login else str(exc)
+            return out
+        margins = margins if isinstance(margins, dict) else {}
+        number = lambda v: float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None  # noqa: E731
+        for key in ("equity", "commodity"):
+            seg = margins.get(key)
+            if not isinstance(seg, dict) or seg.get("enabled") is False:
+                continue
+            available = seg.get("available") if isinstance(seg.get("available"), dict) else {}
+            utilised = seg.get("utilised") if isinstance(seg.get("utilised"), dict) else {}
+            out["segments"].append({
+                "segment": key, "net": number(seg.get("net")),
+                "cash": number(available.get("live_balance")) if number(available.get("live_balance")) is not None
+                else number(available.get("cash")),
+                "opening_balance": number(available.get("opening_balance")),
+                "added_today": number(available.get("intraday_payin")),
+                "collateral": number(available.get("collateral")), "used": number(utilised.get("debits"))})
+        return out
+
     def check_loss_limit(self) -> list[str]:
         """Turn the kill switch on when an account's loss today reaches the limit. Returns the accounts tripped."""
         limit = self.settings.get("daily_loss_limit")
