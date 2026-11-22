@@ -469,6 +469,7 @@
     name.value = label.replace(/[^\w &.-]/g, " ").replace(/\s+/g, " ").trim().slice(0, 40);
     $("#bt-deploy-budget-label").hidden = kind !== "stock"; $("#bt-deploy-loss-label").hidden = kind === "stock";
     if (kind === "stock") $("#bt-deploy-budget").value = Math.min(Number(body.capital) * Number(body.allocation_pct) / 100, 100000);
+    if (kind === "structure" && Number(body.stop_rs) > 0) $("#bt-deploy-loss").value = body.stop_rs;
     const positional = body.trade_type === "positional" || daily;
     const notes = {
       stock: positional
@@ -478,7 +479,7 @@
         : "The algo uses this strategy, candle size and these exit rules. It trades inside the trade window in Settings"
         + ((body.trade_start !== state.app.settings.trade_start || body.trade_end !== state.app.settings.trade_end || body.square_off !== state.app.settings.square_off)
           ? ` (${state.app.settings.trade_start}–${state.app.settings.trade_end}, sell everything at ${state.app.settings.square_off}), not the times above: change them in Settings to match.` : "."),
-      structure: "The algo uses this option strategy, these times and days, strikes, lots and each leg's exit rules. The whole position closes at the maximum loss you set here (the backtest's % stoploss and target for the whole position are not carried over).",
+      structure: "The algo uses this option strategy, these times and days, strikes, lots and each leg's exit rules. The whole position closes at the maximum loss you set here (filled from the backtest's Stoploss in ₹ when you set one) and at the backtest's Target in ₹; the % stoploss and target for the whole position are not carried over.",
       futures: "The algo holds the near-month future while this strategy says so, on day candles. It closes everything at the maximum loss you set here.",
     };
     $("#bt-deploy-what").textContent = notes[kind] + " It is created stopped: start it from the Algos tab.";
@@ -504,8 +505,8 @@
       } else if (kind === "structure") {
         await api("/fno-algos", { method: "POST", body: { name, kind: "structure", structure: body.structure, underlying: body.underlying,
           expiry_kind: body.expiry_kind, schedule: body.mode, entry_time: body.entry_time, exit_time: body.exit_time, exit_days_before: body.exit_days_before,
-          min_days: body.min_days, strategy: body.strategy, weekdays: body.weekdays, k: body.k, w: body.w, lots: body.lots,
-          leg_exits: body.leg_exits, leg_scope: body.leg_scope, max_loss: Number($("#bt-deploy-loss").value || 0), target: 0,
+          min_days: body.min_days, strategy: body.strategy, weekdays: body.weekdays, k: body.k, w: body.w, legs: body.legs, lots: body.lots,
+          leg_exits: body.leg_exits, leg_scope: body.leg_scope, max_loss: Number($("#bt-deploy-loss").value || 0), target: Number(body.target_rs || 0),
           margin_pct: body.margin_pct, mode } });
         await refreshFnoAlgos();
       } else if (kind === "futures") {
@@ -1248,6 +1249,7 @@
       .forEach((key) => { if (a[key] != null && form.elements[key]) form.elements[key].value = a[key]; });
     $$("input[name=fwd]", form).forEach((c) => { c.checked = (a.weekdays || []).includes(Number(c.value)); });
     $("#fno-exits").load(a.leg_exits || { unit: "pct", stop_loss: a.leg_sl_pct || 0 });
+    if (a.legs_text) $("#fno-desc").append(h("span", { text: ` Legs: ${a.legs_text}. They are kept while the option strategy stays the same.` }));
     const note = a.book ? `“${a.name}” has open legs, so only the maximum loss, the target, each leg's exit rules and the limit buffer can change. Exit, or clear the legs, to change the rest.`
       : `Editing “${a.name}”. ${a.enabled ? "It keeps running with the new settings." : "It stays stopped."} Changing Paper/Live stops it.`;
     beginAlgoEdit("fno", a, note, a.book ? ["max_loss", "target", "limit_buffer_pct", "leg_scope", "exits"] : null);
@@ -1423,9 +1425,7 @@
   function startFnoAlgos() {
     const form = $("#form-fno"), list = state.app.structures;
     $("#fno-exits").replaceWith(Object.assign(exitRulesBox(true), { id: "fno-exits" }));
-    form.structure.replaceChildren(...[["sideways", "Neutral: sell premium"], ["volatile", "Big move either way: buy premium"], ["bull", "Bullish"], ["bear", "Bearish"]].map(([key, label]) =>
-      h("optgroup", { label }, list.filter((x) => (key === "volatile" ? x.markets.includes("bull") && x.markets.includes("bear") && !x.bias
-        : key === "sideways" ? !x.bias && x.markets.includes("sideways") : x.bias === key)).map((x) => h("option", { value: x.key, text: x.name })))));
+    structureOptions(form.structure, list);
     form.structure.value = "iron_condor";
     strategyOptions(form.strategy, (x) => !x.intraday_only && x.key !== "buy_hold"); form.strategy.value = "supertrend";
     const params = () => {
@@ -1573,7 +1573,7 @@
             a.enabled ? act("Run now", "run") : null, book ? act("Exit", "exit", "danger") : null,
             !a.enabled && book ? act("Clear legs", "clear") : null, !a.enabled && !book ? act("Delete", "delete") : null)),
         h("dl", { class: "kv" },
-          h("dt", { text: "Trades" }), h("dd", { text: `${a.kind === "futures" ? `${a.underlying} near-month futures, ${{ long: "buy only", short: "sell only", both: "buy and sell" }[a.direction] || a.direction}` : `${a.structure_name} · ${a.underlying} ${a.expiry_kind}`} · ${a.lots} lot(s) · ${how}` }),
+          h("dt", { text: "Trades" }), h("dd", { text: `${a.kind === "futures" ? `${a.underlying} near-month futures, ${{ long: "buy only", short: "sell only", both: "buy and sell" }[a.direction] || a.direction}` : `${a.structure_name}${a.legs_text ? ` (${a.legs_text})` : ""} · ${a.underlying} ${a.expiry_kind}`} · ${a.lots} lot(s) · ${how}` }),
           h("dt", { text: "Exit rules" }), h("dd", { text: risk }),
           h("dt", { text: "Position" }), h("dd", { text: book ? `${book.phase}${book.pnl != null ? ` · P&L ${fnoRupees(book.pnl)}` : ""} · margin about ${rupees(book.margin)} · since ${book.opened}` : "flat" }),
           h("dt", { text: "Realised" }), h("dd", { text: `${fnoRupees(a.realized)} over ${a.trades} trade(s), after charges` })),
@@ -3126,34 +3126,93 @@
     });
   }
 
+  // A leg's strike in words, counted from the money: ATM, ATM+2, ATM−3.
+  function strikeWords(n) { return !n ? "ATM" : `ATM${n > 0 ? "+" : "−"}${Math.abs(n)}`; }
+  function legsWords(legs) {
+    return legs.map((g) => `${g.side === "BUY" ? "Buy" : "Sell"} ${g.lots > 1 ? g.lots + "× " : ""}${g.type === "FUT" ? "Futures" : `${strikeWords(g.strikes)} ${g.type}`}${g.expiry === "far" && g.type !== "FUT" ? " (next expiry)" : ""}`).join(", ");
+  }
+  // Option strategy picker: presets grouped by market view, then "Your own strategy".
+  function structureOptions(select, list) {
+    select.replaceChildren(...[["sideways", "Neutral: sell premium"], ["volatile", "Big move either way: buy premium"], ["bull", "Bullish"], ["bear", "Bearish"], ["custom", "Your own"]].map(([key, label]) =>
+      h("optgroup", { label }, list.filter((x) => (key === "custom" ? x.custom : x.custom ? false : key === "volatile" ? x.markets.includes("bull") && x.markets.includes("bear") && !x.bias
+        : key === "sideways" ? !x.bias && x.markets.includes("sideways") : x.bias === key)).map((x) => h("option", { value: x.key, text: x.name })))));
+  }
+
   function startStructures() {
     startChainHistory();
     const form = $("#form-sbt");
     $("#sbt-exits").replaceWith(Object.assign(exitRulesBox(true), { id: "sbt-exits" }));
     const list = state.app.structures;
-    form.structure.replaceChildren(...[["sideways", "Neutral: sell premium"], ["volatile", "Big move either way: buy premium"], ["bull", "Bullish"], ["bear", "Bearish"]].map(([key, label]) =>
-      h("optgroup", { label }, list.filter((x) => (key === "volatile" ? x.markets.includes("bull") && x.markets.includes("bear") && !x.bias
-        : key === "sideways" ? !x.bias && x.markets.includes("sideways") : x.bias === key)).map((x) => h("option", { value: x.key, text: x.name })))));
+    structureOptions(form.structure, list);
     strategyOptions(form.strategy, (x) => !x.intraday_only); form.strategy.value = "supertrend";
     const today = state.app.today, from = new Date(today); from.setFullYear(from.getFullYear() - 2);
     form.start.value = from.toISOString().slice(0, 10); form.end.value = today;
+    // -- leg editor: every preset's legs, editable; "custom" starts from whatever legs are on screen --
+    const legBody = $("#sbt-legs tbody");
+    let edited = false, spotNow = null;
+    const isCustom = () => form.structure.value === "custom";
+    const offsetOf = (text) => { const k = Number(form.k.value || 0), w = Number(form.w.value || 1);
+      return (text.startsWith("-") ? -1 : 1) * ((text.includes("k") ? k : 0) + (text.includes("w") ? w : 0)); };
+    const presetLegs = (x) => x.legs.map(([action, type, off, ratio, series]) => ({ side: action > 0 ? "BUY" : "SELL", type, strikes: type === "FUT" ? 0 : offsetOf(off), lots: ratio || 1, expiry: series || "near" }));
+    const strikeText = (n) => strikeWords(n) + (spotNow && spotNow.atm ? ` (${inr.format(spotNow.atm + n * spotNow.step)})` : "");
+    const select = (name, value, options) => h("select", { name, "aria-label": name.slice(4) }, ...options.map(([v, t]) => h("option", { value: v, text: t, selected: String(v) === String(value) })));
+    const legRow = (leg) => {
+      const lo = Math.min(-40, leg.strikes), hi = Math.max(40, leg.strikes), strikes = [];
+      for (let n = hi; n >= lo; n -= 1) strikes.push([n, strikeText(n)]);
+      const row = h("tr", {},
+        h("td", {}, select("leg_side", leg.side, [["BUY", "Buy"], ["SELL", "Sell"]])),
+        h("td", {}, select("leg_type", leg.type, [["CE", "Call (CE)"], ["PE", "Put (PE)"], ["FUT", "Futures"]])),
+        h("td", {}, select("leg_strikes", leg.strikes, strikes)),
+        h("td", {}, h("input", { name: "leg_lots", type: "number", min: "1", max: "10", step: "1", value: leg.lots, style: "width:4.5em", "aria-label": "lots" })),
+        h("td", {}, select("leg_expiry", leg.expiry, [["near", "This expiry"], ["far", "Next expiry"]])),
+        h("td", {}, h("button", { type: "button", text: "Remove", onclick: () => { row.remove(); legsChanged(); } })));
+      const futures = () => { $("select[name=leg_strikes]", row).disabled = $("select[name=leg_type]", row).value === "FUT"; $("select[name=leg_expiry]", row).disabled = $("select[name=leg_type]", row).value === "FUT"; };
+      row.addEventListener("change", () => { futures(); legsChanged(); });
+      futures();
+      return row;
+    };
+    const readLegs = () => $$("tr", legBody).map((row) => {
+      const type = $("select[name=leg_type]", row).value;
+      return { side: $("select[name=leg_side]", row).value, type, strikes: type === "FUT" ? 0 : Number($("select[name=leg_strikes]", row).value),
+        lots: Number($("input[name=leg_lots]", row).value || 1), expiry: type === "FUT" ? "near" : $("select[name=leg_expiry]", row).value };
+    });
+    const fillLegs = (legs) => legBody.replaceChildren(...legs.map(legRow));
+    const ownLegs = () => (edited || isCustom() ? readLegs() : undefined);
+    function legsChanged() { edited = true; sync(); }
+    const resetLegs = () => { const x = list.find((y) => y.key === form.structure.value); edited = false; if (!x.custom) fillLegs(presetLegs(x)); sync(); };
+    const loadSpot = async () => {
+      spotNow = null;
+      try { spotNow = await api(`/options/spot?underlying=${encodeURIComponent(form.underlying.value)}`); } catch { /* labels stay relative */ }
+      const keep = readLegs(); fillLegs(keep);
+      $("#sbt-legs-spot").textContent = spotNow && spotNow.spot ? `${form.underlying.value} ${inr2.format(spotNow.spot)} now, ATM ${inr.format(spotNow.atm)} (${spotNow.source}).` : "Log in to Kite to see today's strike prices.";
+    };
+    $("#sbt-leg-add").addEventListener("click", () => { legBody.append(legRow({ side: "SELL", type: "CE", strikes: 0, lots: 1, expiry: "near" })); legsChanged(); });
+    $("#sbt-leg-reset").addEventListener("click", resetLegs);
+    form.k.addEventListener("input", () => { if (!edited) resetLegs(); });
+    form.w.addEventListener("input", () => { if (!edited) resetLegs(); });
     const sync = () => {
-      const x = list.find((y) => y.key === form.structure.value), mode = form.mode.value;
-      $("#sbt-desc").replaceChildren(h("span", { text: x.about }), marketBadges(x.markets));
+      const x = list.find((y) => y.key === form.structure.value), mode = form.mode.value, legs = readLegs();
+      const yours = (edited && !x.custom) ? h("span", { text: " Your strikes: " + legsWords(legs) + "." }) : null;
+      $("#sbt-desc").replaceChildren(...[h("span", { text: x.about }), yours, x.custom ? null : marketBadges(x.markets)].filter(Boolean));
       $$(".sbt-intraday", form).forEach((el) => { el.hidden = mode !== "intraday"; });
       $$(".sbt-daily", form).forEach((el) => { el.hidden = mode === "intraday"; });
       $$(".sbt-signal", form).forEach((el) => { el.hidden = mode !== "signal"; });
       $$(".sbt-days", form).forEach((el) => { el.hidden = mode === "signal"; });
       [...form.mode.options].find((o) => o.value === "signal").disabled = !x.bias;
       if (mode === "signal" && !x.bias) form.mode.value = "positional";
-      form.k.closest("label").hidden = !x.uses_k; form.w.closest("label").hidden = !x.uses_w;
+      form.k.closest("label").hidden = !x.uses_k || edited || x.custom; form.w.closest("label").hidden = !x.uses_w || edited || x.custom;
       form.k.min = x.min_k || 0; if (Number(form.k.value) < (x.min_k || 0)) form.k.value = x.min_k;
-      $$(".sbt-far", form).forEach((el) => { el.hidden = !x.calendar; });
+      $$(".sbt-far", form).forEach((el) => { el.hidden = !legs.some((g) => g.expiry === "far" && g.type !== "FUT"); });
+      $("#sbt-leg-reset").hidden = x.custom || !edited;
     };
-    form.structure.addEventListener("change", () => { const x = list.find((y) => y.key === form.structure.value); form.w.value = x.w; sync(); });
+    form.structure.addEventListener("change", () => {
+      const x = list.find((y) => y.key === form.structure.value);
+      if (x.custom) { if (!legBody.children.length) fillLegs([{ side: "SELL", type: "CE", strikes: 2, lots: 1, expiry: "near" }, { side: "SELL", type: "PE", strikes: -2, lots: 1, expiry: "near" }]); sync(); return; }
+      form.w.value = x.w; resetLegs();
+    });
     form.mode.addEventListener("change", sync);
-    form.underlying.addEventListener("change", () => { if (!["NIFTY", "SENSEX"].includes(form.underlying.value)) form.expiry_kind.value = "monthly"; });
-    sync();
+    form.underlying.addEventListener("change", () => { if (!["NIFTY", "SENSEX"].includes(form.underlying.value)) form.expiry_kind.value = "monthly"; loadSpot(); });
+    resetLegs(); loadSpot();
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const button = $("button[type=submit]", form); showError("#sbt-error", null); syncSharedDates(); busy(button, true, "Running…");
@@ -3162,7 +3221,8 @@
       const body = { structure: form.structure.value, underlying: form.underlying.value, mode: form.mode.value, start: form.start.value, end: form.end.value,
         expiry_kind: form.expiry_kind.value, interval: form.interval.value, entry_time: form.entry_time.value, exit_time: form.exit_time.value,
         min_days: num("min_days"), exit_days_before: num("exit_days_before"), strategy: form.strategy.value, weekdays,
-        k: num("k"), w: num("w"), leg_exits: $("#sbt-exits").read(), leg_scope: form.leg_scope.value, stop_pct: num("stop_pct"), target_pct: num("target_pct"), lots: num("lots"),
+        k: num("k"), w: num("w"), legs: ownLegs(), leg_exits: $("#sbt-exits").read(), leg_scope: form.leg_scope.value, stop_pct: num("stop_pct"), target_pct: num("target_pct"),
+        stop_rs: num("stop_rs"), target_rs: num("target_rs"), lots: num("lots"),
         margin_pct: num("margin_pct"), iv_scale: num("iv_scale"), skew: num("skew"), slippage_pct: num("slippage_pct"), capital: num("capital"),
         premiums: form.premiums.value };
       try { const r = await api("/backtest/structure", { method: "POST", body }); $("#bt-structures").append($("#bt-result")); renderBacktest(r); offerDeploy("structure", body, r); }
@@ -3174,7 +3234,7 @@
       showError("#sbt-error", null); busy(button, true, "Working…");
       const opt = (name) => (form[name].value === "" ? null : Number(form[name].value));
       const body = { structure: form.structure.value, underlying: form.underlying.value, expiry_kind: form.expiry_kind.value,
-        k: Number(form.k.value || 0), w: Number(form.w.value || 1), lots: Number(form.lots.value || 1), margin_pct: Number(form.margin_pct.value || 12),
+        k: Number(form.k.value || 0), w: Number(form.w.value || 1), legs: ownLegs(), lots: Number(form.lots.value || 1), margin_pct: Number(form.margin_pct.value || 12),
         iv_scale: Number(form.iv_scale.value || 1), spot: opt("spot"), iv_pct: opt("iv_pct"), days: opt("days"), far_days: opt("far_days"), premiums, labels };
       if (premiums && lastPayoff) Object.assign(body, { spot: lastPayoff.spot, iv_pct: lastPayoff.iv_pct, days: lastPayoff.days, far_days: lastPayoff.far_days });
       try { lastPayoff = await api("/options/payoff", { method: "POST", body }); renderPayoff(lastPayoff); }
@@ -3227,7 +3287,7 @@
     $("#sbt-payoff-legs").replaceChildren(table([
       { label: "Side", get: (g) => g.side, tone: (g) => (g.side === "BUY" ? "pos" : "neg") },
       { label: "Lots", num: true, get: (g) => g.lots }, { label: "Qty", num: true, get: (g) => g.quantity },
-      { label: "Contract", get: (g) => (g.type === "FUT" ? "Futures" : `${inr.format(g.strike)} ${g.type}`) },
+      { label: "Contract", get: (g) => (g.type === "FUT" ? "Futures" : `${inr.format(g.strike)} ${g.type} (${strikeWords(g.strikes)})`) },
       { label: "Expiry", get: (g) => `${g.expiry === "far" ? "Far" : "Near"} (${g.days.toFixed(1)} d)` },
       { label: "Premium", num: true, get: (g) => inr2.format(g.premium) },
       { label: "Price from", get: (g) => premiumSource(g.source) },

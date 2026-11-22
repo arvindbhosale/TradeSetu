@@ -2236,7 +2236,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             slippage_pct=_number(payload, "slippage_pct", 1.0), holidays=frozenset(market.HOLIDAYS),
             leg_exits=risk.from_payload(payload.get("leg_exits"), "Each leg",
                                         legacy={"stop_loss": _number(payload, "leg_sl_pct", 0)}),
-            leg_scope=str(payload.get("leg_scope") or "sold"))
+            leg_scope=str(payload.get("leg_scope") or "sold"), legs=payload.get("legs") or None,
+            stop_rs=_number(payload, "stop_rs", 0), target_rs=_number(payload, "target_rs", 0))
         m = result["metrics"]
         notes = [f"Index candles from {source}.", _premium_note(result.get("pricing"), premiums, mode, underlying,
                                                               _number(payload, "iv_scale", 1.0))]
@@ -2306,6 +2307,31 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         chain_history.stop()
         return chain_history.job
 
+    def _index_spot(underlying: str) -> tuple[float, str]:
+        """The index's latest price and where it came from: Kite's last price, else Yahoo's last close."""
+        from . import options as opt
+        if kite.connected:
+            with contextlib.suppress(KiteError):
+                spot = float(kite.ltp([opt.SPOT[underlying]]).get(opt.SPOT[underlying]) or 0)
+                if spot > 0:
+                    return spot, "index price from Kite"
+        if underlying in opt.YAHOO_SPOT:
+            with contextlib.suppress(data.NoData, KeyError, IndexError):
+                return float(data.history(opt.YAHOO_SPOT[underlying], fetch=fetch)["Close"].iloc[-1]), "index price: last close from Yahoo"
+        return 0.0, ""
+
+    @app.get("/api/options/spot")
+    def option_spot(underlying: str = "NIFTY"):
+        """The index's price and at-the-money strike now, so the leg editor can show each strike's price today."""
+        from . import options as opt
+        underlying = underlying.upper()
+        if underlying not in opt.SPOT:
+            raise ValueError(f"underlying must be one of {', '.join(opt.SPOT)}")
+        spot, source = _index_spot(underlying)
+        step = opt.STRIKE_STEP.get(underlying, 50)
+        return {"underlying": underlying, "spot": round(spot, 2) if spot else None, "step": step,
+                "atm": round(spot / step) * step if spot else None, "source": source}
+
     @app.post("/api/options/payoff")
     def option_payoff(payload: dict):
         """One option structure worked out now: legs, payoff, breakevens, maximum profit and loss, Greeks, margin."""
@@ -2317,19 +2343,14 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if underlying not in opt.SPOT:
             raise ValueError(f"underlying must be one of {', '.join(opt.SPOT)}")
         structure = str(payload.get("structure", ""))
-        if structure not in optstrat.STRUCTURES:
-            raise ValueError(f"structure must be one of {', '.join(optstrat.STRUCTURES)}")
+        own = payload.get("legs") or None
+        specs = optstrat.legs_for(structure, int(_number(payload, "k", 2)), int(_number(payload, "w", 4)), own)
         sources = []
         spot = _number(payload, "spot", 0)
-        if spot <= 0 and kite.connected:
-            with contextlib.suppress(KiteError):
-                spot = float(kite.ltp([opt.SPOT[underlying]]).get(opt.SPOT[underlying]) or 0)
-                if spot > 0:
-                    sources.append("index price from Kite")
-        if spot <= 0 and underlying in opt.YAHOO_SPOT:
-            with contextlib.suppress(data.NoData, KeyError, IndexError):
-                spot = float(data.history(opt.YAHOO_SPOT[underlying], fetch=fetch)["Close"].iloc[-1])
-                sources.append("index price: last close from Yahoo")
+        if spot <= 0:
+            spot, said = _index_spot(underlying)
+            if said:
+                sources.append(said)
         if spot <= 0:
             raise ValueError(f"No price for {underlying}. Type the index level in Spot, or log in to Kite.")
         iv_pct = _number(payload, "iv_pct", 0)
@@ -2352,7 +2373,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if days in (None, ""):
             days = max((near - moment).total_seconds() / 86400, 0.0)
             sources.append(f"near expiry {near:%a %d %b}")
-        if far_days in (None, "") and any(x["series"] == "far" for x in optstrat.leg_specs(structure)):
+        if far_days in (None, "") and any(x["series"] == "far" for x in specs):
             base = moment + pd.Timedelta(days=float(_number(payload, "days", days)))
             far = optstrat.expiry_after(underlying, max(base, near) + pd.Timedelta(minutes=1), expiry_kind, 0.0, holidays)
             far_days = (far - moment).total_seconds() / 86400
@@ -2372,7 +2393,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             return optstrat.analyse(
                 underlying, structure, spot=spot, iv=iv_now / 100, days=float(_number({"days": near_days}, "days", 0)),
                 far_days=None if far_now in (None, "") else float(_number({"far_days": far_now}, "far_days", 0)),
-                premiums=given, labels=given_labels, **args)
+                premiums=given, labels=given_labels, legs=own, **args)
 
         result = work(iv_pct, days, far_days, premiums, labels)
         notes = []
@@ -2716,7 +2737,11 @@ def _structures() -> list:
     return [{"key": k, "name": v["name"], "about": v["about"], "markets": list(v["markets"]), "bias": v.get("bias"),
              "w": v.get("w", 4), "min_k": v.get("min_k", 0), "legs": [list(leg) for leg in v["legs"]],
              "uses_k": any("k" in leg[2] for leg in v["legs"]), "uses_w": any("w" in leg[2] for leg in v["legs"]),
-             "calendar": any(len(leg) > 4 and leg[4] == "far" for leg in v["legs"])} for k, v in STRUCTURES.items()]
+             "calendar": any(len(leg) > 4 and leg[4] == "far" for leg in v["legs"])} for k, v in STRUCTURES.items()] + [
+        {"key": "custom", "name": "Your own strategy (build the legs)", "custom": True, "markets": [], "bias": None, "w": 4,
+         "min_k": 0, "legs": [], "uses_k": False, "uses_w": False, "calendar": False,
+         "about": "Pick every leg yourself: Buy or Sell, Call, Put or Futures, the strike counted from the money, lots "
+                  "and expiry."}]
 
 
 def _screens() -> list:

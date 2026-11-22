@@ -721,11 +721,22 @@
           <label>Hedge strikes further out (bought legs) <input name="w" type="number" min="1" max="60" value="4"></label>
           <label>Lots <input name="lots" type="number" min="1" max="50" value="1" required></label>
         </div>
+        <h3>Legs</h3>
+        <p class="hint">Change any leg's strike, or add and remove legs. A strike is counted from the at-the-money strike when the trade opens: ATM+2 is two strikes above, ATM−3 three below. The backtest picks the strike again on every entry, because a fixed strike such as 24,000 would be far from the money on most days of a long backtest. The price in brackets is that strike today.</p>
+        <div class="scroll legs-wrap"><table class="legs-edit" id="sbt-legs"><thead><tr><th>Buy or Sell</th><th>Option</th><th>Strike</th><th>Lots</th><th>Expiry</th><th></th></tr></thead><tbody></tbody></table></div>
+        <div class="row">
+          <button type="button" id="sbt-leg-add">Add leg</button>
+          <button type="button" id="sbt-leg-reset">Reset to the strategy's legs</button>
+          <span class="hint" id="sbt-legs-spot"></span>
+        </div>
         <h3>Exit rules for each leg</h3>
         <div class="row"><label>Apply to <select name="leg_scope"><option value="sold">Sold legs</option><option value="bought">Bought legs</option><option value="all">Every leg</option></select></label></div>
         <div id="sbt-exits"></div>
         <h3>Exit rules for the whole position</h3>
+        <p class="hint">Closes every leg when the profit or loss of the whole position (legs already closed plus open legs, before charges) reaches this. 0 is off.</p>
         <div class="row">
+          <label>Stoploss (₹) <input name="stop_rs" type="number" min="0" step="500" value="0"></label>
+          <label>Target (₹) <input name="target_rs" type="number" min="0" step="500" value="0"></label>
           <label>Stoploss, % of premium received or paid <input name="stop_pct" type="number" min="0" max="1000" step="5" value="0"></label>
           <label>Target, % of premium received or paid <input name="target_pct" type="number" min="0" max="100" step="5" value="0"></label>
         </div>
@@ -741,15 +752,15 @@
         <div class="row">
           <label class="bt-own" hidden>Capital (₹) <input name="capital" type="number" min="10000" step="10000" value="500000" required></label>
           <button class="primary" type="submit">Run backtest</button>
+          <button type="button" id="sbt-payoff">Payoff now</button>
         </div>
-        <details class="advanced"><summary>Payoff now (today's market)</summary>
-        <p class="hint">Works out the strategy above on today's market: strikes, premiums, profit and loss at expiry, breakevens, Greeks and margin. Leave a box empty to use the latest index price, India VIX × the volatility factor, and the next expiry.</p>
+        <details class="advanced"><summary>Advanced: Payoff now on your own market levels</summary>
+        <p class="hint">Payoff now works out the legs above on today's market: strikes, premiums, profit and loss at expiry, breakevens, Greeks and margin. Leave a box empty to use the latest index price, India VIX × the volatility factor, and the next expiry.</p>
         <div class="row">
           <label>Spot <input name="spot" type="number" min="0" step="0.05" placeholder="latest"></label>
           <label>IV % <input name="iv_pct" type="number" min="1" max="300" step="0.1" placeholder="India VIX"></label>
           <label>Days to expiry <input name="days" type="number" min="0" max="400" step="0.25" placeholder="next expiry"></label>
           <label class="sbt-far">Days to far expiry <input name="far_days" type="number" min="0" max="400" step="0.25" placeholder="the expiry after"></label>
-          <button type="button" id="sbt-payoff">Payoff now</button>
         </div>
         </details>
       </form>
