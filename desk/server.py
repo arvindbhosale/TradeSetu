@@ -74,6 +74,7 @@ from .scanner import Scanner
 from .sectors import Sectors
 from .settings import Settings, home
 from .stockinfo import stock_view
+from .supervisor import Supervisor
 from .tradenotes import MISTAKES, TradeNotes
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,19 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     algos.extra_live.append(fno_algos.live_names)
     desk.algo_claims = fno_algos.claimed
     algos.extra_ticks.append(desk.close_paper_mcx)
+
+    def supervisor_ask(prompt: str) -> str:
+        from tradingagents.llm_clients import create_tier_client
+
+        reply = create_tier_client({**settings.agent_config(), "llm_max_retries": 1, "max_tokens": 1000},
+                                   "quick").get_llm().invoke(prompt)
+        content = reply.content
+        if isinstance(content, list):          # providers that answer in blocks
+            content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+        return str(content)
+
+    supervisor = Supervisor(desk, algos, fno_algos, ask=supervisor_ask, llm_problem=lambda: llm_ready())
+    algos.extra_ticks.append(supervisor.tick)
     hosted = auth is not None
     passkeys = Passkeys(home() / "passkeys.json", auth.username) if hosted else None
     local_hosts = ("127.0.0.1", "localhost", "::1", "testserver")
@@ -171,6 +185,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     app.state.tools = tools
     app.state.financials = financials
     app.state.fno_algos = fno_algos
+    app.state.supervisor = supervisor
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -1198,6 +1213,32 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     def algo_delete(algo_id: str):
         algos.delete(algo_id)
         return {"ok": True}
+
+    @app.post("/api/algos/{algo_id}/exit")
+    def algo_exit(algo_id: str):
+        return algos.request_exit(algo_id)
+
+    @app.post("/api/algos/{algo_id}/release")
+    def algo_release(algo_id: str):
+        return algos.release_hold(algo_id)
+
+    @app.post("/api/fno-algos/{algo_id}/release")
+    def fno_algo_release(algo_id: str):
+        return fno_algos.release_hold(algo_id)
+
+    # -- supervisor: watches the algos, may hold entries or close positions, never opens one ----
+
+    @app.get("/api/supervisor")
+    def supervisor_status():
+        return supervisor.status()
+
+    @app.post("/api/supervisor/review")
+    def supervisor_review():
+        return supervisor.review(background=True)
+
+    @app.post("/api/supervisor/check")
+    def supervisor_check():
+        return {"actions": supervisor.check_rules()}
 
     @app.get("/api/algos/{algo_id}/phrase")
     def algo_phrase(algo_id: str):

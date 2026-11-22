@@ -293,6 +293,7 @@
   <div class="seg sub-seg" id="algo-kind" role="group" aria-label="Algo type">
     <button data-kind="stocks" aria-pressed="true">Stocks</button>
     <button data-kind="fno" aria-pressed="false">Options &amp; Futures</button>
+    <button data-kind="supervisor" aria-pressed="false">Supervisor</button>
   </div>
   <div id="algo-stocks">
   <div class="panel">
@@ -389,6 +390,38 @@
     </div>
     <div class="panel note">
       <strong>Before you run one live.</strong> Option prices come only from Kite, so a paper F&amp;O algo needs Kite too. <strong>MCX metals</strong> run in the MCX session (09:00 to 23:30, or 23:55 while the US is on winter time) with entry and exit times up to 23:25, take funds from Kite's commodity segment, and close every contract once it is within the delivery cut-off in Settings (8 days by default): gold and silver contracts are physically delivered and Zerodha does not take retail positions into delivery. Since 1 April 2026 Kite accepts API orders only from a static IP registered on your Kite Connect app (IP Whitelist), at most 10 a second: run kite-mcp-server on a machine with that IP. A live algo needs a maximum loss; when the position's loss with charges reaches it every leg is closed and the algo waits for the next day. Structures that sell options with no bought option to cover them run live only when Settings allows naked F&amp;O shorts. Margin is Zerodha's own figure for the legs (SPAN plus exposure, with the hedge benefit) when the Kite server has the margin calculator, as the desk's own kite-mcp-server does; otherwise it is the desk's estimate, and says so. Zerodha decides at order time, and a refused leg unwinds the entry. Every leg is closed at the exit time on its expiry day. <strong>Exit</strong> closes everything now, even with the kill switch on.
+    </div>
+  </div>
+  <div id="algo-supervisor" hidden>
+    <div class="panel">
+      <h2>Supervisor</h2>
+      <p class="hint">Watches your running algos and steps in only to cut risk. It can <strong>hold</strong> an algo (no new buys or entries for the rest of the day; its stoploss, target and square-off keep working), <strong>close</strong> an algo's position and stop it, or turn the <strong>kill switch</strong> on. It never opens a trade, starts an algo, changes its size or settings, goes live, or switches the kill switch off. Your algos still place every order.</p>
+      <form id="form-supervisor">
+        <div class="row">
+          <label>Mode <select name="supervisor_mode">
+            <option value="off">Off</option>
+            <option value="watch">Watch: alerts and suggestions only</option>
+            <option value="protect">Protect: may hold algos and close positions</option>
+          </select></label>
+          <label>Close a stock algo's position this far below its buy price, % (0 = off) <input name="supervisor_loss_pct" type="number" min="0" max="50" step="0.5"></label>
+        </div>
+        <label class="check"><input type="checkbox" name="supervisor_ai"> Also ask the AI (the service in Settings → AI) to review the algos in market hours</label>
+        <div class="row">
+          <label>AI review every (minutes) <input name="supervisor_minutes" type="number" min="5" max="120" step="1"></label>
+          <label>Most AI actions a day <input name="supervisor_max_actions" type="number" min="0" max="20" step="1"></label>
+        </div>
+        <label class="check danger"><input type="checkbox" name="supervisor_live"> In Protect mode, act on live algos too (real money). Off: live algos get suggestions only.</label>
+        <div class="row"><button class="primary" type="submit">Save</button><button type="button" id="sup-check">Check now</button><button type="button" id="sup-review">Ask the AI now</button><span class="hint" id="sup-state"></span></div>
+      </form>
+      <div id="sup-error" class="error" hidden></div>
+    </div>
+    <div class="panel">
+      <div class="jobhead"><h2>What it did</h2><button id="sup-refresh" type="button">Refresh</button></div>
+      <div id="sup-reviews"></div>
+      <div id="sup-log"></div>
+    </div>
+    <div class="panel note">
+      <strong>How far to trust it.</strong> The fixed rules (the % backstop above; near 80% of the daily loss limit every algo on that account stops new entries; an F&amp;O algo near its maximum loss is flagged) need no AI and act the same way every time. The AI review is a second opinion: a language model reads the algos' state and may be wrong, so its answers are checked (only the four actions, only real algos, a reason each), it acts on paper algos unless you allow live ones, and it has a daily cap. An AI's trading judgement cannot be backtested honestly, so run it on paper first. Each review is one request to your AI service and costs what that service charges. Your broker still needs your login every morning.
     </div>
   </div>
 </section>
