@@ -263,6 +263,7 @@ class AlgoEngine:
             if enabled:
                 self._strategy(algo)             # a deleted custom strategy stops it here, not mid-session
             algo["enabled"] = bool(enabled)
+            algo["exit_requested"] = False
             algo["status"] = "Running" if enabled else "Stopped"
             self._log(algo, "Started." if enabled else "Stopped.")
             self._retry_at.pop(algo_id, None)
@@ -290,6 +291,56 @@ class AlgoEngine:
             algo.update(position=0, average_price=0.0, pending=None, queued=None, protect=None, seen_flat=False)
             self._save()
             return json.loads(json.dumps(algo))
+
+    def request_exit(self, algo_id: str, reason: str = "Exit pressed") -> dict:
+        """Sell what the algo holds at the next chance inside market hours, then stop it. Works with the kill
+        switch on: it only ever sells."""
+        with self._lock:
+            algo = self.get(algo_id)
+            if not algo["enabled"]:
+                raise AlgoError("This algo is stopped, so nothing watches its position. Start it, or sell the "
+                                "shares yourself and press Clear position.")
+            algo["queued"] = None if (algo["queued"] or {}).get("side") == "BUY" else algo["queued"]
+            algo["exit_requested"] = True
+            self._log(algo, f"{reason}: selling what it holds, then stopping.")
+            self._retry_at.pop(algo_id, None)
+            self._save()
+        return self.evaluate(algo_id)["algo"]
+
+    def hold_entries(self, algo_id: str, until: str, reason: str) -> dict:
+        """Take no new buy up to and including the day ``until`` (YYYY-MM-DD). Exits keep working."""
+        with self._lock:
+            algo = self.get(algo_id)
+            algo["hold_until"] = max(until, algo.get("hold_until") or "")
+            self._log(algo, f"New buys held until the end of {algo['hold_until']}: {reason}.")
+            self._save()
+            return json.loads(json.dumps(algo))
+
+    def release_hold(self, algo_id: str) -> dict:
+        with self._lock:
+            algo = self.get(algo_id)
+            if algo.get("hold_until"):
+                algo["hold_until"] = None
+                self._log(algo, "New buys allowed again.")
+                self._save()
+            return json.loads(json.dumps(algo))
+
+    def _held(self, algo: dict) -> bool:
+        return bool(algo.get("hold_until")) and self._now().strftime("%Y-%m-%d") <= algo["hold_until"]
+
+    def _exit(self, algo: dict) -> dict:
+        """One step of an exit request: sell inside market hours, stop once flat."""
+        if not algo["position"]:
+            algo.update(enabled=False, exit_requested=False, queued=None)
+            return self._result(algo, "Stopped", True, "Flat after the exit request: stopped.")
+        if not self.desk.window_status()["market"]:
+            return self._result(algo, "Running: exit waits for the market to open", True)
+        outcome = self._send(algo, "SELL", "exit requested", fallback_price=algo["average_price"] or None)
+        if not algo["position"] and not algo["pending"]:
+            algo.update(enabled=False, exit_requested=False, queued=None)
+            self._log(algo, "Flat after the exit request: stopped.")
+            return {"status": "Stopped", "done": True}
+        return outcome
 
     def _strategy(self, algo: dict):
         try:
@@ -325,6 +376,8 @@ class AlgoEngine:
         return {"status": status, "done": done}
 
     def _step(self, algo: dict, force: bool) -> dict:
+        if algo.get("exit_requested") and not algo["position"] and not algo["pending"]:
+            return self._exit(algo)
         if self.desk.settings.get("kill_switch") and not algo["position"] and not algo["pending"]:
             # Nothing to close: with the kill switch on there is nothing for it to do.
             return self._result(algo, "Blocked: kill switch is on", False, "Skipped: the kill switch is on.")
@@ -338,6 +391,8 @@ class AlgoEngine:
                 return self._result(algo, f"Blocked: {why}", False, f"Could not check the pending order: {why}.")
             if not settled:
                 return self._result(algo, "Waiting for a pending order", False)
+        if algo.get("exit_requested"):
+            return self._exit(algo)
         return self._daily(algo, force) if algo["interval"] == "1d" else self._intraday(algo, force)
 
     def _holding(self, algo: dict) -> str:
@@ -398,6 +453,9 @@ class AlgoEngine:
                 return self._result(algo, f"Running: {side} queued for {cfg['trade_start']}", True)
             if side == "BUY" and cfg["kill_switch"]:
                 return self._result(algo, "Blocked: kill switch is on", False, "BUY held back: the kill switch is on.")
+            if side == "BUY" and self._held(algo):
+                return self._result(algo, "Running: new buys held", True,
+                                    f"BUY held back: new buys are held until the end of {algo['hold_until']}.")
             return self._send(algo, side, algo["queued"]["reason"])
 
         # 2. Read the latest finished daily candle.
@@ -456,6 +514,11 @@ class AlgoEngine:
             algo["queued"] = {"side": side, "reason": reason}
             return self._result(algo, "Blocked: kill switch is on", False,
                                 f"{last_bar}: BUY signal held back: the kill switch is on.")
+        if side == "BUY" and self._held(algo):
+            algo["queued"] = {"side": side, "reason": reason}
+            return self._result(algo, "Running: new buys held", True,
+                                f"{last_bar}: BUY signal held back: new buys are held until the end of "
+                                f"{algo['hold_until']}.")
         if cfg["enforce_trade_window"]:
             allowed = window["entries"] if side == "BUY" else window["market"]
             if not allowed:
@@ -507,7 +570,8 @@ class AlgoEngine:
 
         # 3b. A re-entry after a stoploss, while the strategy still says buy.
         if (algo.get("rearm") and (algo["last_signal"] or {}).get("target") == 1 and window["entries"]
-                and not self.desk.settings.get("kill_switch") and self._reentry_due(algo, price)):
+                and not self.desk.settings.get("kill_switch") and not self._held(algo)
+                and self._reentry_due(algo, price)):
             self._mark_entry(algo, reentry=True)
             return self._send(algo, "BUY", f"re-entry after stoploss at ₹{price:,.2f}", fallback_price=price)
 
@@ -553,6 +617,10 @@ class AlgoEngine:
             if self.desk.settings.get("kill_switch"):
                 return self._result(algo, "Blocked: kill switch is on", False,
                                     f"{last_bar}: BUY signal not taken: the kill switch is on.")
+            if self._held(algo):
+                return self._result(algo, "Running: new buys held", True,
+                                    f"{last_bar}: BUY signal not taken: new buys are held until the end of "
+                                    f"{algo['hold_until']}.")
             if not window["entries"]:
                 return self._result(algo, "Running: outside the entry window", True,
                                     f"{last_bar}: BUY signal outside {cfg['trade_start']}-{cfg['trade_end']}; not taken.")
@@ -801,6 +869,10 @@ class AlgoEngine:
             for algo in self._algos.values():
                 if not algo["enabled"] or self._retry_at.get(algo["id"], now) > now:
                     continue
+                if algo.get("exit_requested"):
+                    if market.OPEN <= clock < market.CLOSE or not algo["position"]:
+                        out.append(algo["id"])
+                    continue
                 if algo["interval"] != "1d":
                     if market.OPEN <= clock < market.CLOSE or algo["position"]:
                         out.append(algo["id"])
@@ -894,4 +966,5 @@ _BLANK = {
     "position": 0, "average_price": 0.0, "seen_flat": False, "blocked": False,
     "pending": None, "queued": None, "protect": None,
     "last_bar": None, "last_signal": None, "status": "Stopped", "log": [],
+    "exit_requested": False, "hold_until": None,
 }

@@ -339,7 +339,7 @@ class FnoAlgoEngine:
             self._save()
             return _copy(algo)
 
-    def request_exit(self, algo_id: str) -> dict:
+    def request_exit(self, algo_id: str, reason: str = "Exit pressed") -> dict:
         """The algo's own kill switch: close every leg now, then stop."""
         with self._lock:
             algo = self.get(algo_id)
@@ -348,10 +348,28 @@ class FnoAlgoEngine:
                 self._log(algo, "Exit pressed with nothing open: stopped.")
             else:
                 algo["exit_requested"] = True
-                self._log(algo, "Exit pressed: closing every leg, then stopping.")
+                self._log(algo, f"{reason}: closing every leg, then stopping.")
                 self._save()
                 return self.evaluate(algo_id)["algo"]
             self._save()
+            return _copy(algo)
+
+    def hold_entries(self, algo_id: str, until: str, reason: str) -> dict:
+        """Open nothing new up to and including the day ``until`` (YYYY-MM-DD). Open legs keep their exits."""
+        with self._lock:
+            algo = self.get(algo_id)
+            algo["hold_until"] = max(until, algo.get("hold_until") or "")
+            self._log(algo, f"New entries held until the end of {algo['hold_until']}: {reason}.")
+            self._save()
+            return _copy(algo)
+
+    def release_hold(self, algo_id: str) -> dict:
+        with self._lock:
+            algo = self.get(algo_id)
+            if algo.get("hold_until"):
+                algo["hold_until"] = None
+                self._log(algo, "New entries allowed again.")
+                self._save()
             return _copy(algo)
 
     def delete(self, algo_id: str) -> None:
@@ -683,6 +701,8 @@ class FnoAlgoEngine:
             return "Running: done for today", True
         if self.desk.settings.get("kill_switch"):
             return "Blocked: kill switch is on", False
+        if algo.get("hold_until") and today <= algo["hold_until"]:
+            return "Running: new entries held", True
         direction = self._wanted(algo, force)
         if not direction:
             return "Running: flat", True
@@ -1152,5 +1172,5 @@ class FnoAlgoEngine:
 _BLANK = {
     "enabled": False, "exit_requested": False, "status": "Stopped", "log": [], "book": None,
     "last_entry_day": None, "blocked_day": None, "last_signal": None, "ready": False,
-    "realized": 0.0, "trades": 0, "history": [],
+    "realized": 0.0, "trades": 0, "history": [], "hold_until": None,
 }
