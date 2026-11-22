@@ -466,6 +466,20 @@ export function mountTrade(root, deps) {
     chartDrawn() { st.lines = []; bind(); fillPrice(); drawLines(); },
     priceChanged() { if (st.type === "MARKET") render(); },
     modeChanged() { render(); },
+    /** Whether a press at this height on the price chart is on one of the order lines (they take the press). @param {number} y */
+    claims(y) { return st.visible && st.lines.length > 0 && hit(y) >= 0; },
+    /** Fill the ticket from a Long position drawing: entry as the limit price, its stoploss, target and quantity.
+     * @param {{ side: string, entry: number, stoploss: number, target: number, quantity: number }} plan */
+    fill(plan) {
+      if (plan.side !== "BUY") { show("A short position cannot be placed from the chart: Sell only sells what you hold.", true); root.scrollIntoView({ block: "nearest" }); return; }
+      st.side = "BUY"; st.type = "LIMIT";
+      priceIn.value = String(round(plan.entry));
+      qtyIn.value = String(india() ? Math.max(1, Math.floor(plan.quantity)) : plan.quantity);
+      st.stop = round(plan.stoploss); st.target = round(plan.target);
+      stopIn.value = String(st.stop); targetIn.value = String(st.target);
+      show("Filled from the position drawing. Check it, then press Review buy.", false);
+      render(); drawLines(); root.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    },
     bookChanged,
   };
 }

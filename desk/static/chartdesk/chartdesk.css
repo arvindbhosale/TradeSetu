@@ -6,24 +6,11 @@
 .cd-symbol input { flex: 1; min-width: 0; text-transform: uppercase; }
 .cd-scroll { overflow-x: auto; max-width: 100%; flex-wrap: nowrap; scrollbar-width: none; }
 .cd-scroll button { flex: 0 0 auto; }
-.cd-menu { position: relative; border-top: 0; padding: 0; }
-.cd-adv { padding: 6px 0 0; }
-.cd-btn { list-style: none; cursor: pointer; padding: 8px 14px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); color: var(--text); font-weight: 600; user-select: none; }
-.cd-btn::-webkit-details-marker { display: none; }
-.cd-menu[open] .cd-btn { border-color: var(--accent); color: var(--accent); }
-.cd-drop { position: absolute; z-index: 20; right: 0; top: calc(100% + 6px); width: min(360px, calc(100vw - 32px)); max-height: 70vh; overflow: auto; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow); padding: 12px; display: grid; gap: 10px; }
+.cd-btn { cursor: pointer; padding: 8px 14px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); color: var(--text); font-weight: 600; user-select: none; }
 .cd-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .cd-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--text); font-size: 13px; }
 .cd-x { border: 0; background: transparent; color: var(--text2); font-size: 16px; line-height: 1; padding: 2px 6px; cursor: pointer; border-radius: 999px; }
 .cd-x:hover { background: var(--line); }
-.cd-add { display: flex; flex-wrap: wrap; gap: 6px; }
-.cd-add button { padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-2); color: var(--text); cursor: pointer; font-size: 13px; }
-.cd-add button:hover { border-color: var(--accent); }
-.cd-adv summary { cursor: pointer; color: var(--text2); font-size: 13px; }
-.cd-params { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
-.cd-params legend { font-size: 12px; color: var(--text2); padding: 0 4px; }
-.cd-params label { display: grid; gap: 2px; font-size: 12px; color: var(--text2); }
-.cd-params input { width: 90px; }
 .cd-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; justify-content: space-between; margin: 14px 0 6px; }
 .cd-title { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
 .cd-title strong { font-size: 17px; }
@@ -38,7 +25,10 @@
 .cd-main { width: 100%; height: min(62vh, 560px); min-height: 320px; }
 .cd-pane { width: 100%; height: 140px; }
 .cd-pane:last-child { height: 166px; }
-.cd-pane-title { font-size: 12px; color: var(--text2); margin: 8px 0 2px; }
+.cd-pane-title { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text2); margin: 8px 0 2px; min-width: 0; }
+.cd-pane-name { border: 0; background: transparent; color: var(--text); font: inherit; font-weight: 600; padding: 2px 4px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.cd-pane-name:hover { background: var(--line); }
+.cd-pane-vals { display: flex; gap: 10px; overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; flex: 1; min-width: 0; }
 .cd-credit { margin-top: 8px; }
 @media (max-width: 720px) {
   .cd-bar { gap: 8px; }
@@ -46,7 +36,6 @@
   .cd-main { height: 52vh; min-height: 280px; }
   .cd-pane { height: 110px; }
   .cd-pane:last-child { height: 136px; }
-  .cd-drop { position: fixed; left: 16px; right: 16px; top: auto; bottom: 16px; width: auto; max-height: 65vh; }
   .cd-last { font-size: 18px; }
   .cd-legend { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
   .cd-head { margin-top: 10px; }
@@ -115,6 +104,80 @@
   .cd-watch-open { flex-direction: column; gap: 0; padding: 4px 8px; }
   .cd-ticket input { width: 120px; }
 }
+
+/* One column when there is no watchlist (the classic chart). */
+.cd-grid.cd-solo { grid-template-columns: minmax(0, 1fr); }
+
+/* Legend: each indicator's name opens its settings; ◉ hides it, × removes it. */
+.cd-leg { display: inline-flex; align-items: center; gap: 2px 6px; flex-wrap: wrap; }
+.cd-leg.off { opacity: .55; }
+.cd-leg-name { border: 0; background: transparent; color: var(--text); font: inherit; font-weight: 600; padding: 1px 4px; border-radius: 6px; cursor: pointer; }
+.cd-leg-name:hover { background: var(--line); }
+.cd-leg-btn { border: 0; background: transparent; color: var(--text2); font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 6px; cursor: pointer; }
+.cd-leg-btn:hover { background: var(--line); color: var(--text); }
+.cd-val { display: inline-flex; align-items: center; gap: 0; }
+
+/* Indicators dialog */
+.cd-dialog { width: min(640px, calc(100vw - 32px)); max-height: min(86vh, 900px); padding: 16px; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.cd-dialog[open] { display: grid; gap: 10px; align-content: start; overflow: auto; }
+.cd-dialog::backdrop { background: rgba(0, 0, 0, .35); }
+.cd-dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.cd-dialog-head h3 { margin: 0; }
+.cd-dialog input[type=search] { width: 100%; box-sizing: border-box; }
+.cd-dialog .lbl { margin-top: 4px; }
+.cd-onchart { display: grid; gap: 4px; }
+.cd-onchart-row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; }
+.cd-onchart-row.off { opacity: .6; }
+.cd-onchart-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 13px; }
+.cd-mini { border: 1px solid var(--line-strong); background: var(--surface-2); color: var(--text); border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
+.cd-pick-list { display: grid; gap: 12px; }
+.cd-pick-list section { display: grid; gap: 4px; }
+.cd-pick-list h4 { margin: 4px 0 0; font-size: 12px; color: var(--text2); text-transform: uppercase; letter-spacing: .04em; }
+.cd-pick { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 10px; text-align: left; border: 1px solid var(--line); background: var(--surface-2); color: var(--text); border-radius: 8px; padding: 7px 10px; cursor: pointer; font: inherit; }
+.cd-pick:hover { border-color: var(--accent); }
+.cd-pick-name { font-size: 14px; }
+.cd-pick-about { grid-column: 1; font-size: 12px; color: var(--text2); }
+.cd-pick-count { grid-column: 2; grid-row: 1 / span 2; align-self: center; font-size: 12px; color: var(--accent); white-space: nowrap; }
+.cd-pick-status { min-height: 1.2em; margin: 0; }
+.cd-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.cd-fields label, .cd-width { display: grid; gap: 3px; font-size: 12px; color: var(--text2); }
+.cd-fields input, .cd-fields select { width: 100%; box-sizing: border-box; }
+.cd-width { max-width: 200px; }
+.cd-colours { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.cd-colour { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
+.cd-colour input[type=color] { width: 32px; height: 26px; padding: 0; border: 1px solid var(--line-strong); border-radius: 6px; background: none; cursor: pointer; }
+.cd-dialog-foot { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 6px; }
+.error-text { color: var(--bad); font-size: 13px; margin: 0; min-height: 0; }
+.error-text:empty { display: none; }
+.cd-extra { color: var(--bad); }
+
+/* Drawing tools and the editor of the drawing you picked */
+.cd-toolgroup { display: inline-flex; flex-wrap: wrap; gap: 4px; padding-right: 8px; margin-right: 2px; border-right: 1px solid var(--line); }
+.cd-toolgroup:last-of-type { border-right: 0; }
+.cd-mainwrap { position: relative; }
+.cd-edit { position: absolute; z-index: 5; top: 6px; left: 6px; right: 112px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: end; padding: 6px 8px; border: 1px solid var(--accent); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); font-size: 13px; }
+.cd-edit[hidden] { display: none; }
+.cd-edit label { display: grid; gap: 2px; font-size: 12px; color: var(--text2); }
+.cd-edit label.cd-colour { display: inline-flex; color: var(--text); }
+.cd-edit input[type=number] { width: 100px; }
+.cd-edit button { padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer; }
+.cd-edit .cd-del { color: var(--bad); }
+.cd-plan { align-self: center; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+  .cd-dialog { width: calc(100vw - 16px); max-height: 92vh; padding: 12px; }
+  .cd-toolgroup { border-right: 0; padding-right: 0; }
+  .cd-drawbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .cd-drawbar .cd-toolgroup { flex-wrap: nowrap; }
+  .cd-drawbar button { white-space: nowrap; }
+  .cd-draw-hint { white-space: nowrap; }
+  .cd-edit { right: 90px; gap: 4px 8px; }
+  .cd-edit input[type=number] { width: 84px; }
+}
+.cd-adv { padding: 6px 0 0; }
+.cd-adv summary { cursor: pointer; color: var(--text2); font-size: 13px; }
+.cd-dialog label.cd-colour, .cd-edit label.cd-colour { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; }
+.cd-dialog .cd-colour input[type=color], .cd-edit .cd-colour input[type=color] { width: 36px; min-width: 36px; max-width: 36px; height: 28px; flex: 0 0 auto; padding: 0; }
+.cd-head .cd-status { max-width: 100%; white-space: normal; }
 
 /* Trading from the chart: the ticket, its stoploss/target list and the confirmation dialog. */
 .cd-trade { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }

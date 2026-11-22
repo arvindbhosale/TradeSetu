@@ -1,24 +1,33 @@
 // @ts-check
-// The Charts tab: candles, line or area with volume, live prices and indicators that move with every tick.
-// Loaded only when the tab first opens (app.js imports it), so the rest of the desk does not carry it.
-// Drawing uses the bundled Lightweight Charts library (Apache-2.0, attribution shown under the chart).
+// The Charts tab: candles, line, area or Heikin Ashi with volume, live prices, any number of indicators (each
+// with its own settings and colours) and drawing tools. Loaded only when the tab first opens (app.js imports
+// it), so the rest of the desk does not carry it. Drawing uses the bundled Lightweight Charts library
+// (Apache-2.0, attribution shown under the chart).
+//
+// Two presets share this code: "live" (crypto, NSE/BSE from the broker, imported files, watchlist and crypto
+// paper trading) and "classic" (NSE/BSE through the desk's /api/chart, which has the 2/3/4/30-minute candles
+// and the optional delayed Yahoo fallback).
 
-import { CATALOG, COMPUTE } from "./indicators.js";
+import { CATALOG, GROUPS, cleanParams, compute as computeIndicator, search } from "./indicators.js";
 import { mergeBar, startFeed } from "./feeds.js";
-import { DrawingLayer, TOOLS, timeOf } from "./drawings.js";
+import { DrawingLayer, TOOLS, logicalOf, newPosition, normalise, positionPlan, timeOf } from "./drawings.js";
 import { mountWatchlist } from "./watchlist.js";
 import { mountPaper } from "./paper.js";
 import { mountTrade } from "./trade.js";
 
 /** @typedef {import("./indicators.js").Bar} Bar */
-/** @typedef {{ uid: number, kind: string, params: Record<string, number> }} Active */
+/** @typedef {import("./drawings.js").Drawing} Drawing */
+/** @typedef {{ uid: number, kind: string, params: Record<string, any>, colors: Record<string, string>, width: number|null, hidden: boolean }} Active */
 
 const LW = /** @type {any} */ (window).LightweightCharts;
 const STORE = "desk-chartdesk";
-const TYPES = { candles: "Candles", line: "Line", area: "Area" };
+const TYPES = { candles: "Candles", ha: "Heikin Ashi", line: "Line", area: "Area" };
 const VENUES = { crypto: "Crypto", india: "NSE / BSE", imported: "Imported" };
+const MAX_INDICATORS = 30;
 const DEFAULTS = { venue: "crypto", symbol: "BTCUSDT", tf: "1h", type: "candles", volume: true,
   indicators: [{ kind: "ema", params: { period: 20 } }, { kind: "bollinger", params: { period: 20, width: 2 } }, { kind: "rsi", params: { period: 14 } }] };
+const CLASSIC_DEFAULTS = { venue: "india", symbol: "", tf: "1d", type: "candles", volume: true,
+  indicators: [{ kind: "sma", params: { period: 50 } }, { kind: "rsi", params: { period: 14 } }] };
 
 /** @param {string} tag @param {Record<string, any>} [attrs] @param {...any} children @returns {HTMLElement} */
 function h(tag, attrs = {}, ...children) {
@@ -37,7 +46,7 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
-const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const css = (/** @type {string} */ name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 /** Decimal places for a price: 2 for rupees, more for small crypto prices. @param {string} venue @param {number} price */
 export function decimalsFor(venue, price) {
@@ -48,92 +57,190 @@ export function decimalsFor(venue, price) {
 }
 
 /** Line data with blank entries during an indicator's warm-up, so every pane has a point for every bar and the
- * panes' time axes line up. @param {Bar[]} bars @param {{time: number, value: number}[]} pts */
+ * panes' time axes line up. Points after the last bar (lines drawn ahead of price) are kept as they are.
+ * @param {Bar[]} bars @param {{time: number, value: number}[]} pts */
 export function padded(bars, pts) {
   const at = new Map(pts.map((p) => [p.time, p.value]));
-  return bars.map((b) => (at.has(b.time) ? { time: b.time, value: at.get(b.time) } : { time: b.time }));
+  /** @type {{time: number, value?: number}[]} */ const out = bars.map((b) => (at.has(b.time) ? { time: b.time, value: at.get(b.time) } : { time: b.time }));
+  const last = bars.length ? bars[bars.length - 1].time : -Infinity;
+  pts.forEach((p) => { if (p.time > last) out.push(p); });
+  return out;
 }
 
-function load() {
+/** Heikin Ashi candles from real ones. @param {Bar[]} bars @returns {Bar[]} */
+export function heikinAshi(bars) {
+  /** @type {Bar[]} */ const out = [];
+  bars.forEach((b, i) => {
+    const close = (b.open + b.high + b.low + b.close) / 4, open = i ? (out[i - 1].open + out[i - 1].close) / 2 : (b.open + b.close) / 2;
+    out.push({ time: b.time, open, high: Math.max(b.high, open, close), low: Math.min(b.low, open, close), close, volume: b.volume });
+  });
+  return out;
+}
+
+/** Seconds in a candle size such as 5m, 1h, 1d, 1w. @param {string} tf */
+export function secondsOf(tf) {
+  const m = /^(\d+)([mhdw])$/.exec(tf || "");
+  if (!m) return 86400;
+  return Number(m[1]) * { m: 60, h: 3600, d: 86400, w: 604800 }[/** @type {"m"|"h"|"d"|"w"} */ (m[2])];
+}
+
+/** The classic chart's /api/chart answer in the live chart's shape. Day candles come as dates; the volume
+ * comes as a panel. @param {any} r @param {string} tf */
+export function classicInfo(r, tf) {
+  const time = (/** @type {any} */ t) => (typeof t === "string" ? Math.floor(Date.parse(t + "T00:00:00Z") / 1000) : t);
+  const panel = (r.panels || []).find((/** @type {any} */ p) => p.key === "volume");
+  const vol = new Map(panel ? panel.points.map((/** @type {any} */ p) => [time(p.time), p.value]) : []);
+  const candles = (r.candles || []).map((/** @type {any} */ c) => ({ time: time(c.time), open: c.open, high: c.high, low: c.low, close: c.close, volume: vol.get(time(c.time)) || 0 }));
+  const live = r.live_price, last = candles[candles.length - 1];
+  if (last && live > 0 && r.session && r.session.open) { last.close = live; last.high = Math.max(last.high, live); last.low = Math.min(last.low, live); }
+  return { candles, source: r.source, symbol: r.symbol, name: r.symbol, session: r.session, session_offset: 0, seconds: secondsOf(tf),
+    anchor: 33300, live: { kind: "refetch", every: 15 }, notes: [r.note, r.truncated ? "Showing the most recent 1,500 candles." : null].filter(Boolean) };
+}
+
+/** An indicator as saved: known kind, settings checked, colours as #rrggbb, width 1 to 4.
+ * @param {any} i @returns {Omit<Active, "uid">|null} */
+export function cleanActive(i) {
+  if (!i || typeof i !== "object" || !CATALOG[i.kind]) return null;
+  const keys = new Set(CATALOG[i.kind].outputs.map((o) => o.key));
+  const colors = Object.fromEntries(Object.entries(i.colors && typeof i.colors === "object" ? i.colors : {})
+    .filter(([k, v]) => keys.has(k) && typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v)));
+  const width = Number(i.width);
+  return { kind: i.kind, params: cleanParams(i.kind, i.params), colors, width: width >= 1 && width <= 4 ? Math.round(width) : null, hidden: !!i.hidden };
+}
+
+/** A number for an indicator's legend: thousands grouped, fewer decimals when large. @param {number|null|undefined} v */
+export function valueText(v) {
+  if (v == null || !Number.isFinite(v)) return "–";
+  const a = Math.abs(v);
+  if (a >= 1e7) return v.toLocaleString("en-US", { maximumFractionDigits: 0, notation: "compact" });
+  return v.toLocaleString("en-US", { maximumFractionDigits: a >= 1000 ? 0 : a >= 1 ? 2 : 4, minimumFractionDigits: a >= 1000 ? 0 : a >= 1 ? 2 : 0 });
+}
+
+/** @param {string} key */
+function loadLocal(key, defaults) {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORE) || "null");
-    if (saved && typeof saved === "object") return { ...DEFAULTS, ...saved };
+    const saved = JSON.parse(localStorage.getItem(key) || "null");
+    if (saved && typeof saved === "object") return { ...defaults, ...saved };
   } catch (err) { /* storage blocked or bad */ }
-  return { ...DEFAULTS };
+  return { ...defaults };
 }
 
 /**
  * @param {HTMLElement} root
- * @param {{ api: (path: string, opts?: any) => Promise<any>, mode?: () => string }} deps
- *   ``mode`` is the desk's Paper or Live switch, for NSE/BSE orders from the chart (crypto is always paper).
+ * @param {{ api: (path: string, opts?: any) => Promise<any>, preset?: "live"|"classic", intervals?: Record<string, string>,
+ *   mode?: () => string }} deps  ``mode`` is the desk's Paper or Live switch, for NSE/BSE orders from the chart.
  */
-export function mount(root, { api, mode = () => "paper" }) {
-  const saved = load();
+export function mount(root, { api, preset = "live", intervals = {}, mode = () => "paper" }) {
+  const classic = preset === "classic";
+  const storeKey = classic ? STORE + "-classic" : STORE;
+  const defaults = classic ? CLASSIC_DEFAULTS : DEFAULTS;
   let uid = 0;
   const st = {
-    venue: saved.venue in VENUES ? saved.venue : "crypto", symbol: String(saved.symbol || "BTCUSDT"),
-    tf: saved.tf, type: saved.type in TYPES ? saved.type : "candles", volume: saved.volume !== false,
-    active: /** @type {Active[]} */ ((Array.isArray(saved.indicators) ? saved.indicators : DEFAULTS.indicators)
-      .filter((i) => i && CATALOG[i.kind]).map((i) => ({ uid: ++uid, kind: i.kind, params: { ...defaultsOf(i.kind), ...(i.params || {}) } }))),
+    venue: "crypto", symbol: "", tf: "1h", type: "candles", volume: true,
+    active: /** @type {Active[]} */ ([]),
     info: /** @type {any} */ (null), bars: /** @type {Bar[]} */ ([]), catalog: /** @type {any} */ (null),
     request: 0, stopFeed: /** @type {null|(() => void)} */ (null), visible: false,
     charts: /** @type {any[]} */ ([]), main: /** @type {any} */ (null), price: /** @type {any} */ (null), vol: /** @type {any} */ (null),
-    series: /** @type {Map<number, any[]>} */ (new Map()), frame: 0, decimals: 2,
-    results: /** @type {Map<number, any>|null} */ (null), pendingAll: false, panesLeft: 0,
-    busy: false, importMsg: "", drawings: /** @type {any[]} */ ([]), tool: /** @type {string|null} */ (null), firstPoint: /** @type {any} */ (null),
+    series: /** @type {Map<number, any[]>} */ (new Map()), fills: /** @type {Map<number, BandFill>} */ (new Map()), frame: 0, decimals: 2,
+    results: /** @type {Map<number, Record<string, {time:number, value:number}[]>>|null} */ (null),
+    lookup: /** @type {Map<number, Record<string, Map<number, number>>>} */ (new Map()), pendingAll: false, panesLeft: 0,
+    busy: false, importMsg: "", drawings: /** @type {Drawing[]} */ ([]), tool: /** @type {string|null} */ (null), clicks: /** @type {any[]} */ ([]),
     layer: /** @type {DrawingLayer|null} */ (null), book: /** @type {any} */ (null), orderLines: /** @type {any[]} */ ([]),
+    selected: /** @type {string|null} */ (null), drag: /** @type {any} */ (null),
+    layoutReady: /** @type {Promise<void>|null} */ (null), saveTimer: /** @type {any} */ (0), touched: false,
   };
 
-  function defaultsOf(kind) { return Object.fromEntries(Object.entries(CATALOG[kind].params).map(([k, p]) => [k, p.value])); }
+  /** @param {any} saved */
+  function applyLayout(saved) {
+    const s = { ...defaults, ...(saved || {}) };
+    st.venue = classic ? "india" : s.venue in VENUES ? s.venue : "crypto";
+    st.symbol = String(s.symbol ?? defaults.symbol).toUpperCase();
+    st.tf = String(s.tf || defaults.tf); st.type = s.type in TYPES ? s.type : "candles"; st.volume = s.volume !== false;
+    st.active = (Array.isArray(s.indicators) ? s.indicators : defaults.indicators).slice(0, MAX_INDICATORS)
+      .map(cleanActive).filter(Boolean).map((a) => ({ uid: ++uid, .../** @type {any} */ (a) }));
+  }
+  function layout() {
+    return { venue: st.venue, symbol: st.symbol, tf: st.tf, type: st.type, volume: st.volume,
+      indicators: st.active.map((a) => ({ kind: a.kind, params: a.params, colors: a.colors, width: a.width, hidden: a.hidden })) };
+  }
+  applyLayout(loadLocal(storeKey, defaults));
+
+  /** Saves the chart's settings on this device at once and on the desk shortly after, so the desktop app, a
+   * phone and a browser open the same chart. */
   function save() {
-    try {
-      localStorage.setItem(STORE, JSON.stringify({ venue: st.venue, symbol: st.symbol, tf: st.tf, type: st.type, volume: st.volume,
-        indicators: st.active.map((a) => ({ kind: a.kind, params: a.params })) }));
-    } catch (err) { /* storage blocked */ }
+    st.touched = true;
+    const data = layout();
+    try { localStorage.setItem(storeKey, JSON.stringify(data)); } catch (err) { /* storage blocked */ }
+    clearTimeout(st.saveTimer);
+    st.saveTimer = setTimeout(async () => {
+      try { await api("/md/layout", { method: "PUT", body: { view: preset, layout: data } }); }
+      catch (err) { showNote(`Chart settings not saved on the desk: ${err.message}`); }
+    }, 600);
+  }
+
+  function fetchLayout() {
+    st.layoutReady = api("/md/layout?" + new URLSearchParams({ view: preset })).then((r) => {
+      if (r && r.layout && !st.touched) applyLayout(r.layout);
+    }).catch((err) => { showNote(`Chart settings could not be loaded from the desk (using this device's): ${err.message}`); });
+    return st.layoutReady;
   }
 
   // -- layout ------------------------------------------------------------------------------------------
-  const venueSeg = h("div", { class: "seg", role: "group", "aria-label": "Market" });
-  const symbolInput = /** @type {HTMLInputElement} */ (h("input", { name: "cd-symbol", list: "cd-symbols", autocomplete: "off", spellcheck: "false", "aria-label": "Symbol" }));
-  const symbolList = h("datalist", { id: "cd-symbols" });
+  const venueSeg = h("div", { class: "seg", role: "group", "aria-label": "Market", hidden: classic });
+  const symbolInput = /** @type {HTMLInputElement} */ (h("input", { name: "cd-symbol", list: `cd-symbols-${preset}`, autocomplete: "off", spellcheck: "false", "aria-label": "Symbol" }));
+  const symbolList = h("datalist", { id: `cd-symbols-${preset}` });
   const tfSeg = h("div", { class: "seg cd-scroll", role: "group", "aria-label": "Timeframe" });
   const typeSeg = h("div", { class: "seg", role: "group", "aria-label": "Chart type" });
-  const indicatorMenu = h("details", { class: "cd-menu" });
+  const indicatorBtn = h("button", { type: "button", class: "cd-btn", onclick: () => openPicker() });
   const head = h("div", { class: "cd-head" });
   const error = h("div", { class: "error cd-error", role: "alert", hidden: true });
   const note = h("p", { class: "hint", hidden: true });
+  const extra = h("p", { class: "hint cd-extra", hidden: true });
   const legend = h("div", { class: "cd-legend", "aria-live": "off" });
   const mainBox = h("div", { class: "cd-main" });
   const panes = h("div", { class: "cd-panes" });
-  const chartArea = h("div", { class: "cd-area", hidden: true }, legend, mainBox, panes,
+  const drawBar = h("div", { class: "cd-drawbar", role: "group", "aria-label": "Drawing tools" });
+  const editBar = h("div", { class: "cd-edit", hidden: true });
+  // The editor of a picked drawing floats over the chart, so the chart does not jump when it opens.
+  const chartArea = h("div", { class: "cd-area", hidden: true }, drawBar, legend, h("div", { class: "cd-mainwrap" }, mainBox, editBar), panes,
     h("p", { class: "hint cd-credit" }, "Charts drawn with ",
       h("a", { href: "https://www.tradingview.com/", target: "_blank", rel: "noopener noreferrer", text: "TradingView Lightweight Charts" }),
-      ". Crypto prices from Binance or Coinbase public data; NSE/BSE from your broker."));
+      classic ? ". Candles from your broker, or delayed Yahoo data if you switched that on in Settings. Indicators are worked out by the desk."
+        : ". Crypto prices from Binance or Coinbase public data; NSE/BSE from your broker. Indicators are worked out by the desk."));
   const loading = h("p", { class: "hint", text: "Loading…", hidden: true });
-  const drawBar = h("div", { class: "cd-drawbar", role: "group", "aria-label": "Drawing tools" });
   const importPanel = h("div", { class: "cd-import", hidden: true });
   const watchRoot = h("aside", { class: "panel cd-watch", "aria-label": "Watchlist" });
   const paperRoot = h("section", { class: "panel cd-paper", hidden: true, "aria-label": "Paper trading" });
   const tradeRoot = h("section", { class: "panel cd-trade", hidden: true, "aria-label": "Trade from the chart" });
-  chartArea.insertBefore(drawBar, mainBox);
+  const dialog = /** @type {HTMLDialogElement} */ (h("dialog", { class: "cd-dialog", "aria-label": "Indicators" }));
 
-  root.replaceChildren(h("div", { class: "cd-grid" }, watchRoot, h("div", { class: "cd-col" },
+  const column = h("div", { class: "cd-col" },
     h("div", { class: "panel cd-panel" },
-      h("form", { class: "cd-bar", onsubmit: (e) => { e.preventDefault(); st.symbol = symbolInput.value.trim().toUpperCase(); open(); } },
+      h("form", { class: "cd-bar", onsubmit: (/** @type {Event} */ e) => { e.preventDefault(); st.symbol = symbolInput.value.trim().toUpperCase(); open(); } },
         venueSeg,
         h("div", { class: "cd-symbol" }, symbolInput, symbolList, h("button", { class: "primary", type: "submit", text: "Show" })),
-        tfSeg, typeSeg, indicatorMenu),
-      importPanel, head, error, note, loading, chartArea),
-    tradeRoot, paperRoot)));
+        tfSeg, typeSeg, indicatorBtn),
+      importPanel, head, error, note, extra, loading, chartArea),
+    classic ? null : tradeRoot, classic ? null : paperRoot);
+  root.replaceChildren(classic ? h("div", { class: "cd-grid cd-solo" }, column, dialog) : h("div", { class: "cd-grid" }, watchRoot, column, dialog));
 
-  const watch = mountWatchlist(watchRoot, { api, open: (venue, symbol) => { st.venue = venue; st.symbol = symbol; renderControls(); open(); },
+  const watch = classic ? { show() {}, hide() {}, render() {} } : mountWatchlist(watchRoot, { api, open: (venue, symbol) => { st.venue = venue; st.symbol = symbol; renderControls(); open(); },
     current: () => ({ venue: st.venue, symbol: st.symbol }) });
   const lastPrice = () => (st.bars.length ? st.bars[st.bars.length - 1].close : null);
-  const paper = mountPaper(paperRoot, { api, onBook: (book) => { st.book = book; orderLines(); trade.bookChanged(book); } });
-  const trade = mountTrade(tradeRoot, { api, venue: () => st.venue, symbol: () => st.symbol, lastPrice, mode,
-    decimals: () => st.decimals, money: (v) => money(v), onBook: (book) => paper.setBook(book),
-    chart: () => (st.main && st.price ? { main: st.main, price: st.price, box: mainBox } : null) });
+  const paper = classic ? { show() {}, hide() {}, symbolChanged() {}, setBook() {} }
+    : mountPaper(paperRoot, { api, onBook: (book) => { st.book = book; orderLines(); trade.bookChanged(book); } });
+  // Trading from the chart is on the live chart; the classic chart only shows.
+  const trade = classic ? { show() {}, hide() {}, symbolChanged() {}, chartDrawn() {}, priceChanged() {}, modeChanged() {}, bookChanged() {}, fill() {}, claims() { return false; } }
+    : mountTrade(tradeRoot, { api, venue: () => st.venue, symbol: () => st.symbol, lastPrice, mode,
+      decimals: () => st.decimals, money: (v) => money(v), onBook: (book) => paper.setBook(book),
+      chart: () => (st.main && st.price ? { main: st.main, price: st.price, box: mainBox } : null) });
 
+  /** @param {string} text */
+  function showNote(text) { extra.textContent = text; extra.hidden = false; }
+
+  function timeframes() { return classic ? intervals : (st.catalog ? st.catalog.timeframes : {}); }
+
+  /** @param {HTMLElement} host @param {Record<string,string>} options @param {string} current @param {(k: string) => void} pick */
   function segment(host, options, current, pick) {
     host.replaceChildren(...Object.entries(options).map(([key, label]) => h("button", { type: "button", "data-key": key,
       "aria-pressed": String(key === current), text: label, onclick: () => pick(key) })));
@@ -146,15 +253,14 @@ export function mount(root, { api, mode = () => "paper" }) {
       st.symbol = key === "crypto" ? "BTCUSDT" : key === "india" ? "RELIANCE" : (imports[0] ? imports[0].symbol : "");
       renderControls(); open();
     });
-    const tfs = st.catalog ? st.catalog.timeframes : {};
+    const tfs = timeframes();
     segment(tfSeg, Object.fromEntries(Object.keys(tfs).map((k) => [k, k === "1d" ? "1D" : k === "1w" ? "1W" : k])), st.tf,
       (key) => { st.tf = key; renderControls(); open(); });
     [...tfSeg.children].forEach((b) => b.setAttribute("title", tfs[/** @type {HTMLElement} */ (b).dataset.key || ""] || ""));
-    const meta = st.venue === "imported" && st.catalog ? st.catalog.imports.find((i) => i.symbol === st.symbol) : null;
+    const meta = st.venue === "imported" && st.catalog ? st.catalog.imports.find((/** @type {any} */ i) => i.symbol === st.symbol) : null;
     if (meta) {
-      const secs = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400, "1w": 604800 };
       [...tfSeg.children].forEach((b) => {
-        const s = secs[/** @type {HTMLElement} */ (b).dataset.key || ""];
+        const s = secondsOf(/** @type {HTMLElement} */ (b).dataset.key || "");
         if (s < meta.base_seconds || (s < 86400 && s % meta.base_seconds)) {
           b.setAttribute("disabled", ""); b.setAttribute("title", `This file has ${meta.candle} candles`);
         }
@@ -163,83 +269,331 @@ export function mount(root, { api, mode = () => "paper" }) {
     segment(typeSeg, TYPES, st.type, (key) => { st.type = key; renderControls(); save(); draw(); });
     symbolInput.value = st.symbol;
     symbolInput.placeholder = st.venue === "crypto" ? "BTCUSDT" : "RELIANCE, NIFTY";
-    const list = !st.catalog ? [] : st.venue === "crypto" ? st.catalog.crypto.map((c) => [c.symbol, `${c.name} (${c.coin})`])
-      : st.venue === "imported" ? st.catalog.imports.map((i) => [i.symbol, `${i.rows} ${i.candle} candles`])
-      : st.catalog.indices.map((i) => [i.symbol, i.name]);
+    const list = !st.catalog ? [] : st.venue === "crypto" ? st.catalog.crypto.map((/** @type {any} */ c) => [c.symbol, `${c.name} (${c.coin})`])
+      : st.venue === "imported" ? st.catalog.imports.map((/** @type {any} */ i) => [i.symbol, `${i.rows} ${i.candle} candles`])
+      : st.catalog.indices.map((/** @type {any} */ i) => [i.symbol, i.name]);
     symbolList.replaceChildren(...list.map(([value, label]) => h("option", { value, label })));
-    renderIndicatorMenu(); renderDrawBar(); renderImport(); watch.render();
-    if (st.visible && st.venue === "crypto") paper.show(); else paper.hide();
+    indicatorBtn.textContent = `Indicators${st.active.length ? ` (${st.active.length})` : ""}`;
+    renderDrawBar(); renderEditBar(); renderImport(); watch.render();
+    if (!classic) { if (st.visible && st.venue === "crypto") paper.show(); else paper.hide(); }
     if (st.visible && st.info) trade.show(); else trade.hide();
+  }
+
+  // -- indicators: picker and settings ---------------------------------------------------------------
+  /** @param {Active} a */
+  function label(a) {
+    const c = CATALOG[a.kind], spec = c.params;
+    const values = Object.entries(a.params).filter(([k]) => !spec[k].options || k === "type").map(([k, v]) => (spec[k].options ? spec[k].options[v] : v));
+    return c.short + (values.length ? " " + values.join(", ") : "");
+  }
+
+  function changed() { save(); renderControls(); draw(); if (dialog.open && dialog.dataset.view === "picker") renderPicker(); }
+
+  /** @param {string} kind */
+  function add(kind) {
+    if (st.active.length >= MAX_INDICATORS) return false;
+    st.active.push({ uid: ++uid, kind, params: cleanParams(kind, {}), colors: {}, width: null, hidden: false });
+    changed();
+    return true;
+  }
+
+  let query = "";
+  function openPicker() { dialog.dataset.view = "picker"; renderPicker(); if (!dialog.open) dialog.showModal(); const s = dialog.querySelector("input[type=search]"); if (s) /** @type {HTMLInputElement} */ (s).focus(); }
+
+  function renderPicker() {
+    const results = h("div", { class: "cd-pick-list" });
+    const item = (/** @type {string} */ k) => {
+      const c = CATALOG[k], count = st.active.filter((a) => a.kind === k).length;
+      return h("button", { type: "button", class: "cd-pick", title: c.about, onclick: (/** @type {Event} */ e) => {
+        if (!add(k)) { status.textContent = `A chart holds ${MAX_INDICATORS} indicators at most. Remove one first.`; return; }
+        status.textContent = `Added ${c.name}.`;
+        /** @type {HTMLElement} */ (e.currentTarget).querySelector(".cd-pick-count")?.replaceChildren(String(count + 1) + " on chart");
+      } }, h("span", { class: "cd-pick-name" }, h("strong", { text: c.name }), " ", h("span", { class: "hint", text: c.short })),
+      h("span", { class: "cd-pick-about", text: c.about }), h("span", { class: "cd-pick-count", text: count ? `${count} on chart` : "" }));
+    };
+    const fill = () => {
+      const found = search(query);
+      if (query.trim()) {          // a search lists the best matches first
+        results.replaceChildren(found.length ? h("section", {}, h("h4", { text: `${found.length} found` }), found.map(item))
+          : h("p", { class: "hint", text: `No indicator matches “${query}”.` }));
+        return;
+      }
+      results.replaceChildren(...Object.entries(GROUPS).map(([g, name]) => {
+        const kinds = found.filter((k) => CATALOG[k].group === g);
+        return h("section", {}, h("h4", { text: `${name} (${kinds.length})` }), kinds.map(item));
+      }));
+    };
+    const status = h("p", { class: "hint cd-pick-status", role: "status" });
+    const input = /** @type {HTMLInputElement} */ (h("input", { type: "search", value: query, placeholder: "Search: RSI, moving average, volume…", "aria-label": "Search indicators",
+      oninput: (/** @type {Event} */ e) => { query = /** @type {HTMLInputElement} */ (e.target).value; fill(); } }));
+    fill();
+    const onChart = st.active.length ? h("div", { class: "cd-onchart" }, st.active.map((a) => h("div", { class: "cd-onchart-row" + (a.hidden ? " off" : "") },
+      h("span", { class: "cd-onchart-name", text: label(a) }),
+      h("button", { type: "button", class: "cd-mini", text: "Settings", onclick: () => openSettings(a.uid) }),
+      h("button", { type: "button", class: "cd-mini", text: a.hidden ? "Show" : "Hide", onclick: () => { a.hidden = !a.hidden; changed(); } }),
+      h("button", { type: "button", class: "cd-x", "aria-label": `Remove ${CATALOG[a.kind].name}`, text: "×", onclick: () => { st.active = st.active.filter((x) => x.uid !== a.uid); changed(); } }))))
+      : h("p", { class: "hint", text: "None yet. Pick from the list below; add the same one again for another period." });
+    dialog.replaceChildren(
+      h("div", { class: "cd-dialog-head" }, h("h3", { text: "Indicators" }), h("button", { type: "button", class: "cd-x", "aria-label": "Close", text: "×", onclick: () => dialog.close() })),
+      h("div", { class: "lbl", text: `On this chart (${st.active.length} of ${MAX_INDICATORS})` }), onChart,
+      h("label", { class: "check" }, h("input", { type: "checkbox", checked: st.volume, onchange: (/** @type {Event} */ e) => { st.volume = /** @type {HTMLInputElement} */ (e.target).checked; changed(); } }), "Volume bars on the price chart"),
+      h("div", { class: "lbl", text: `Add (${Object.keys(CATALOG).length} indicators)` }), input, status, results);
+  }
+
+  /** @param {number} id */
+  function openSettings(id) {
+    const a = st.active.find((x) => x.uid === id);
+    if (!a) return;
+    dialog.dataset.view = "settings";
+    const c = CATALOG[a.kind], colours = defaultColours(a);
+    const field = (/** @type {string} */ key, /** @type {any} */ p) => {
+      if (p.options) {
+        return h("label", {}, p.label, h("select", { onchange: (/** @type {Event} */ e) => { a.params[key] = /** @type {HTMLSelectElement} */ (e.target).value; changed(); } },
+          Object.entries(p.options).map(([v, text]) => h("option", { value: v, text, selected: a.params[key] === v }))));
+      }
+      return h("label", {}, p.label, h("input", { type: "number", inputmode: "decimal", value: String(a.params[key]), min: String(p.min), max: String(p.max), step: String(p.step || 1),
+        onchange: (/** @type {Event} */ e) => {
+          const el = /** @type {HTMLInputElement} */ (e.target), v = Number(el.value);
+          if (el.value === "" || !Number.isFinite(v) || v < p.min || v > p.max) { el.value = String(a.params[key]); msg.textContent = `${p.label} must be from ${p.min} to ${p.max}.`; return; }
+          msg.textContent = ""; a.params = cleanParams(a.kind, { ...a.params, [key]: v }); el.value = String(a.params[key]); changed();
+        } }));
+    };
+    const msg = h("p", { class: "error-text", role: "alert" });
+    const lines = c.outputs.map((o) => h("label", { class: "cd-colour" }, h("input", { type: "color", value: a.colors[o.key] || colours[o.key],
+      oninput: (/** @type {Event} */ e) => { a.colors[o.key] = /** @type {HTMLInputElement} */ (e.target).value; save(); draw(); } }), o.label));
+    dialog.replaceChildren(
+      h("div", { class: "cd-dialog-head" }, h("h3", { text: c.name }), h("button", { type: "button", class: "cd-x", "aria-label": "Close", text: "×", onclick: () => dialog.close() })),
+      h("p", { class: "hint", text: c.about + (c.repaints ? " Its newest part can change as candles come in." : "") }),
+      Object.keys(c.params).length ? h("div", { class: "cd-fields" }, Object.entries(c.params).map(([k, p]) => field(k, p))) : h("p", { class: "hint", text: "This indicator has no settings." }),
+      msg,
+      h("div", { class: "lbl", text: "Colours" }), h("div", { class: "cd-colours" }, lines),
+      h("label", { class: "cd-width" }, "Line thickness", h("select", { onchange: (/** @type {Event} */ e) => { const v = Number(/** @type {HTMLSelectElement} */ (e.target).value); a.width = v || null; save(); draw(); } },
+        h("option", { value: "0", text: "As designed", selected: a.width == null }), [1, 2, 3, 4].map((w) => h("option", { value: String(w), text: String(w), selected: a.width === w })))),
+      h("div", { class: "cd-dialog-foot" },
+        h("button", { type: "button", text: "Reset to defaults", onclick: () => { a.params = cleanParams(a.kind, {}); a.colors = {}; a.width = null; changed(); openSettings(id); } }),
+        h("button", { type: "button", text: "Remove", onclick: () => { st.active = st.active.filter((x) => x.uid !== id); changed(); openPicker(); } }),
+        h("button", { type: "button", text: "All indicators", onclick: () => openPicker() }),
+        h("button", { type: "button", class: "primary", text: "Done", onclick: () => dialog.close() })));
+    if (!dialog.open) dialog.showModal();
+  }
+
+  // -- colours -----------------------------------------------------------------------------------------
+  const palette = () => [1, 2, 3, 4, 5, 6].map((i) => css("--s" + i));
+
+  /** Each line's colour when the user has not picked one: the price chart's indicators take turns through
+   * the palette; one in its own pane starts it again. @param {Active} a @returns {Record<string, string>} */
+  function defaultColours(a) {
+    const c = CATALOG[a.kind], pal = palette();
+    let base = 0;
+    if (c.pane === "price") for (const x of st.active) { if (x.uid === a.uid) break; if (CATALOG[x.kind].pane === "price") base++; }
+    return Object.fromEntries(c.outputs.map((o) => {
+      const k = o.colour ?? 0;
+      return [o.key, k === -1 ? css("--good") : k === -2 ? css("--bad") : pal[(base + k) % pal.length]];
+    }));
   }
 
   // -- drawings ----------------------------------------------------------------------------------------
   function renderDrawBar() {
-    const need = st.tool ? TOOLS[st.tool].points : 0;
+    /** @type {Record<string, string[]>} */ const groups = {};
+    Object.entries(TOOLS).forEach(([k, t]) => { (groups[t.group] = groups[t.group] || []).push(k); });
+    const tool = st.tool ? TOOLS[/** @type {keyof TOOLS} */ (st.tool)] : null;
+    const hint = !tool ? (st.drawings.length ? "Tap a drawing to move, recolour or delete it." : "")
+      : st.clicks.length ? `Point ${st.clicks.length + 1} of ${tool.clicks}: ${tool.hint}` : tool.hint;
     drawBar.replaceChildren(
-      ...Object.entries(TOOLS).map(([k, t]) => h("button", { type: "button", "aria-pressed": String(st.tool === k), text: t.label,
-        onclick: () => { st.tool = st.tool === k ? null : k; st.firstPoint = null; if (st.layer) { st.layer.preview = null; st.layer.update(); } renderDrawBar(); } })),
-      h("button", { type: "button", text: "Undo", disabled: !st.drawings.length, onclick: () => { st.drawings.pop(); saveDrawings(); } }),
-      h("button", { type: "button", text: "Clear all", disabled: !st.drawings.length, onclick: () => { st.drawings = []; saveDrawings(); } }),
-      h("span", { class: "hint cd-draw-hint", text: !st.tool ? "" : st.firstPoint ? "Now tap the second point." :
-        need === 1 ? "Tap the chart at the price." : st.tool === "fib" ? "Tap the swing start, then the swing end." : "Tap the first point." }));
+      ...Object.entries(groups).map(([g, kinds]) => h("div", { class: "cd-toolgroup", role: "group", "aria-label": g },
+        kinds.map((k) => h("button", { type: "button", "aria-pressed": String(st.tool === k), text: TOOLS[/** @type {keyof TOOLS} */ (k)].label,
+          onclick: () => { st.tool = st.tool === k ? null : k; st.clicks = []; select(null); if (st.layer) { st.layer.preview = null; st.layer.update(); } renderDrawBar(); } })))),
+      h("div", { class: "cd-toolgroup" },
+        h("button", { type: "button", text: "Undo", disabled: !st.drawings.length, onclick: () => { st.drawings.pop(); select(null); saveDrawings(); } }),
+        h("button", { type: "button", text: "Clear all", disabled: !st.drawings.length, onclick: () => { st.drawings = []; select(null); saveDrawings(); } })),
+      h("span", { class: "hint cd-draw-hint", text: hint }));
   }
 
-  /** @param {any} param */
-  function pointAt(param) {
-    if (!param || !param.point || param.logical == null || !st.price || !st.info) return null;
-    const price = st.price.coordinateToPrice(param.point.y);
-    if (price == null || !(price > 0)) return null;
-    return { time: timeOf(st.bars, param.logical, st.info.seconds), price };
+  /** @param {string|null} id */
+  function select(id) {
+    st.selected = id;
+    if (st.layer) { st.layer.selected = id; st.layer.update(); }
+    renderEditBar();
   }
+
+  const money = (/** @type {number} */ v) => {
+    const text = v.toLocaleString(st.venue === "crypto" ? "en-US" : "en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return st.venue === "crypto" ? text : "₹" + text;
+  };
+
+  function renderEditBar() {
+    const d = st.drawings.find((x) => x.id === st.selected);
+    editBar.hidden = !d;
+    if (!d) { editBar.replaceChildren(); return; }
+    const idx = st.drawings.indexOf(d), tool = TOOLS[/** @type {keyof TOOLS} */ (d.kind)];
+    const colour = d.color || (st.layer ? st.layer.color(d, idx) : "#888888");
+    const parts = [h("strong", { text: tool ? tool.label : d.kind }),
+      h("label", { class: "cd-colour" }, h("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(colour) ? colour : "#888888",
+        oninput: (/** @type {Event} */ e) => { d.color = /** @type {HTMLInputElement} */ (e.target).value; if (st.layer) st.layer.update(); },
+        onchange: () => saveDrawings() }), "Colour")];
+    if (d.kind === "long" || d.kind === "short") {
+      const plan = positionPlan(d, st.bars.length ? st.bars[st.bars.length - 1].close : null);
+      const dp = st.decimals;
+      const box = (/** @type {string} */ name, /** @type {number} */ index, /** @type {number} */ value) => h("label", {}, name, h("input", { type: "number", inputmode: "decimal", step: "any", min: "0", value: value.toFixed(dp),
+        onchange: (/** @type {Event} */ e) => {
+          const v = Number(/** @type {HTMLInputElement} */ (e.target).value);
+          if (!(v > 0)) { renderEditBar(); return; }
+          if (index === 3) d.qty = v; else d.points[index] = { ...d.points[index], price: v };
+          const fixed = normalise(d); d.points = fixed.points;
+          saveDrawings(); renderEditBar();
+        } }));
+      const rr = plan.riskReward == null ? "–" : plan.riskReward.toFixed(2);
+      parts.push(box("Entry", 0, plan.entry), box("Stoploss", 2, plan.stoploss), box("Target", 1, plan.target),
+        h("label", {}, "Quantity", h("input", { type: "number", inputmode: "decimal", step: "any", min: "0", value: String(plan.quantity),
+          onchange: (/** @type {Event} */ e) => { const v = Number(/** @type {HTMLInputElement} */ (e.target).value); if (v > 0) { d.qty = v; saveDrawings(); } renderEditBar(); } })),
+        h("span", { class: "cd-plan" },
+          h("span", { class: "down", text: `Risk ${money(plan.risk)} (${Math.abs(plan.riskPct).toFixed(2)}%)` }), " · ",
+          h("span", { class: "up", text: `Reward ${money(plan.reward)} (${Math.abs(plan.rewardPct).toFixed(2)}%)` }), ` · Risk : Reward 1 : ${rr}`,
+          plan.now == null ? "" : ` · At last price ${plan.now >= 0 ? "+" : "−"}${money(Math.abs(plan.now))}`));
+      if (!classic && (st.venue === "india" || st.venue === "crypto")) {
+        parts.push(h("button", { type: "button", class: "primary", text: d.kind === "long" ? "Buy with this plan" : "Order from this plan",
+          title: d.kind === "long" ? "Fill the trade ticket below with this entry, stoploss, target and quantity" : "Short selling is not available from the chart",
+          disabled: d.kind !== "long", onclick: () => trade.fill(plan) }));
+      }
+    }
+    parts.push(h("button", { type: "button", class: "cd-del", text: "Delete", onclick: () => { st.drawings = st.drawings.filter((x) => x !== d); select(null); saveDrawings(); } }),
+      h("button", { type: "button", text: "Done", onclick: () => select(null) }));
+    editBar.replaceChildren(...parts);
+  }
+
+  /** The chart point (bar time and price) under a spot on the price chart. @param {number} x @param {number} y */
+  function pointAtXY(x, y) {
+    if (!st.price || !st.info || !st.main) return null;
+    const price = st.price.coordinateToPrice(y), logical = st.main.timeScale().coordinateToLogical(x);
+    if (price == null || !(price > 0) || logical == null) return null;
+    return { time: timeOf(st.bars, logical, st.info.seconds), price, logical };
+  }
+
+  /** @param {PointerEvent|MouseEvent} e */
+  function local(e) { const r = mainBox.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width }; }
+  const onScale = (/** @type {number} */ x, /** @type {number} */ w) => !st.main || x > w - st.main.priceScale("right").width();
 
   // Taps are read from the chart box directly: the library drops a second click that comes quickly after
-  // the first (it waits to see a double click), which loses the second point of a line.
+  // the first (it waits to see a double click), which loses the second point of a line. A press on a
+  // drawing starts dragging it, and the chart does not pan meanwhile.
   let down = /** @type {{x: number, y: number}|null} */ (null);
-  mainBox.addEventListener("pointerdown", (e) => { down = { x: e.clientX, y: e.clientY }; }, true);
-  mainBox.addEventListener("pointerup", (e) => {
-    if (!down || !st.tool || !st.main) return;
+  mainBox.addEventListener("pointerdown", (e) => {
+    down = { x: e.clientX, y: e.clientY };
+    if (st.tool || !st.layer || !st.main) return;
+    const p = local(e);
+    if (onScale(p.x, p.w) || trade.claims(p.y)) return;       // an order line takes the press (trade.js drags it)
+    const hit = st.layer.hit(p.x, p.y, e.pointerType === "touch" ? 14 : 7);
+    if (!hit) return;
+    const d = st.drawings.find((x) => x.id === hit.id), at = pointAtXY(p.x, p.y);
+    if (!d || !at) return;
+    st.drag = { d, handle: hit.handle, at, orig: d.points.map((q) => ({ ...q })), moved: false };
+    select(d.id);
+    st.main.applyOptions({ handleScroll: false, handleScale: false });
+    e.preventDefault(); e.stopPropagation();
+  }, true);
+  ["mousedown", "touchstart", "touchmove"].forEach((type) => mainBox.addEventListener(type, (e) => {
+    if (st.drag) { e.stopPropagation(); if (type === "touchmove" && e.cancelable) e.preventDefault(); }
+  }, { capture: true, passive: false }));
+  window.addEventListener("pointermove", (e) => {
+    if (!st.drag) { hover(e); return; }
+    const p = local(e), at = pointAtXY(p.x, Math.max(0, Math.min(p.y, mainBox.clientHeight)));
+    if (!at) return;
+    dragTo(st.drag, at);
+    st.drag.moved = true;
+    if (st.layer) st.layer.update();
+  });
+  window.addEventListener("pointerup", (e) => {
+    if (st.drag) {
+      const drag = st.drag; st.drag = null;
+      if (st.main) st.main.applyOptions({ handleScroll: true, handleScale: true });
+      if (drag.moved) { drag.d.points = normalise(drag.d).points; saveDrawings(); }
+      renderEditBar();
+      down = null;
+      return;
+    }
+    if (!down || !st.main || !mainBox.contains(/** @type {Node} */ (e.target))) { down = null; return; }
     const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
     down = null;
     if (moved > 6) return;                              // a drag pans the chart
-    const rect = mainBox.getBoundingClientRect();
-    const x = e.clientX - rect.left, y = e.clientY - rect.top;
-    if (x > rect.width - st.main.priceScale("right").width()) return;     // on the price scale
-    chartClick({ point: { x, y }, logical: st.main.timeScale().coordinateToLogical(x) });
-  }, true);
+    const p = local(e);
+    if (onScale(p.x, p.w)) return;
+    if (st.tool) { place(p.x, p.y); return; }
+    if (st.selected) select(null);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (!st.selected || !st.visible || root.offsetParent === null) return;
+    const t = /** @type {HTMLElement} */ (e.target);
+    if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); st.drawings = st.drawings.filter((x) => x.id !== st.selected); select(null); saveDrawings(); }
+    else if (e.key === "Escape") select(null);
+  });
 
-  /** @param {any} param */
-  function chartClick(param) {
-    if (!st.tool) return;
-    const pt = pointAt(param);
-    if (!pt) return;
-    const need = TOOLS[st.tool].points;
-    if (st.firstPoint && st.firstPoint.time === pt.time && Math.abs(st.firstPoint.price - pt.price) < 1e-9 * pt.price) return;
-    if (need === 1 || st.firstPoint) {
-      const points = need === 1 ? [pt] : [st.firstPoint, pt];
-      st.drawings.push({ id: Math.random().toString(36).slice(2, 10), kind: st.tool, points });
-      st.firstPoint = null; st.tool = null;
-      if (st.layer) st.layer.preview = null;
-      saveDrawings();
-    } else {
-      st.firstPoint = pt; renderDrawBar();
+  /** @param {PointerEvent} e */
+  function hover(e) {
+    if (!st.layer || st.tool || !mainBox.contains(/** @type {Node} */ (e.target))) return;
+    const p = local(e);
+    if (trade.claims(p.y)) return;
+    const hit = st.layer.hit(p.x, p.y);
+    mainBox.style.cursor = hit ? (hit.handle >= 0 ? "grab" : "move") : "";
+  }
+
+  /** Moves a dragged drawing: a handle moves its own point; the body moves the whole drawing.
+   * @param {any} drag @param {{time: number, price: number, logical: number}} at */
+  function dragTo(drag, at) {
+    const d = /** @type {Drawing} */ (drag.d), o = /** @type {any[]} */ (drag.orig), sec = st.info.seconds;
+    if (drag.handle < 0) {
+      const dl = at.logical - drag.at.logical, dp = at.price - drag.at.price;
+      if (o.some((q) => q.price + dp <= 0)) return;
+      d.points = o.map((q) => ({ time: timeOf(st.bars, logicalOf(st.bars, q.time, sec) + dl, sec), price: q.price + dp }));
+      return;
     }
+    const pts = o.map((q) => ({ ...q })), i = drag.handle;
+    if (d.kind === "hline") pts[0] = { time: o[0].time, price: at.price };
+    else if (d.kind === "vline") pts[0] = { time: at.time, price: o[0].price };
+    else if (d.kind === "long" || d.kind === "short") {
+      if (i === 0) { pts[0] = { time: at.time, price: at.price }; pts[2] = { time: at.time, price: o[2].price }; }
+      else if (i === 1) pts[1] = { time: at.time, price: at.price };
+      else pts[2] = { time: o[0].time, price: at.price };
+    } else pts[i] = { time: at.time, price: at.price };
+    d.points = pts;
+  }
+
+  /** A tap while a tool is on: the next point of the drawing. @param {number} x @param {number} y */
+  function place(x, y) {
+    const tool = st.tool ? TOOLS[/** @type {keyof TOOLS} */ (st.tool)] : null;
+    const pt = pointAtXY(x, y);
+    if (!tool || !pt || !st.info) return;
+    const at = { time: pt.time, price: pt.price }, last = st.clicks[st.clicks.length - 1];
+    if (last && last.time === at.time && Math.abs(last.price - at.price) < 1e-9 * at.price) return;
+    st.clicks.push(at);
+    if (st.clicks.length < tool.clicks) { renderDrawBar(); return; }
+    const kind = /** @type {string} */ (st.tool);
+    const points = kind === "long" || kind === "short" ? newPosition(kind, at, st.info.seconds) : st.clicks.slice();
+    /** @type {Drawing} */ const d = { id: Math.random().toString(36).slice(2, 10), kind, points };
+    if (kind === "long" || kind === "short") d.qty = 1;
+    st.drawings.push(d);
+    st.clicks = []; st.tool = null;
+    if (st.layer) st.layer.preview = null;
+    saveDrawings();
+    if (kind === "long" || kind === "short") select(d.id);
   }
 
   /** @param {any} param */
   function chartMove(param) {
-    if (!st.layer || !st.tool || !st.firstPoint) return;
-    const pt = pointAt(param);
-    st.layer.preview = pt ? { id: "preview", kind: /** @type {any} */ (st.tool), points: [st.firstPoint, pt] } : null;
+    if (!st.layer || !st.tool || !st.clicks.length || !param || !param.point) return;
+    const pt = pointAtXY(param.point.x, param.point.y);
+    st.layer.preview = pt ? { id: "preview", kind: st.tool, points: [...st.clicks, { time: pt.time, price: pt.price }] } : null;
     st.layer.update();
   }
 
   async function saveDrawings() {
     if (st.layer) { st.layer.items = st.drawings; st.layer.update(); }
-    renderDrawBar();
+    renderDrawBar(); renderEditBar();
     try { await api("/md/drawings", { method: "PUT", body: { venue: st.venue, symbol: st.symbol, items: st.drawings } }); }
     catch (err) { setStatus({ state: "error", text: `Drawings not saved: ${err.message}` }); }
   }
 
+  /** @param {number} request */
   async function loadDrawings(request) {
     try {
       const items = (await api("/md/drawings?" + new URLSearchParams({ venue: st.venue, symbol: st.symbol }))).items;
@@ -247,10 +601,10 @@ export function mount(root, { api, mode = () => "paper" }) {
       st.drawings = items;
     } catch (err) {
       st.drawings = [];
-      note.textContent = `Saved drawings could not be loaded: ${err.message}`; note.hidden = false;
+      showNote(`Saved drawings could not be loaded: ${err.message}`);
     }
     if (st.layer) { st.layer.items = st.drawings; st.layer.update(); }
-    renderDrawBar();
+    renderDrawBar(); renderEditBar();
   }
 
   // -- paper orders on the chart -----------------------------------------------------------------------
@@ -258,9 +612,9 @@ export function mount(root, { api, mode = () => "paper" }) {
     st.orderLines.forEach((line) => { try { st.price && st.price.removePriceLine(line); } catch (err) { /* chart redrawn */ } });
     st.orderLines = [];
     if (!st.price || !st.book || st.venue !== "crypto") return;
-    const pos = st.book.positions.find((p) => p.symbol === st.symbol);
+    const pos = st.book.positions.find((/** @type {any} */ p) => p.symbol === st.symbol);
     if (pos) st.orderLines.push(st.price.createPriceLine({ price: pos.avg, color: css("--accent"), lineWidth: 1, lineStyle: LW.LineStyle.Dashed, axisLabelVisible: true, title: "Paper average" }));
-    st.book.orders.filter((o) => o.symbol === st.symbol).forEach((o) => st.orderLines.push(st.price.createPriceLine({
+    st.book.orders.filter((/** @type {any} */ o) => o.symbol === st.symbol).forEach((/** @type {any} */ o) => st.orderLines.push(st.price.createPriceLine({
       price: o.price, color: o.side === "BUY" ? css("--good") : css("--bad"), lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: true,
       title: `Paper ${o.side === "BUY" ? "buy" : "sell"} limit` })));
   }
@@ -274,7 +628,7 @@ export function mount(root, { api, mode = () => "paper" }) {
     const fileIn = /** @type {HTMLInputElement} */ (h("input", { type: "file", accept: ".csv,text/csv,text/plain", "aria-label": "CSV file" }));
     const result = h("p", { class: "hint", hidden: !st.importMsg, text: st.importMsg });
     fileIn.addEventListener("change", () => { const f = fileIn.files && fileIn.files[0]; if (f && !nameIn.value) nameIn.value = f.name.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9&._-]/g, "").slice(0, 30).toUpperCase(); });
-    const go = async (e) => {
+    const go = async (/** @type {Event} */ e) => {
       e.preventDefault();
       const f = fileIn.files && fileIn.files[0];
       result.hidden = false; result.className = "hint";
@@ -296,7 +650,7 @@ export function mount(root, { api, mode = () => "paper" }) {
         h("label", {}, "CSV file", fileIn), h("label", {}, "Name", nameIn), h("button", { type: "submit", class: "primary", text: "Import CSV" })),
       h("p", { class: "hint", text: "Columns: Date (or Date and Time), Open, High, Low, Close, and Volume if you have it. Times are read as India time. For NSE/BSE charts without a broker; imported prices are never live." }),
       result,
-      h("div", { class: "cd-chips" }, imports.length ? h("div", { class: "cd-chips" }, imports.map((i) => h("span", { class: "cd-chip" + (i.symbol === st.symbol ? " on" : "") },
+      h("div", { class: "cd-chips" }, imports.length ? h("div", { class: "cd-chips" }, imports.map((/** @type {any} */ i) => h("span", { class: "cd-chip" + (i.symbol === st.symbol ? " on" : "") },
         h("button", { type: "button", class: "cd-chip-open", text: i.symbol, title: `${i.rows} ${i.candle} candles`, onclick: () => { st.symbol = i.symbol; renderControls(); open(); } }),
         h("button", { type: "button", class: "cd-x", "aria-label": `Delete import ${i.symbol}`, text: "×", onclick: async () => {
           try { await api(`/md/imports/${encodeURIComponent(i.symbol)}`, { method: "DELETE" }); st.catalog = await api("/md/catalog");
@@ -306,41 +660,11 @@ export function mount(root, { api, mode = () => "paper" }) {
         } })))) : null));
   }
 
-  function renderIndicatorMenu() {
-    const chips = st.active.map((a) => h("span", { class: "cd-chip" }, label(a),
-      h("button", { type: "button", class: "cd-x", "aria-label": `Remove ${CATALOG[a.kind].name}`, text: "×",
-        onclick: () => { st.active = st.active.filter((x) => x.uid !== a.uid); changed(true); } })));
-    const settings = st.active.filter((a) => Object.keys(CATALOG[a.kind].params).length).map((a) =>
-      h("fieldset", { class: "cd-params" }, h("legend", { text: label(a) }),
-        Object.entries(CATALOG[a.kind].params).map(([key, p]) => h("label", {}, p.label,
-          h("input", { type: "number", value: String(a.params[key]), min: String(p.min), max: String(p.max), step: String(p.step || 1),
-            onchange: (e) => {
-              const v = Number(e.target.value);
-              if (!Number.isFinite(v) || v < p.min || v > p.max) { e.target.value = String(a.params[key]); return; }
-              a.params[key] = p.step ? v : Math.round(v); changed(true);
-            } })))));
-    indicatorMenu.replaceChildren(
-      h("summary", { class: "cd-btn" }, `Indicators${st.active.length ? ` (${st.active.length})` : ""}`),
-      h("div", { class: "cd-drop" },
-        h("div", { class: "cd-chips" }, chips.length ? chips : h("span", { class: "hint", text: "None on the chart." })),
-        h("div", { class: "lbl", text: "Add" }),
-        h("div", { class: "cd-add" }, Object.entries(CATALOG).map(([kind, c]) => h("button", { type: "button", text: c.name,
-          onclick: () => { st.active.push({ uid: ++uid, kind, params: defaultsOf(kind) }); changed(true); } }))),
-        h("label", { class: "check" }, h("input", { type: "checkbox", checked: st.volume, onchange: (e) => { st.volume = e.target.checked; changed(true); } }), "Volume bars"),
-        settings.length ? h("details", { class: "cd-adv" }, h("summary", { text: "Advanced: indicator settings" }), settings) : null));
-    if (indicatorMenu.dataset.open === "1") indicatorMenu.setAttribute("open", "");
-    indicatorMenu.ontoggle = () => { indicatorMenu.dataset.open = indicatorMenu.hasAttribute("open") ? "1" : ""; };
-  }
-
-  function label(a) {
-    const c = CATALOG[a.kind], values = Object.values(a.params);
-    return c.short + (values.length ? " " + values.join(", ") : "");
-  }
-
-  function changed(redraw) { save(); renderIndicatorMenu(); if (redraw) draw(); }
-
   // -- data --------------------------------------------------------------------------------------------
-  function query(tf = st.tf) { return "/md/candles?" + new URLSearchParams({ venue: st.venue, symbol: st.symbol, tf }); }
+  function fetchCandles() {
+    if (classic) return api("/chart?" + new URLSearchParams({ symbol: st.symbol, interval: st.tf, panels: "volume" })).then((r) => classicInfo(r, st.tf));
+    return api("/md/candles?" + new URLSearchParams({ venue: st.venue, symbol: st.symbol, tf: st.tf }));
+  }
 
   /** @param {string} message @param {boolean} [suggestImport] */
   function showError(message, suggestImport) {
@@ -356,35 +680,37 @@ export function mount(root, { api, mode = () => "paper" }) {
     st.busy = true;
     stopLive();
     error.hidden = true; loading.hidden = false;
-    save();
     try {
+      if (st.layoutReady) { await st.layoutReady; st.layoutReady = null; if (request !== st.request) return; renderControls(); }
       if (!st.catalog) {
         st.catalog = await api("/md/catalog");
-        if (!(st.tf in st.catalog.timeframes)) st.tf = "1h";
         renderControls();
       }
+      const tfs = timeframes();
+      if (!(st.tf in tfs)) { st.tf = classic ? "1d" : "1h"; renderControls(); }
+      save();
       if (st.venue === "imported" && st.symbol) {
         // An import has one candle size; a smaller one cannot be shown, so step up to the first that can.
-        const meta = st.catalog.imports.find((i) => i.symbol === st.symbol);
-        const secs = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400, "1w": 604800 };
-        const fits = (tf) => secs[tf] >= meta.base_seconds && (secs[tf] >= 86400 || secs[tf] % meta.base_seconds === 0);
-        if (meta && !fits(st.tf)) { st.tf = Object.keys(secs).find(fits) || "1d"; renderControls(); }
+        const meta = st.catalog.imports.find((/** @type {any} */ i) => i.symbol === st.symbol);
+        const fits = (/** @type {string} */ tf) => secondsOf(tf) >= meta.base_seconds && (secondsOf(tf) >= 86400 || secondsOf(tf) % meta.base_seconds === 0);
+        if (meta && !fits(st.tf)) { st.tf = Object.keys(tfs).find(fits) || "1d"; renderControls(); }
       }
-      if (st.venue === "imported" && !st.symbol) {
+      if (!st.symbol) {
         loading.hidden = true; chartArea.hidden = true; destroy(); st.bars = []; st.info = null; head.replaceChildren(); note.hidden = true;
+        if (classic) { note.textContent = "Type a symbol (RELIANCE, TCS, NIFTY) and press Show."; note.hidden = false; }
         renderControls();
         return;
       }
       if (st.venue !== "imported") st.importMsg = "";
-      const info = await api(query());
+      const info = await fetchCandles();
       if (request !== st.request) return;
       if (!Array.isArray(info.candles) || !info.candles.length) throw new Error(`${info.source || "The provider"} sent no candles.`);
-      st.info = info; st.bars = info.candles.map((c) => ({ ...c }));
+      st.info = info; st.bars = info.candles.map((/** @type {Bar} */ c) => ({ ...c }));
       st.decimals = decimalsFor(st.venue, st.bars[st.bars.length - 1].close);
       loading.hidden = true; chartArea.hidden = false;
       const notes = info.notes || [];
       note.textContent = notes.join(" "); note.hidden = !notes.length;
-      st.drawings = []; st.tool = null; st.firstPoint = null;
+      st.drawings = []; st.tool = null; st.clicks = []; st.selected = null;
       draw(true);
       startLive();
       renderControls(); paper.symbolChanged(); trade.symbolChanged();
@@ -394,7 +720,7 @@ export function mount(root, { api, mode = () => "paper" }) {
       loading.hidden = true; chartArea.hidden = true; destroy(); st.bars = []; st.info = null;
       head.replaceChildren(); note.hidden = true;
       const payload = /** @type {any} */ (err).payload || {};
-      showError(err instanceof Error ? err.message : String(err), st.venue === "india" && !!payload.needs_login);
+      showError(err instanceof Error ? err.message : String(err), !classic && st.venue === "india" && !!payload.needs_login);
       renderControls();
     } finally {
       if (request === st.request) st.busy = false;
@@ -411,19 +737,19 @@ export function mount(root, { api, mode = () => "paper" }) {
       onChange: () => schedule(),
       onBars: (rows) => { if (request !== st.request) return; rows.forEach((r) => mergeBar(st.bars, { ...r })); schedule(true); },
       onStatus: (s) => { if (request === st.request) setStatus(s); },
-      refetch: () => api(query()),
+      refetch: () => fetchCandles(),
       quote: () => api("/md/quote?" + new URLSearchParams({ symbol: st.symbol })),
     });
   }
 
-  // -- drawing -----------------------------------------------------------------------------------------
+  // -- drawing the chart -------------------------------------------------------------------------------
   /** Numbers in Indian grouping for rupees (1,22,000), international for crypto (122,000). @param {number} v @param {number} [dp] */
   function num(v, dp = st.decimals) {
-    return v.toLocaleString(st.venue === "india" ? "en-IN" : "en-US", { minimumFractionDigits: Math.min(dp, 2), maximumFractionDigits: dp });
+    return v.toLocaleString(st.venue === "crypto" ? "en-US" : "en-IN", { minimumFractionDigits: Math.min(dp, 2), maximumFractionDigits: dp });
   }
 
-  /** @param {number} height @param {boolean} [logo] the library's logo, shown once on the price chart */
-  function options(height, logo = false) {
+  /** @param {number} height @param {boolean} [logo] the library's logo, shown once on the price chart @param {boolean} [price] */
+  function options(height, logo = false, price = true) {
     const d = st.decimals;
     return { height, autoSize: true,
       layout: { background: { color: css("--surface") }, textColor: css("--text2"), fontSize: 12, attributionLogo: logo },
@@ -431,67 +757,72 @@ export function mount(root, { api, mode = () => "paper" }) {
       rightPriceScale: { borderColor: css("--line"), minimumWidth: window.innerWidth < 720 ? 84 : 104 },   // the same width on every pane keeps the time axes aligned
       timeScale: { borderColor: css("--line"), timeVisible: !["1d", "1w"].includes(st.tf), secondsVisible: false, rightOffset: 4 },
       crosshair: { mode: LW.CrosshairMode.Normal },
-      localization: { priceFormatter: (/** @type {number} */ p) => p.toLocaleString(st.venue === "india" ? "en-IN" : "en-US", { minimumFractionDigits: d, maximumFractionDigits: d }) } };
+      localization: { priceFormatter: price ? (/** @type {number} */ p) => p.toLocaleString(st.venue === "crypto" ? "en-US" : "en-IN", { minimumFractionDigits: d, maximumFractionDigits: d }) : valueText } };
   }
 
   function destroy() {
     st.charts.forEach((c) => c.remove());
-    st.charts = []; st.series = new Map(); st.main = st.price = st.vol = null; st.layer = null; st.orderLines = [];
+    st.charts = []; st.series = new Map(); st.fills = new Map(); st.main = st.price = st.vol = null; st.layer = null; st.orderLines = [];
     panes.replaceChildren();
   }
 
-  const colors = () => [1, 2, 3, 4, 5, 6].map((i) => css("--s" + i));
+  const intraday = () => !["1d", "1w"].includes(st.tf);
+  /** @param {Active} a */
+  const shown = (a) => !a.hidden && (!CATALOG[a.kind].intraday || intraday());
 
+  /** @param {boolean} [fit] */
   function draw(fit) {
     if (!st.info || !st.bars.length) return;
     const keep = !fit && st.main ? st.main.timeScale().getVisibleLogicalRange() : null;
     destroy();
-    const up = css("--good"), down = css("--bad"), accent = css("--accent"), palette = colors();
+    const up = css("--good"), down = css("--bad"), accent = css("--accent");
     const main = LW.createChart(mainBox, options(mainBox.clientHeight || 420, true));
     st.main = main; st.charts.push(main);
-    const intradayTf = !["1d", "1w"].includes(st.tf);
-    const ownPanes = st.active.filter((a) => CATALOG[a.kind].pane === "own" && (!CATALOG[a.kind].intraday || intradayTf)).length;
+    const ownPanes = st.active.filter((a) => shown(a) && CATALOG[a.kind].pane === "own").length;
     st.panesLeft = ownPanes;
     if (ownPanes) main.timeScale().applyOptions({ visible: false });   // only the bottom chart shows dates
     const fmt = { type: "price", precision: st.decimals, minMove: 1 / 10 ** st.decimals };
-    if (st.type === "candles") st.price = main.addCandlestickSeries({ upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down, priceFormat: fmt });
+    const candle = { upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down, priceFormat: fmt };
+    if (st.type === "candles" || st.type === "ha") st.price = main.addCandlestickSeries(candle);
     else if (st.type === "line") st.price = main.addLineSeries({ color: accent, lineWidth: 2, priceFormat: fmt });
     else st.price = main.addAreaSeries({ lineColor: accent, topColor: accent + "55", bottomColor: accent + "05", lineWidth: 2, priceFormat: fmt });
     if (st.volume) {
       st.vol = main.addHistogramSeries({ priceScaleId: "vol", priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false });
       main.priceScale("vol").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
     }
-    let colour = 0;
-    const intraday = !["1d", "1w"].includes(st.tf);
     st.active.forEach((a) => {
-      const c = CATALOG[a.kind];
-      if (c.intraday && !intraday) return;
-      const host = c.pane === "price" ? main : pane(c.name);
-      const lineOpts = (color, extra = {}) => ({ color, lineWidth: 2, priceLineVisible: false, lastValueVisible: c.pane !== "price", crosshairMarkerVisible: false, ...extra });
+      if (!shown(a)) return;
+      const c = CATALOG[a.kind], host = c.pane === "price" ? main : pane(a), colours = { ...defaultColours(a), ...a.colors };
       /** @type {any[]} */ const made = [];
-      if (a.kind === "bollinger") {
-        const col = palette[colour++ % palette.length];
-        made.push(host.addLineSeries(lineOpts(col, { lineWidth: 1 })), host.addLineSeries(lineOpts(col, { lineWidth: 1, lineStyle: LW.LineStyle.Dashed })), host.addLineSeries(lineOpts(col, { lineWidth: 1 })));
-      } else if (a.kind === "macd") {
-        made.push(host.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false }), host.addLineSeries(lineOpts(palette[0])), host.addLineSeries(lineOpts(palette[1])));
-      } else {
-        const series = host.addLineSeries(lineOpts(palette[colour++ % palette.length]));
-        if (a.kind === "rsi") [70, 30].forEach((g) => series.createPriceLine({ price: g, color: css("--muted"), lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: true }));
-        made.push(series);
+      c.outputs.forEach((o) => {
+        const color = colours[o.key], width = a.width || o.width || (c.pane === "price" && c.outputs.length > 2 ? 1 : 2);
+        const base = { color, priceLineVisible: false, lastValueVisible: c.pane !== "price", crosshairMarkerVisible: false, title: c.pane === "own" && c.outputs.length > 1 ? o.label : "" };
+        if (o.type === "histogram") made.push(host.addHistogramSeries({ ...base, priceFormat: c.pane === "own" ? { type: "custom", formatter: valueText } : fmt }));
+        else if (o.type === "dots") made.push(host.addLineSeries({ ...base, lineVisible: false, pointMarkersVisible: true, pointMarkersRadius: Math.max(2, width), priceFormat: c.pane === "own" ? { type: "custom", formatter: valueText } : fmt }));
+        else made.push(host.addLineSeries({ ...base, lineWidth: width, lineStyle: o.dashed ? LW.LineStyle.Dashed : LW.LineStyle.Solid,
+          lineType: o.type === "step" ? LW.LineType.WithSteps : LW.LineType.Simple, priceFormat: c.pane === "own" ? { type: "custom", formatter: valueText } : fmt }));
+      });
+      const guideOn = made[c.outputs.findIndex((o) => o.type !== "histogram")] || made[0];
+      (c.guides || []).forEach((g) => guideOn.createPriceLine({ price: g, color: css("--muted"), lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: true }));
+      if (c.fill) {
+        const fill = new BandFill(colours[c.fill[0]]);
+        made[c.outputs.findIndex((o) => o.key === /** @type {[string, string]} */ (c.fill)[0])].attachPrimitive(fill);
+        st.fills.set(a.uid, fill);
       }
       st.series.set(a.uid, made);
     });
     // One time axis: scrolling or zooming any chart moves them all.
     let syncing = false;
-    st.charts.forEach((chart) => chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    st.charts.forEach((chart) => chart.timeScale().subscribeVisibleLogicalRangeChange((/** @type {any} */ range) => {
       if (syncing || !range) return; syncing = true;
       st.charts.forEach((other) => { if (other !== chart) other.timeScale().setVisibleLogicalRange(range); });
       syncing = false;
     }));
-    main.subscribeCrosshairMove((param) => { describe(param && param.time != null ? param.time : null); chartMove(param); });
+    main.subscribeCrosshairMove((/** @type {any} */ param) => { describe(param && param.time != null ? param.time : null); chartMove(param); });
     st.layer = new DrawingLayer({ bars: st.bars, seconds: st.info.seconds, colors: [css("--s4"), css("--s6"), css("--s5"), css("--s1")],
-      text: css("--text"), format: (p) => num(p) });
-    st.layer.items = st.drawings;
+      good: up, bad: down, text: css("--text"), surface: css("--surface"), format: (p) => num(p), money,
+      last: () => (st.bars.length ? st.bars[st.bars.length - 1].close : null) });
+    st.layer.items = st.drawings; st.layer.selected = st.selected;
     st.price.attachPrimitive(st.layer);
     setData();
     orderLines();
@@ -500,49 +831,82 @@ export function mount(root, { api, mode = () => "paper" }) {
     main.timeScale().setVisibleLogicalRange(keep || { from: Math.max(0, n - 150), to: n + 4 });
   }
 
-  function pane(name) {
+  /** A pane of its own under the price chart for one indicator. @param {Active} a */
+  function pane(a) {
     const box = h("div", { class: "cd-pane" });
-    panes.append(h("div", { class: "cd-pane-title", text: name }), box);
-    const chart = LW.createChart(box, options(140));
+    panes.append(h("div", { class: "cd-pane-title" }, h("button", { type: "button", class: "cd-pane-name", text: label(a), title: "Settings", onclick: () => openSettings(a.uid) }),
+      h("button", { type: "button", class: "cd-x", "aria-label": `Remove ${CATALOG[a.kind].name}`, text: "×", onclick: () => { st.active = st.active.filter((x) => x.uid !== a.uid); changed(); } })), box);
+    const chart = LW.createChart(box, options(140, false, false));
     st.panesLeft--;
     if (st.panesLeft > 0) chart.timeScale().applyOptions({ visible: false });
     st.charts.push(chart);
     return chart;
   }
 
-  /** Every indicator's output for the current bars. */
+  /** Every shown indicator's output for the current bars. */
   function compute() {
-    const out = new Map();
+    /** @type {Map<number, Record<string, {time:number, value:number}[]>>} */ const out = new Map();
+    const ctx = { sessionOffset: st.info.session_offset || 0, seconds: st.info.seconds, market: classic ? "india" : st.venue };
     st.active.forEach((a) => {
       if (!st.series.has(a.uid)) return;
-      out.set(a.uid, COMPUTE[a.kind](st.bars, { ...a.params, sessionOffset: st.info.session_offset }));
+      try { out.set(a.uid, computeIndicator(a.kind, st.bars, a.params, ctx)); }
+      catch (err) { showNote(`${CATALOG[a.kind].name} could not be worked out: ${err.message}`); }
     });
     return out;
   }
 
-  const priceRow = (b) => (st.type === "candles" ? { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close } : { time: b.time, value: b.close });
-  const volRow = (b) => ({ time: b.time, value: b.volume, color: (b.close >= b.open ? css("--good") : css("--bad")) + "66" });
-  const parts = (a, r) => (a.kind === "bollinger" ? [r.upper, r.middle, r.lower] : a.kind === "macd" ? [r.histogram, r.macd, r.signal] : [r.line]);
+  const priceBars = () => (st.type === "ha" ? heikinAshi(st.bars) : st.bars);
+  const priceRow = (/** @type {Bar} */ b) => (st.type === "candles" || st.type === "ha" ? { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close } : { time: b.time, value: b.close });
+  const volRow = (/** @type {Bar} */ b) => ({ time: b.time, value: b.volume, color: (b.close >= b.open ? css("--good") : css("--bad")) + "66" });
+
+  /** Histogram bars coloured by sign (or by the candle's direction for volume).
+   * @param {Active} a @param {import("./indicators.js").Output} o @param {any} p */
+  function barColour(a, o, p) {
+    if (p.value == null) return p;
+    if (o.updown) { const b = st.bars.find((x) => x.time === p.time); return { ...p, color: (b && b.close < b.open ? css("--bad") : css("--good")) + "88" }; }
+    if (!o.signed) return p;
+    const own = a.colors[o.key];
+    if (own) return { ...p, color: p.value >= 0 ? own : own + "77" };
+    return { ...p, color: (p.value >= 0 ? css("--good") : css("--bad")) + "99" };
+  }
+
+  /** @param {Active} a @param {any[]} made @param {Record<string, any[]>} r */
+  function fillIndicator(a, made, r) {
+    const c = CATALOG[a.kind];
+    c.outputs.forEach((o, i) => {
+      const pts = r[o.key] || [];
+      const data = o.sparse ? pts : padded(st.bars, pts);
+      made[i].setData(o.type === "histogram" ? data.map((p) => barColour(a, o, p)) : data);
+    });
+    shade(a, r);
+  }
+
+  /** @param {Active} a @param {Record<string, any[]>} r */
+  function shade(a, r) {
+    const fill = st.fills.get(a.uid), keys = CATALOG[a.kind].fill;
+    if (fill && keys) fill.set(r[keys[0]] || [], r[keys[1]] || []);
+  }
+
+  /** @param {Map<number, Record<string, {time:number, value:number}[]>>} results */
+  function index(results) {
+    st.lookup = new Map([...results].map(([id, r]) => [id, Object.fromEntries(Object.entries(r).map(([k, pts]) => [k, new Map(pts.map((p) => [p.time, p.value]))]))]));
+  }
 
   function setData() {
-    st.price.setData(st.bars.map(priceRow));
+    st.price.setData(priceBars().map(priceRow));
     if (st.vol) st.vol.setData(st.bars.map(volRow));
-    const results = compute(), up = css("--good"), down = css("--bad");
+    const results = compute();
     st.active.forEach((a) => {
       const made = st.series.get(a.uid), r = results.get(a.uid);
-      if (!made || !r) return;
-      parts(a, r).forEach((pts, i) => {
-        const data = padded(st.bars, pts);
-        made[i].setData(a.kind === "macd" && i === 0 ? data.map((p) => (p.value != null ? { ...p, color: (p.value >= 0 ? up : down) + "99" } : p)) : data);
-      });
+      if (made && r) fillIndicator(a, made, r);
     });
-    st.results = results;
+    st.results = results; index(results);
     describe(null); renderHead();
   }
 
-  /** A live price changed the newest bar: update only the last point of each series (indicators are causal,
-   * so no earlier value changes). A batch of fresh candles redraws everything. */
-  /** @param {boolean} [all] */
+  /** A live price changed the newest bar: update only the last point of each series (most indicators use
+   * past bars only, so no earlier value changes). Indicators that redraw their past, and a batch of fresh
+   * candles, redraw in full. @param {boolean} [all] */
   function schedule(all) {
     st.pendingAll = st.pendingAll || !!all;
     if (st.frame) return;
@@ -550,27 +914,33 @@ export function mount(root, { api, mode = () => "paper" }) {
       st.frame = 0;
       if (!st.price) return;
       if (st.pendingAll) { st.pendingAll = false; setData(); return; }
-      const last = st.bars[st.bars.length - 1];
-      st.price.update(priceRow(last));
+      const last = st.bars[st.bars.length - 1], ha = st.type === "ha" ? heikinAshi(st.bars) : null;
+      st.price.update(priceRow(ha ? ha[ha.length - 1] : last));
       if (st.vol) st.vol.update(volRow(last));
-      const results = compute(), up = css("--good"), down = css("--bad");
+      const results = compute();
       st.active.forEach((a) => {
-        const made = st.series.get(a.uid), r = results.get(a.uid);
+        const made = st.series.get(a.uid), r = results.get(a.uid), c = CATALOG[a.kind];
         if (!made || !r) return;
-        parts(a, r).forEach((pts, i) => {
-          const p = pts[pts.length - 1];
-          if (!p || p.time !== last.time) return;
-          made[i].update(a.kind === "macd" && i === 0 ? { ...p, color: (p.value >= 0 ? up : down) + "99" } : p);
+        if (c.repaints || c.outputs.some((o) => o.back || o.sparse)) { fillIndicator(a, made, r); return; }
+        c.outputs.forEach((o, i) => {
+          const pts = r[o.key] || [], p = pts[pts.length - 1];
+          if (!p || p.time < last.time) return;
+          try { made[i].update(o.type === "histogram" ? barColour(a, o, p) : p); } catch (err) { fillIndicator(a, made, r); }
         });
+        shade(a, r);
       });
-      st.results = results;
+      st.results = results; index(results);
       describe(null); renderHead(); trade.priceChanged();
+      if (st.selected) renderPlanOnly();
     });
   }
 
-  function money(v) {
-    const d = st.decimals, text = v.toLocaleString(st.venue === "india" ? "en-IN" : "en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
-    return st.venue === "india" ? "₹" + text : text;
+  /** Keeps the position editor's "at last price" figure current without rebuilding its inputs. */
+  function renderPlanOnly() {
+    const d = st.drawings.find((x) => x.id === st.selected), el = editBar.querySelector(".cd-plan");
+    if (!d || !el || (d.kind !== "long" && d.kind !== "short")) return;
+    if (editBar.contains(document.activeElement)) return;
+    renderEditBar();
   }
 
   function renderHead() {
@@ -579,12 +949,13 @@ export function mount(root, { api, mode = () => "paper" }) {
     const status = head.querySelector(".cd-status");
     head.replaceChildren(
       h("div", { class: "cd-title" }, h("strong", { text: st.info.name || st.info.symbol }),
-        h("span", { class: "cd-last", text: money(last.close) }),
+        h("span", { class: "cd-last", text: (st.venue === "crypto" ? "" : "₹") + num(last.close) }),
         change == null ? null : h("span", { class: "cd-change " + (change >= 0 ? "up" : "down"), text: `${change >= 0 ? "+" : ""}${change.toFixed(2)}%` }),
-        h("span", { class: "hint", text: `${st.catalog.timeframes[st.tf]} candles · ${st.info.source}` })),
+        h("span", { class: "hint", text: `${timeframes()[st.tf] || st.tf} candles · ${st.info.source}` })),
       status || h("span", { class: "pill cd-status", text: "" }));
   }
 
+  /** @param {{state: string, text: string}} s */
   function setStatus(s) {
     let pill = head.querySelector(".cd-status");
     if (!pill) { pill = h("span", { class: "pill cd-status" }); head.append(pill); }
@@ -592,47 +963,111 @@ export function mount(root, { api, mode = () => "paper" }) {
     pill.className = "pill cd-status " + ({ live: "good", poll: "warn", error: "bad", closed: "", connecting: "" }[s.state] || "");
   }
 
+  /** The legend: the candle under the crosshair (or the newest) and each indicator's values there, with
+   * buttons to change, hide or remove it. @param {number|null} time */
   function describe(time) {
     const bars = st.bars;
     const i = time == null ? bars.length - 1 : bars.findIndex((b) => b.time === time);
     const b = bars[i];
     if (!b) return;
-    const palette = colors(), items = [];
-    items.push(h("span", { class: "cd-ohlc", text: `O ${money(b.open)}  H ${money(b.high)}  L ${money(b.low)}  C ${money(b.close)}${st.volume ? `  Vol ${num(Math.round(b.volume), 0)}` : ""}` }));
-    let colour = 0;
-    const intraday = !["1d", "1w"].includes(st.tf);
+    const pr = (/** @type {number} */ v) => num(v), items = [];
+    items.push(h("span", { class: "cd-ohlc", text: `O ${pr(b.open)}  H ${pr(b.high)}  L ${pr(b.low)}  C ${pr(b.close)}${st.volume ? `  Vol ${num(Math.round(b.volume), 0)}` : ""}` }));
     st.active.forEach((a) => {
-      const c = CATALOG[a.kind], r = st.results && st.results.get(a.uid);
-      if (c.intraday && !intraday) { items.push(h("span", { class: "hint", text: `${c.short} needs a timeframe under 1 day` })); return; }
-      if (!r) return;
-      const at = (pts) => { const p = pts.find((x) => x.time === b.time); return p ? p.value : null; };
-      const fmt = (v, dp = st.decimals) => (v == null ? "–" : num(v, dp));
-      let text;
-      if (a.kind === "bollinger") text = `${label(a)}  ${fmt(at(r.upper))} / ${fmt(at(r.middle))} / ${fmt(at(r.lower))}`;
-      else if (a.kind === "macd") text = `${label(a)}  ${fmt(at(r.macd), 4)}  signal ${fmt(at(r.signal), 4)}`;
-      else if (a.kind === "rsi") text = `${label(a)}  ${fmt(at(r.line), 1)}`;
-      else if (a.kind === "vwap" && !r.line.length) text = "VWAP needs volume, and this has none";
-      else text = `${label(a)}  ${fmt(at(r.line))}`;
-      const col = c.pane === "price" ? palette[colour++ % palette.length] : null;
-      items.push(h("span", {}, col ? h("i", { style: `background:${col}` }) : null, text));
+      const c = CATALOG[a.kind], colours = { ...defaultColours(a), ...a.colors };
+      const controls = [
+        h("button", { type: "button", class: "cd-leg-name", title: "Settings", text: label(a), onclick: () => openSettings(a.uid) }),
+        h("button", { type: "button", class: "cd-leg-btn", title: a.hidden ? "Show" : "Hide", "aria-label": `${a.hidden ? "Show" : "Hide"} ${c.name}`, text: a.hidden ? "◌" : "◉", onclick: () => { a.hidden = !a.hidden; changed(); } }),
+        h("button", { type: "button", class: "cd-leg-btn", title: "Remove", "aria-label": `Remove ${c.name}`, text: "×", onclick: () => { st.active = st.active.filter((x) => x.uid !== a.uid); changed(); } }),
+      ];
+      if (c.pane === "own") { items.push(h("span", { class: "cd-leg off-pane" }, controls)); return; }
+      let values = [];
+      if (a.hidden) values = [h("span", { class: "hint", text: "hidden" })];
+      else if (c.intraday && !intraday()) values = [h("span", { class: "hint", text: "needs a candle under 1 day" })];
+      else {
+        const look = st.lookup.get(a.uid);
+        if (a.kind === "vwap" && look && !look.line.size) values = [h("span", { class: "hint", text: "needs volume, and this has none" })];
+        else if (look) values = c.outputs.slice(0, 7).map((o) => h("span", { class: "cd-val" }, h("i", { style: `background:${colours[o.key]}` }), pr(look[o.key].get(b.time) ?? NaN).replace("NaN", "–")));
+      }
+      items.push(h("span", { class: "cd-leg" + (a.hidden ? " off" : "") }, controls, values));
     });
     legend.replaceChildren(...items);
+    // values in each pane's title
+    const titles = panes.querySelectorAll(".cd-pane-title");
+    let k = 0;
+    st.active.forEach((a) => {
+      if (!shown(a) || CATALOG[a.kind].pane !== "own") return;
+      const t = titles[k++], look = st.lookup.get(a.uid), colours = { ...defaultColours(a), ...a.colors };
+      if (!t || !look) return;
+      let vals = t.querySelector(".cd-pane-vals");
+      if (!vals) { vals = h("span", { class: "cd-pane-vals" }); t.insertBefore(vals, t.lastChild); }
+      vals.replaceChildren(...CATALOG[a.kind].outputs.map((o) => h("span", { class: "cd-val" }, h("i", { style: `background:${colours[o.key]}` }), valueText(look[o.key].get(b.time)))));
+    });
   }
 
   new MutationObserver(() => { if (st.info) draw(); }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
   const scheme = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
   if (scheme && scheme.addEventListener) scheme.addEventListener("change", () => { if (st.info) draw(); });
 
+  fetchLayout();
   renderControls();
   return {
     show() {
       st.visible = true; watch.show();
-      if (st.venue === "crypto") paper.show();
+      if (!classic && st.venue === "crypto") paper.show();
       if (!st.info) { if (error.hidden && !st.busy) open(); return; }
       if (!st.stopFeed) open();          // back on the tab: fresh candles, then live again
     },
-    hide() { st.visible = false; stopLive(); watch.hide(); paper.hide(); trade.hide(); },
+    hide() { st.visible = false; stopLive(); watch.hide(); paper.hide(); trade.hide(); if (dialog.open) dialog.close(); },
     /** The desk's Paper / Live switch changed. */
     modeChanged() { trade.modeChanged(); },
+    /** Opens a symbol (the stock window's Chart button). @param {string} symbol */
+    openSymbol(symbol) { st.symbol = String(symbol || "").toUpperCase(); if (!classic) st.venue = "india"; renderControls(); open(); },
   };
+}
+
+/** Shades the area between two lines of an indicator (Bollinger Bands, Keltner, Ichimoku's cloud). Drawn
+ * under the lines with the chart library's plugin interface. */
+class BandFill {
+  /** @param {string} color */
+  constructor(color) {
+    this.color = color;
+    /** @type {{time:number, value:number}[]} */ this.a = [];
+    /** @type {Map<number, number>} */ this.b = new Map();
+    /** @type {any} */ this.chart = null; /** @type {any} */ this.series = null; /** @type {null|(() => void)} */ this.request = null;
+  }
+  /** @param {{ chart: any, series: any, requestUpdate: () => void }} p */
+  attached({ chart, series, requestUpdate }) { this.chart = chart; this.series = series; this.request = requestUpdate; }
+  detached() { this.chart = this.series = this.request = null; }
+  updateAllViews() { /* worked out when drawing */ }
+  /** @param {{time:number, value:number}[]} a @param {{time:number, value:number}[]} b */
+  set(a, b) { this.a = a; this.b = new Map(b.map((p) => [p.time, p.value])); if (this.request) this.request(); }
+  paneViews() { return [{ zOrder: () => "bottom", renderer: () => ({ draw: () => {}, drawBackground: (/** @type {any} */ target) => this.draw(target) }) }]; }
+  /** @param {any} target */
+  draw(target) {
+    if (!this.chart || !this.series || !this.a.length) return;
+    const ts = this.chart.timeScale(), s = this.series;
+    target.useBitmapCoordinateSpace((/** @type {any} */ scope) => {
+      const ctx = scope.context, hr = scope.horizontalPixelRatio, vr = scope.verticalPixelRatio;
+      ctx.save(); ctx.fillStyle = this.color; ctx.globalAlpha = 0.08;
+      /** @type {{x:number, ya:number, yb:number}[]} */ let run = [];
+      const flush = () => {
+        if (run.length > 1) {
+          ctx.beginPath(); ctx.moveTo(run[0].x * hr, run[0].ya * vr);
+          run.forEach((p) => ctx.lineTo(p.x * hr, p.ya * vr));
+          for (let i = run.length - 1; i >= 0; i--) ctx.lineTo(run[i].x * hr, run[i].yb * vr);
+          ctx.closePath(); ctx.fill();
+        }
+        run = [];
+      };
+      for (const p of this.a) {
+        const other = this.b.get(p.time), x = ts.timeToCoordinate(p.time);
+        if (other == null || x == null) { flush(); continue; }
+        const ya = s.priceToCoordinate(p.value), yb = s.priceToCoordinate(other);
+        if (ya == null || yb == null) { flush(); continue; }
+        run.push({ x, ya, yb });
+      }
+      flush();
+      ctx.restore();
+    });
+  }
 }
