@@ -1,0 +1,117 @@
+/* Charts tab. Uses the desk's colour tokens, so light and dark follow the app's theme. */
+.cd-view-seg { margin-bottom: 12px; }
+.cd-panel { padding-bottom: 12px; }
+.cd-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.cd-symbol { display: flex; gap: 6px; flex: 1 1 220px; min-width: 0; }
+.cd-symbol input { flex: 1; min-width: 0; text-transform: uppercase; }
+.cd-scroll { overflow-x: auto; max-width: 100%; flex-wrap: nowrap; scrollbar-width: none; }
+.cd-scroll button { flex: 0 0 auto; }
+.cd-menu { position: relative; border-top: 0; padding: 0; }
+.cd-adv { padding: 6px 0 0; }
+.cd-btn { list-style: none; cursor: pointer; padding: 8px 14px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); color: var(--text); font-weight: 600; user-select: none; }
+.cd-btn::-webkit-details-marker { display: none; }
+.cd-menu[open] .cd-btn { border-color: var(--accent); color: var(--accent); }
+.cd-drop { position: absolute; z-index: 20; right: 0; top: calc(100% + 6px); width: min(360px, calc(100vw - 32px)); max-height: 70vh; overflow: auto; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow); padding: 12px; display: grid; gap: 10px; }
+.cd-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.cd-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--text); font-size: 13px; }
+.cd-x { border: 0; background: transparent; color: var(--text2); font-size: 16px; line-height: 1; padding: 2px 6px; cursor: pointer; border-radius: 999px; }
+.cd-x:hover { background: var(--line); }
+.cd-add { display: flex; flex-wrap: wrap; gap: 6px; }
+.cd-add button { padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-2); color: var(--text); cursor: pointer; font-size: 13px; }
+.cd-add button:hover { border-color: var(--accent); }
+.cd-adv summary { cursor: pointer; color: var(--text2); font-size: 13px; }
+.cd-params { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.cd-params legend { font-size: 12px; color: var(--text2); padding: 0 4px; }
+.cd-params label { display: grid; gap: 2px; font-size: 12px; color: var(--text2); }
+.cd-params input { width: 90px; }
+.cd-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; justify-content: space-between; margin: 14px 0 6px; }
+.cd-title { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.cd-title strong { font-size: 17px; }
+.cd-last { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cd-change { font-weight: 600; font-variant-numeric: tabular-nums; }
+.cd-change.up { color: var(--good); } .cd-change.down { color: var(--bad); }
+.cd-error { margin-top: 12px; }
+.cd-retry { margin-left: 6px; }
+.cd-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text2); min-height: 18px; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.cd-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.cd-ohlc { color: var(--text); white-space: pre; }
+.cd-main { width: 100%; height: min(62vh, 560px); min-height: 320px; }
+.cd-pane { width: 100%; height: 140px; }
+.cd-pane:last-child { height: 166px; }
+.cd-pane-title { font-size: 12px; color: var(--text2); margin: 8px 0 2px; }
+.cd-credit { margin-top: 8px; }
+@media (max-width: 720px) {
+  .cd-bar { gap: 8px; }
+  .cd-symbol { flex-basis: 100%; }
+  .cd-main { height: 52vh; min-height: 280px; }
+  .cd-pane { height: 110px; }
+  .cd-pane:last-child { height: 136px; }
+  .cd-drop { position: fixed; left: 16px; right: 16px; top: auto; bottom: 16px; width: auto; max-height: 65vh; }
+  .cd-last { font-size: 18px; }
+  .cd-legend { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  .cd-head { margin-top: 10px; }
+}
+
+/* Layout: watchlist beside the chart, paper trading under it. */
+.cd-grid { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 16px; align-items: start; }
+.cd-col { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
+.cd-watch { position: sticky; top: 16px; padding: 12px; }
+.cd-watch-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 8px; }
+.cd-watch-add { border: 1px solid var(--line-strong); background: var(--surface-2); color: var(--text); border-radius: 8px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
+.cd-watch-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.cd-watch-list li { display: flex; align-items: center; border-radius: 8px; }
+.cd-watch-list li.active { background: var(--accent-soft); }
+.cd-watch-open { flex: 1; min-width: 0; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; border: 0; background: transparent; color: var(--text); padding: 7px 6px; cursor: pointer; text-align: left; font: inherit; }
+.cd-watch-sym { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cd-watch-price { font-variant-numeric: tabular-nums; font-size: 13px; text-align: right; white-space: nowrap; }
+.cd-watch-price small, .cd-tile .up, .cd-tile .down { font-weight: 600; }
+.up { color: var(--good); } .down { color: var(--bad); }
+.cd-watch-err { color: var(--bad); font-size: 12px; }
+.cd-watch-status { color: var(--bad); }
+.cd-drawbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 2px 0 8px; }
+.cd-drawbar button { padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-2); color: var(--text); cursor: pointer; font-size: 13px; }
+.cd-drawbar button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.cd-drawbar button:disabled { opacity: .45; cursor: default; }
+.cd-draw-hint { margin-left: 4px; }
+.cd-import { margin-top: 12px; padding: 12px; border: 1px dashed var(--line-strong); border-radius: 10px; display: grid; gap: 8px; }
+.cd-import-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.cd-import-form label { display: grid; gap: 3px; font-size: 12px; color: var(--text2); }
+.cd-chip.on { outline: 1px solid var(--accent); }
+.cd-chip-open { border: 0; background: transparent; color: var(--text); font: inherit; cursor: pointer; padding: 0; }
+.cd-paper { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.cd-paper-headline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.cd-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.cd-tile { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+.cd-tile strong { font-variant-numeric: tabular-nums; }
+.cd-paper-warn { grid-column: 1 / -1; margin: 0; }
+.cd-ticket { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.cd-ticket label { display: grid; gap: 3px; font-size: 12px; color: var(--text2); }
+.cd-ticket input { width: 150px; }
+.cd-side[data-side="BUY"] button[aria-pressed="true"] { background: var(--good-bg); color: var(--good); }
+.cd-side[data-side="SELL"] button[aria-pressed="true"] { background: var(--bad-bg); color: var(--bad); }
+.primary.cd-buy { background: var(--good); border-color: var(--good); }
+.primary.cd-sell { background: var(--bad); border-color: var(--bad); }
+.cd-paper-msg { padding: 8px 10px; border-radius: 8px; font-size: 13px; }
+.cd-paper-msg.ok { background: var(--good-bg); color: var(--text); }
+.cd-paper-msg.error { background: var(--bad-bg); color: var(--text); }
+.cd-table-wrap { overflow-x: auto; }
+.cd-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.cd-table th, .cd-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.cd-table th { color: var(--text2); font-weight: 600; }
+.cd-cancel { border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+.cd-reset-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.cd-reset-row label { display: grid; gap: 3px; font-size: 12px; color: var(--text2); }
+.cd-reset { border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+.cd-reset.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+@media (max-width: 1000px) {
+  .cd-grid { grid-template-columns: minmax(0, 1fr); }
+  .cd-watch { position: static; order: 2; }
+  .cd-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .cd-watch { order: 0; padding: 8px 10px; }
+  .cd-watch-list { display: flex; overflow-x: auto; gap: 6px; scrollbar-width: none; }
+  .cd-watch-list li { flex: 0 0 auto; border: 1px solid var(--line); }
+  .cd-watch-open { flex-direction: column; gap: 0; padding: 4px 8px; }
+  .cd-ticket input { width: 120px; }
+}

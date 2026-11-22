@@ -600,7 +600,53 @@ Kite only. Set up during installation. Leave it unless you move the Kite server.
 
 ## 4. Charts
 
-Candlestick charts in the TradingView style.
+The Charts section opens on the **Live chart**. The older chart, with Supertrend, Parabolic SAR, Donchian, pivots, ADX and Stochastic, is one tap away under **Classic chart** and works as before.
+
+### Live chart
+
+![Live Bitcoin chart with EMA, Bollinger Bands and RSI](img/07-live-chart.png)
+
+1. Pick **Crypto**, **NSE / BSE** or **Imported**.
+2. Type or pick a symbol (`BTCUSDT`, `ETHUSDT`; `RELIANCE`, `NIFTY`) and press **Show**.
+3. Pick the candle size: **1m**, **5m**, **15m**, **1h**, **4h**, **1D** or **1W**, and **Candles**, **Line** or **Area**.
+4. Open **Indicators** to add a moving average (simple or exponential), Bollinger Bands, VWAP, RSI or MACD. Add the same one twice for two periods (for example EMA 20 and EMA 50). Periods and widths are under **Advanced: indicator settings**. Tick **Volume bars** to show or hide volume.
+
+Indicators move with every live price, not only when a candle closes. The pill at the top right says where prices come from:
+
+- **Live · Binance stream** or **Live · Coinbase stream**: prices stream straight from the exchange.
+- **Updating every 5 s through the desk**: the exchange's stream could not connect from your network, so the desk fetches fresh candles instead.
+- **Live · Kite** (or your broker's name): NSE/BSE last price from your broker every 3 seconds, with fresh candles each minute.
+- **Market closed** or **Live prices stopped**: the reason is shown; the chart keeps the last prices it had.
+
+Where prices come from:
+
+- **Crypto**: Binance's public market data. If Binance does not answer (it has been blocked in India before), the desk uses Coinbase Exchange and says so above the chart. Coinbase quotes US dollars, so a USDT pair shows the coin's USD price (usually within 1%). BNB and TRX are not on Coinbase. No API key is needed.
+- **NSE / BSE**: only your broker (log in on the Trade section). There is no free, legal live feed for Indian stocks, so without a broker the chart says so instead of showing other data. Yahoo is never used here. 4-hour candles are 09:15–13:15 and 13:15–15:30; weekly candles start on Monday.
+
+If prices cannot be loaded you see **Chart not shown** with the reason and **Try again**, never an empty chart or a zero. Your symbol, candle size and indicators are remembered on this device.
+
+### Watchlist, drawings, imported files and crypto paper trading
+
+![Chart with a trend line, Fibonacci levels, a horizontal line, the watchlist and paper trading](img/08-chart-tools.png)
+
+**Watchlist.** Open a chart and press **+ Add this chart**. Each row shows the last price and the change today; tap it to open that chart, **×** to remove it. Crypto prices come from the exchange, NSE/BSE from your broker (logged in), imported files show their last close. A price that cannot be loaded shows **No price**, never a zero. The list (up to 50) is saved by the desk, so it is the same on every device that opens it.
+
+**Drawings.** Press **Trend line** (tap two points), **Horizontal line** (tap one price) or **Fibonacci** (tap a high and a low; the 0, 23.6, 38.2, 50, 61.8, 78.6 and 100% levels are drawn between them). Dragging the chart does not place a point. **Undo** removes the last drawing and **Clear all** removes them all. Drawings are saved for each symbol and come back the next time you open it.
+
+**Import a CSV.** Pick **Imported**, choose a file, give it a name and press **Import CSV**. Columns: Date (or Date and Time), Open, High, Low, Close, and Volume if you have it; dates may be `2026-07-24`, `24-07-2026` or `24/07/2026 09:15`, read as India time. Bad rows are skipped and listed; a file with more than 1 in 10 bad rows is refused. The candle size is read from the file, so a daily file cannot be shown as 1h (those buttons are greyed out); weekly is built from it. Imported prices are never live. Use this for NSE/BSE until a broker is connected: when the broker is not logged in, the chart offers **Import a CSV instead**.
+
+**Crypto paper trading.** Under the chart, with practice money only. No real order is ever sent from here.
+
+1. Open the coin's chart. Pick **Buy** or **Sell**, **Market** or **Limit**, enter the quantity (and the limit price) and press **Buy BTC** / **Sell BTC**.
+2. A market order fills at the last price. A limit order waits under **Waiting orders** and fills when the price reaches it; the desk checks every 5 seconds. A waiting buy holds its cash, a waiting sell holds its coins. You can only sell what you hold (no short selling).
+3. **Positions** shows quantity, average price, last price and profit/loss; **History** every fill with its fee. Your average price and waiting limit orders are drawn on the chart.
+4. The tiles show account value, profit/loss since the start, free cash and fees paid. If a coin's price cannot be loaded, account value shows **–** instead of a wrong number.
+
+Each fill pays a 0.1% fee and the smallest order is 1 USDT. **Advanced: fees, reset** has **Reset paper account**: set a starting balance (default 10,000 USDT) and press twice. It deletes all paper orders, positions and history.
+
+### Classic chart
+
+Candlestick charts with the desk's server-side indicators.
 
 ![Daily chart with Bollinger Bands and Supertrend](img/05-chart-daily.png)
 

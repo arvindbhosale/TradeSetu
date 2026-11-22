@@ -257,6 +257,12 @@
 </section>
 
 <section id="tab-charts" class="tab" hidden>
+  <div class="seg sub-seg cd-view-seg" id="chart-view" role="group" aria-label="Chart view">
+    <button type="button" data-view="live" aria-pressed="true">Live chart</button>
+    <button type="button" data-view="classic" aria-pressed="false">Classic chart</button>
+  </div>
+  <div id="chartdesk"><p class="hint">Loading the chart…</p></div>
+  <div id="chart-classic" hidden>
   <div class="panel">
     <form id="form-chart">
       <div class="row">
@@ -279,6 +285,7 @@
     <div id="chart-panels-out"></div>
     <div id="chart-pivots" hidden></div>
     <p class="hint">Scroll to zoom, drag to pan. Candles come from Kite's historical data (log in to Kite on the Trade tab). Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts</a>.</p>
+  </div>
   </div>
 </section>
 

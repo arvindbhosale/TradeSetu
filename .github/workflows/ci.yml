@@ -51,6 +51,19 @@ jobs:
           # install must import the package and the CLI module.
           python -c "import tradingagents, cli.main; print('clean-install import OK')"
 
+  chart-js:
+    name: chart code (browser tests + type check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Browser tests
+        run: node --test "tests/js/*.test.mjs"
+      - name: Type check (JSDoc, no build step)
+        run: npx -y -p typescript@5.6.3 tsc -p tsconfig.chartdesk.json
+
   lint:
     name: ruff (strict, full repo)
     runs-on: ubuntu-latest
