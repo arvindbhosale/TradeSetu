@@ -703,6 +703,22 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
 
     # -- backtest -------------------------------------------------------------
 
+    def trade_type_of(payload: dict, interval: str) -> str:
+        """Intraday or positional. Left out, it follows the candle: day candles positional, intraday candles
+        intraday, as every run and algo before the choice existed."""
+        kind = str(payload.get("trade_type") or ("positional" if interval == "1d" else "intraday")).lower()
+        if kind not in ("intraday", "positional"):
+            raise ValueError("Trade type must be intraday or positional")
+        if kind == "intraday" and interval == "1d":
+            raise ValueError("An intraday trade needs minute or hourly candles. Day candles are positional.")
+        return kind
+
+    def hold_days_of(payload: dict) -> int:
+        value = payload.get("max_hold_days") or 0
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value):
+            raise ValueError("Sell after (days held) must be a whole number of days")
+        return int(value)
+
     @app.post("/api/backtest/strategy")
     def backtest_strategy(payload: dict):
         payload = body_of(payload)
@@ -728,7 +744,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             slippage_bps=_number(payload, "slippage_bps", cfg["slippage_bps"]),
             risk_free_rate_pct=cfg["risk_free_rate_pct"],
             exchange="BSE" if canonical.endswith(".BO") else "NSE",
-            intraday=interval != "1d", trade_start=str(payload.get("trade_start") or cfg["trade_start"]),
+            intraday=interval != "1d", positional=trade_type_of(payload, interval) == "positional",
+            max_hold_days=hold_days_of(payload), trade_start=str(payload.get("trade_start") or cfg["trade_start"]),
             trade_end=str(payload.get("trade_end") or cfg["trade_end"]),
             square_off=str(payload.get("square_off") or cfg["square_off"]),
         )
@@ -1725,6 +1742,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                                 stop_loss_pct=_number(payload, "stop_loss_pct", 0.0),
                                 slippage_bps=cfg["slippage_bps"], risk_free_rate_pct=cfg["risk_free_rate_pct"],
                                 exchange="BSE" if canonical.endswith(".BO") else "NSE", intraday=interval != "1d",
+                                positional=trade_type_of(payload, interval) == "positional",
+                                max_hold_days=hold_days_of(payload),
                                 trade_start=cfg["trade_start"], trade_end=cfg["trade_end"], square_off=cfg["square_off"])
         params.validate()
         from .optimiser import grid

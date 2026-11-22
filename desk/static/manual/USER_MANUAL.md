@@ -31,6 +31,7 @@ The screenshots use sample data, not real prices.
 6. [Backtest](#6-backtest)
    - [Exit rules: stoploss, target, trailing, re-entry](#exit-rules-stoploss-target-trailing-re-entry)
    - [Create an algo from the result](#create-an-algo-from-the-result)
+   - [Positional (swing) backtests](#positional-swing-backtests)
    - [Optimise a strategy (walk-forward)](#optimise-a-strategy-walk-forward)
    - [Pair trading: two stocks that move together](#pair-trading-two-stocks-that-move-together)
    - [Test a stock-picking signal across an index](#test-a-stock-picking-signal-across-an-index)
@@ -859,11 +860,11 @@ Everything is on one screen. At the top, **What to test** picks the kind of back
 | **Index futures** | [Index futures backtest](#index-futures-backtest) |
 | More tools: **Find the best settings**, **ETF portfolios**, **AI agents' ratings** | [Optimise](#optimise-a-strategy-walk-forward), [Portfolios](#portfolios-ray-dalios-all-weather), [AI agents](#ai-agents-backtest) |
 
-1. Choose **Stocks**, then enter the **Stock** and the **Candle** size.
+1. Choose **Stocks**, then enter the **Stock**, the **Candle** size and the **Trade type**: **Intraday** (buy and sell the same day) or **Positional** (hold for days). Day candles are always positional.
 2. **Use of capital per trade %**: how much of the capital each buy uses.
 3. **Entry when and exit when.** Pick a **Strategy** (built-in or one you saved), or **My own rules** to type the rules right here: *Buy when* (entry) and *Sell when* (exit), exactly as on the Strategies tab, time and day rules included. **Save these rules as a strategy** keeps them for later.
-4. On intraday candles, **Start buying at**, **Stop buying at** and **Sell everything at** set the trading hours for this test (empty = your Settings trade window).
-5. **Exit rules** (0 means off), below.
+4. For an intraday trade, **Start buying at**, **Stop buying at** and **Sell everything at** set the trading hours for this test (empty = your Settings trade window). A positional trade has no such times.
+5. **Exit rules** (0 means off), below. For a positional trade, **Advanced → Sell after holding this many trading days** sells it at the open of that trading day after the buy (1 = the next session; 0 = no limit).
 6. Press **Run backtest**.
 
 ### Exit rules: stoploss, target, trailing, re-entry
@@ -887,7 +888,7 @@ If both the stoploss and the target are inside one candle, the stoploss is assum
 
 Under every stock, option strategy and index futures result there is a **Create algo** panel. Give it a name, a **Budget** (stocks) or **Maximum loss a day** (options and futures), choose **Paper** or **Live**, and press **Create algo**. It copies the stock, candle, rules and exit rules you just tested. With **My own rules**, the rules are saved as a strategy under the algo's name. The algo is created stopped; start it on the Algos tab.
 
-Two differences from the backtest: the algo uses the trade window in **Settings**, not the times typed for the test, and an option strategy algo stops on **Maximum loss (₹)** instead of the whole-position % stoploss. Buy-index-options backtests have no algo.
+The algo also gets the trade type (intraday or positional) and the holding limit. Two differences from the backtest: an intraday algo uses the trade window in **Settings**, not the times typed for the test (a positional algo on minute or hourly candles buys any time in market hours, or inside the Settings window when Settings enforces it), and an option strategy algo stops on **Maximum loss (₹)** instead of the whole-position % stoploss. Buy-index-options backtests have no algo.
 
 ### Reading the result
 
@@ -909,17 +910,29 @@ The chart compares your strategy (blue) with simply holding the stock (orange) a
 - **Better than a safe rate.** What the capital would have grown to at the risk-free rate in Settings (6.5% a year by default). A strategy that ends below it took risk for nothing.
 - **The same trades in random orders.** The closed trades are drawn again at random, with repeats, 1,000 times. It shows the fall from a peak you should be ready for (typical, and 1 run in 20), the range of final values and how often the same trades lost money. A strategy whose result depends on the lucky order of a few trades shows a wide range.
 
-The **Trades** table lists every trade with its entry, exit, profit and the reason it closed: *signal*, *stoploss*, *trailing stoploss*, *stoploss at cost*, *target*, or *square-off*. The **Re-entries** tile counts the buys made again after a stoploss.
+The **Trades** table lists every trade with its entry, exit, profit and the reason it closed: *signal*, *stoploss*, *trailing stoploss*, *stoploss at cost*, *target*, *square-off* (intraday) or *held N days* (the holding limit). The **Re-entries** tile counts the buys made again after a stoploss.
 
 ### Intraday backtests
 
 ![Intraday backtest of an opening range breakout](img/11-backtest-intraday.png)
 
-Choose a 1, 2, 3, 4, 5, 15, 30-minute or 1-hour candle. The backtest then trades the way an intraday algo does:
+Choose a 1, 2, 3, 4, 5, 15, 30-minute or 1-hour candle. With **Trade type: Intraday** (the default on these candles) the backtest trades the way an intraday algo does:
 
 - Buys only between **Start buying at** and **Stop buying at** (your Settings trade window, 09:30 to 15:00 by default, when left empty).
 - Sells everything at the **Sell everything at** time. Nothing is held overnight.
 - Uses intraday (MIS) charges.
+
+### Positional (swing) backtests
+
+With **Trade type: Positional** the same minute or hourly candles decide the entries and exits, but the trade is held across days:
+
+- No trading hours: it can buy on any candle, and nothing is sold at a set time.
+- It is held until the strategy's exit, the stoploss, the target or the holding limit closes it.
+- **Gaps.** A stoploss or target the price jumps past overnight sells at the next day's open price, not at its level: a stoploss at 95 when the stock opens at 90 sells at 90. This is the real cost of holding overnight, and the result includes it.
+- Delivery (CNC) charges: STT on both sides, stamp duty and the DP charge on the sell. A trade bought and sold the same day is charged at intraday rates, as the exchange treats it.
+- **Advanced → Sell after holding this many trading days** sells at the open of that trading day after the buy.
+
+Day candles are always positional: the trade-type choice is fixed and there are no trading hours. Results saved or algos made before this choice keep working as before: intraday candles meant intraday, day candles positional.
 
 **With Kite logged in**, every stock backtest, daily or intraday, uses Kite's candles. Kite keeps intraday candles of every size from early 2015, and the desk sets no limit of its own: it asks for them in pieces Kite accepts (60 days of 1-minute candles a request, 100 days of 3 and 5-minute, 200 of 15 and 30-minute, 400 of hourly), about three requests a second. A range that starts before 2015 is tested from where Kite's history starts, and the page says so. Years of 1-minute candles take a minute or two to download; a second run on the same dates (other stoploss or target) reuses them for 30 minutes.
 
@@ -1323,27 +1336,34 @@ An algo runs one strategy on one stock by itself.
 
 ![New algo form](img/16-algo-form.png)
 
-### Two kinds
+### Three kinds
 
-| | Daily algo | Intraday algo |
-|---|---|---|
-| **Candle** | 1 day | 1, 5, 15 minutes or 1 hour |
-| **Product** | Delivery (CNC) | Intraday (MIS) |
-| **Reads the market** | Once, after the close (15:50) | After every finished candle |
-| **Sends its order** | When your trade window opens next morning | At once, inside the trade window |
-| **Target and stoploss** | Placed as a GTT after the buy fills | Watched on the live price every 20 seconds |
-| **End of day** | Keeps the position | Sells everything at the square-off time |
+Choose the **Candle** and the **Trade type**. Day candles are always positional.
+
+| | Positional, day candles | Positional, minute or hourly candles | Intraday |
+|---|---|---|---|
+| **Candle** | 1 day | 1 minute to 1 hour | 1 minute to 1 hour |
+| **Product** | Delivery (CNC) | Delivery (CNC) | Intraday (MIS) |
+| **Reads the market** | Once, after the close (15:50) | After every finished candle, in market hours | After every finished candle |
+| **Sends its order** | When your trade window opens next morning | At once, in market hours (inside the Settings trade window only when Settings enforces it) | At once, inside the trade window |
+| **Target and stoploss** | Placed as a GTT after the buy fills | Watched on the live price every 20 seconds **and** placed as a GTT | Watched on the live price every 20 seconds |
+| **End of day** | Keeps the position | Keeps the position | Sells everything at the square-off time |
+| **Daily loss limit hit** | Keeps the position | Keeps the position | Sells |
+
+**Why intraday uses MIS and positional uses CNC.** Brokers square off every MIS position themselves around 15:20, so a swing trade must be delivery (CNC). A positional buy needs the full price in cash (no intraday leverage).
+
+**Positional overnight.** The GTT sits at your broker, so the stoploss and target still work overnight, when the app is off or restarting, and in the morning before you log in to your broker. The algo keeps its position, entry day and GTT in its saved file, so a restart carries on where it was. A trailing stoploss moves the GTT up once a candle (day candles: once a day). A stoploss the price gaps past at the open is filled by the GTT near the open price, which can be well below the stoploss. **Advanced → Sell after holding this many trading days** sells once that many trading days have passed since the buy (day candles: the sell is queued for that day's open).
 
 ### Create one
 
 1. Open **Algos**.
 2. Enter a **Name** and the **Symbol**.
-3. Choose the **Strategy** (built-in or one of yours) and the **Candle** size.
+3. Choose the **Strategy** (built-in or one of yours), the **Candle** size and the **Trade type** (Intraday or Positional).
 4. Set the **Budget** in rupees and the **Exit rules** ([the same box as the backtest](#exit-rules-stoploss-target-trailing-re-entry): stoploss and target in % or points, trailing stoploss, stoploss to the entry price, re-entry).
 
 The quickest way: backtest first, then press **Create algo** under the result.
 
-How exit rules work in an algo: an **intraday** algo checks them against the live price every 20 seconds, and a re-entry buys again when the live price comes back to the entry price (or at once). A **daily** algo places its stoploss and target as a GTT, moves the stoploss up once a day after the close, and re-enters when a day's high reaches the entry price again. The stoploss never moves down.
+How exit rules work in an algo: an algo on minute or hourly candles checks them against the live price every 20 seconds, and a re-entry buys again when the live price comes back to the entry price (or at once); a positional one also places them as a GTT. A **daily** algo places its stoploss and target as a GTT, moves the stoploss up once a day after the close, and re-enters when a day's high reaches the entry price again. The stoploss never moves down.
 5. Choose **Paper** or **Live**.
 6. Press **Create algo**. It is created stopped.
 
@@ -1354,7 +1374,7 @@ How exit rules work in an algo: an **intraday** algo checks them against the liv
 | Button | What it does |
 |---|---|
 | **Details** (or click the name) | Each stock or leg the algo traded: buy price, sell price, realised P&L (booked, after charges), unrealised P&L (at the current price), whether it is **Active** or **Closed**, the orders still out, and every fill. |
-| **Edit** | Changes the algo in the form above (**Save changes**). Shown unless the algo is running live: stop a live algo to edit it. The name cannot change, because its profit/loss history is filed under it. While the algo holds a position, only the budget and the exit rules can change (for an F&O algo: maximum loss, target, each leg's exit rules and the limit buffer); a live daily algo whose target and stoploss sit at the broker as a GTT can change only its budget. Changing Paper/Live stops the algo, so it goes live only through Start and the typed phrase. |
+| **Edit** | Changes the algo in the form above (**Save changes**). Shown unless the algo is running live: stop a live algo to edit it. The name cannot change, because its profit/loss history is filed under it. While the algo holds a position, only the budget, the exit rules and the holding limit can change (for an F&O algo: maximum loss, target, each leg's exit rules and the limit buffer); a live daily algo whose target and stoploss sit at the broker as a GTT can change only its budget. Changing Paper/Live stops the algo, so it goes live only through Start and the typed phrase. |
 | **Start** | Starts it. A live algo asks you to type `ARM LIVE <NAME>`. |
 | **Stop** | Stops it. It does not sell what it holds. |
 | **Run now** | Checks the market immediately instead of waiting. |
@@ -1375,7 +1395,8 @@ Open **Activity** to see everything the algo did and why.
 | **Running: waiting for the signal to reset** | It was stopped out or hit its target. It will not buy again until the strategy gives a new signal. |
 | **Running: waiting to re-enter** | It hit a plain stoploss and has re-entries left. It buys again as the exit rules say. |
 | **Running: order sent** | A live order is with Zerodha, not yet filled. |
-| **Running: done for the day** | Past the square-off time. |
+| **Running: done for the day** | Past the square-off time (intraday). |
+| **Running: market closed, holding N** | A positional algo waiting overnight; its GTT guards the position. |
 | **Blocked: Kite not connected / needs a login** | Sign in to Kite on the Trade tab. |
 | **Blocked: candles are delayed** | The newest candle is too old to trust. The algo refuses to trade on it. |
 | **Blocked: order refused** | A risk limit or the broker refused the order. Activity shows the reason. |

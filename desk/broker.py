@@ -518,15 +518,29 @@ class Desk:
         return count
 
     def live_holding(self, order: Order) -> int | None:
-        """Shares of the order's symbol held at the broker, or None if unknown."""
+        """Shares of the order's symbol held at the broker for a delivery sell, or None if unknown: holdings
+        (settled and T1), plus today's delivery (CNC) buys less today's delivery sells, which the broker lists under
+        positions until the next day. Without today's buys a positional algo could not sell, the same day, shares
+        it bought that morning when its stoploss is hit."""
         try:
             total = 0
             for row in self.kite.holdings():
                 if str(row.get("tradingsymbol", "")).upper() == order.tradingsymbol:
                     total += int(row.get("quantity", 0) or 0) + int(row.get("t1_quantity", 0) or 0)
-            return total
         except (KiteError, ValueError, TypeError):
             return None
+        try:
+            for row in self.kite.positions():
+                if (str(row.get("tradingsymbol", "")).upper() == order.tradingsymbol
+                        and str(row.get("product", "")).upper() == "CNC"
+                        and str(row.get("exchange", order.exchange)).upper() == order.exchange):
+                    if "day_buy_quantity" in row:          # today's activity only: carried shares are in holdings
+                        total += int(row.get("day_buy_quantity") or 0) - int(row.get("day_sell_quantity") or 0)
+                    else:
+                        total += int(row.get("quantity") or 0) - int(row.get("overnight_quantity") or 0)
+        except (KiteError, ValueError, TypeError):
+            pass                     # holdings alone: a same-day sell may be refused, never a short sale allowed
+        return max(total, 0)
 
     # -- the order path ----------------------------------------------------
 

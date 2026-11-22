@@ -3,9 +3,15 @@
 How a run trades, so its figures can be read for what they are:
 
 - A signal formed on bar ``t``'s close is acted on at bar ``t+1``'s open.
-- On intraday candles a position is intraday (MIS charges): entries only inside
-  the trade window, and whatever is open is sold at the square-off time. Nothing
-  is carried overnight.
+- Trade type. **Intraday** (intraday candles only, MIS charges): entries only
+  inside the trade window, and whatever is open is sold at the square-off time;
+  nothing is carried overnight. **Positional** (any candle; day candles are always
+  positional): no trade window and no square-off, the position is held across
+  days until the strategy, the stoploss, the target or the holding limit closes
+  it, with delivery (CNC) charges. A positional trade bought and sold the same
+  day is charged at intraday rates, as the exchange treats it.
+- An optional holding limit (``max_hold_days``) sells a positional trade at the
+  open of the given trading day after the buy: 1 is the next session.
 - Fills are at the open, worse by ``slippage_bps``; a stoploss or target fills
   at its level, or at the open when the day gaps through it. When a day's range
   covers both the stoploss and the target, the stoploss is taken.
@@ -15,7 +21,7 @@ How a run trades, so its figures can be read for what they are:
 - A re-entry "when price comes back" fills at the earlier entry price when a
   candle's high reaches it (at the open if it opens above). On that candle the
   exits are checked on its close only: the order of its high and low is unknown.
-- Long only, whole shares, one position, delivery (CNC) charges on every fill.
+- Long only, whole shares, one position.
 - Prices are adjusted for splits and bonuses (Yahoo's for dividends too).
 - Each trade records how far it fell and rose from its entry (``worst_pct``, ``best_pct``), and
   ``metrics.exits`` says whether the stoploss and target were ever within reach.
@@ -51,10 +57,20 @@ class BacktestParams:
     slippage_bps: float = 5.0
     risk_free_rate_pct: float = 6.5
     exchange: str = "NSE"
-    intraday: bool = False             # bars are intraday candles, traded as MIS
-    trade_start: str = "09:30"         # first entry of the day
-    trade_end: str = "15:00"           # no entries from here on
-    square_off: str = "15:00"          # open positions are closed at this time
+    intraday: bool = False             # bars are intraday candles
+    positional: bool = False           # hold across days (CNC); intraday candles only, day candles always are
+    max_hold_days: int = 0             # positional: sell at the open this many trading days after the buy; 0 = no limit
+    trade_start: str = "09:30"         # first entry of the day (intraday trades)
+    trade_end: str = "15:00"           # no entries from here on (intraday trades)
+    square_off: str = "15:00"          # open intraday positions are closed at this time
+
+    @property
+    def holds_overnight(self) -> bool:
+        return self.positional or not self.intraday
+
+    @property
+    def trade_type(self) -> str:
+        return "positional" if self.holds_overnight else "intraday"
 
     def rules(self) -> ExitRules:
         if self.exits is not None:
@@ -64,6 +80,7 @@ class BacktestParams:
     def as_dict(self) -> dict:
         out = {k: v for k, v in self.__dict__.items() if k != "exits"}
         out["exits"] = self.rules().as_dict()
+        out["trade_type"] = self.trade_type
         return out
 
     def validate(self) -> None:
@@ -80,6 +97,13 @@ class BacktestParams:
                 raise ValueError(f"{label} must be between 0 and {top}")
         if self.exchange not in ("NSE", "BSE"):
             raise ValueError("Exchange must be NSE or BSE")
+        if isinstance(self.max_hold_days, bool) or not isinstance(self.max_hold_days, int) \
+                or not 0 <= self.max_hold_days <= 2000:
+            raise ValueError("Sell after (days held) must be a whole number of days from 0 (no limit) to 2000")
+        if self.max_hold_days and not self.holds_overnight:
+            raise ValueError("A holding limit in days needs a positional trade: intraday trades close the same day")
+        if self.holds_overnight:
+            return                     # no trade window: the times are not used
         start, end, close = (_clock(t) for t in (self.trade_start, self.trade_end, self.square_off))
         if not start < end <= close:
             raise ValueError("Trade window must start before it ends, and end by the square-off time")
@@ -122,12 +146,17 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
         raise ValueError(f"only {len(bars)} candles in the range; a backtest needs at least 30")
     if strategy.intraday_only and not params.intraday:
         raise ValueError(f"{strategy.name} needs intraday candles. Choose a minute-based or 1-hour interval.")
-    product = "MIS" if params.intraday else "CNC"
+    same_day_only = not params.holds_overnight           # intraday trade type: MIS, window, square-off
+    product = "MIS" if same_day_only else "CNC"
     stamp = "%Y-%m-%d %H:%M" if params.intraday else "%Y-%m-%d"
     times = bars.index.time if params.intraday else None
     days = bars.index.normalize() if params.intraday else None
-    window_start, window_end, close_at = (_clock(t) for t in
-                                          (params.trade_start, params.trade_end, params.square_off))
+    # The trading session each bar falls in, counted from 0: what the holding limit counts.
+    sessions = (np.cumsum(np.r_[True, days[1:] != days[:-1]]) - 1) if params.intraday else np.arange(len(bars))
+    max_hold = params.max_hold_days if params.holds_overnight else 0
+    if same_day_only:
+        window_start, window_end, close_at = (_clock(t) for t in
+                                              (params.trade_start, params.trade_end, params.square_off))
 
     target = strategy.positions(bars, resolved).to_numpy()
     opens, highs, lows, closes = (bars[c].to_numpy(float) for c in ("Open", "High", "Low", "Close"))
@@ -152,8 +181,18 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
     worst = best = 0.0       # the open position's lowest low and highest high since entry
 
     def close_trade(i: int, price: float, reason: str) -> None:
-        nonlocal cash, qty, total_charges
-        fees = order_charges("SELL", qty, price, product, params.exchange, schedule).total
+        nonlocal cash, qty, total_charges, entry_cost
+        if product == "CNC" and sessions[i] == sessions[entry_index]:
+            # Bought and sold in one session: the exchange nets it as an intraday trade, so both legs pay
+            # intraday rates (no delivery STT or DP charge). The buy was charged as delivery: refund the difference.
+            paid = order_charges("BUY", qty, entry_price, "CNC", params.exchange, schedule).total
+            due = order_charges("BUY", qty, entry_price, "MIS", params.exchange, schedule).total
+            cash += paid - due
+            total_charges -= paid - due
+            entry_cost -= paid - due
+            fees = order_charges("SELL", qty, price, "MIS", params.exchange, schedule).total
+        else:
+            fees = order_charges("SELL", qty, price, product, params.exchange, schedule).total
         proceeds = qty * price - fees
         cash += proceeds
         total_charges += fees
@@ -198,7 +237,7 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
             blocked, rearm = False, None
         held_before = qty > 0
         may_enter = True
-        if params.intraday:
+        if same_day_only:
             new_day = i == 0 or days[i] != days[i - 1]
             if new_day:
                 blocked, rearm = False, None
@@ -210,6 +249,11 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
                 close_trade(i, opens[i] * (1 - slip), "square-off")
                 held_before = False
             may_enter = window_start <= times[i] < window_end
+
+        # 0. The holding limit: sold at this session's first open once the trade has been held long enough.
+        if held_before and max_hold and sessions[i] - sessions[entry_index] >= max_hold:
+            close_trade(i, opens[i] * (1 - slip), f"held {max_hold} day{'s' if max_hold > 1 else ''}")
+            held_before, blocked, rearm = False, True, None
 
         # 1. Act on the last bar's signal at this bar's open, or re-enter after a stoploss.
         close_only = False
@@ -271,6 +315,7 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
         "params": params.as_dict(),
         "period": {"start": dates[0].strftime("%Y-%m-%d"), "end": dates[-1].strftime("%Y-%m-%d"),
                    "bars": len(bars), "days": len(curve)},
+        "trade_type": params.trade_type,
         "metrics": {**_metrics(curve, trades, params, total_charges, in_market), "reentries": reentries,
                     "exits": exit_summary(trades, rules)},
         "buy_hold": _curve_stats(hold, params),

@@ -397,8 +397,26 @@
 
   // -- the stock backtest ------------------------------------------------------------------
 
+  // Intraday or positional. Day candles are always positional; the choice made on minute or hourly candles comes back
+  // when the candle changes back from a day.
+  function syncTradeType(form) {
+    const select = form.trade_type, daily = form.interval.value === "1d";
+    if (!select.dataset.chosen) select.dataset.chosen = select.value;
+    $("option[value=intraday]", select).disabled = daily;
+    select.value = daily ? "positional" : select.dataset.chosen;
+    select.title = daily ? "Day candles hold overnight: choose a minute or hourly candle for intraday." : "";
+    $$(".tt-positional", form).forEach((el) => { el.hidden = select.value !== "positional"; });
+    return select.value;
+  }
+  function watchTradeType(form) {
+    form.trade_type.addEventListener("change", () => { form.trade_type.dataset.chosen = form.trade_type.value; syncTradeType(form); });
+    form.interval.addEventListener("change", () => syncTradeType(form));
+    syncTradeType(form);
+  }
+  const holdDays = (form) => (form.trade_type.value === "positional" ? Math.max(0, Math.round(Number(form.max_hold_days.value || 0))) : 0);
+
   function syncStockForm() {
-    const form = $("#form-bt"), intraday = form.interval.value !== "1d";
+    const form = $("#form-bt"), intraday = syncTradeType(form) === "intraday";
     $$(".bt-intraday", form).forEach((el) => { el.hidden = !intraday; });
   }
 
@@ -409,7 +427,8 @@
     const body = { symbol: form.symbol.value, start: form.start.value, end: form.end.value, interval: form.interval.value,
       capital: Number(form.capital.value), allocation_pct: Number(form.allocation_pct.value), exits: $("#bt-exits").read() };
     if (own) body.rules = $("#bt-rules").read(); else { body.strategy = form.strategy.value; body.strategy_params = params; }
-    if (form.interval.value !== "1d") Object.assign(body, { trade_start: form.trade_start.value, trade_end: form.trade_end.value, square_off: form.square_off.value });
+    body.trade_type = form.trade_type.value; body.max_hold_days = holdDays(form);
+    if (body.trade_type === "intraday") Object.assign(body, { trade_start: form.trade_start.value, trade_end: form.trade_end.value, square_off: form.square_off.value });
     return body;
   }
 
@@ -451,9 +470,14 @@
     $("#bt-deploy-budget-label").hidden = kind !== "stock"; $("#bt-deploy-loss-label").hidden = kind === "stock";
     if (kind === "stock") $("#bt-deploy-budget").value = Math.min(Number(body.capital) * Number(body.allocation_pct) / 100, 100000);
     if (kind === "structure" && Number(body.stop_rs) > 0) $("#bt-deploy-loss").value = body.stop_rs;
+    const positional = body.trade_type === "positional" || daily;
     const notes = {
-      stock: "The algo uses this strategy, candle size and these exit rules. It trades inside the trade window in Settings"
-        + (!daily && (body.trade_start !== state.app.settings.trade_start || body.trade_end !== state.app.settings.trade_end || body.square_off !== state.app.settings.square_off)
+      stock: positional
+        ? "The algo uses this strategy, candle size, these exit rules" + (body.max_hold_days ? " and the holding limit" : "")
+          + ". It is positional: delivery (CNC), held overnight, with any target and stoploss also placed at your broker as a GTT."
+          + (daily ? " It buys when the trade window in Settings opens." : " It buys during market hours (inside the trade window in Settings only if Settings enforces it).")
+        : "The algo uses this strategy, candle size and these exit rules. It trades inside the trade window in Settings"
+        + ((body.trade_start !== state.app.settings.trade_start || body.trade_end !== state.app.settings.trade_end || body.square_off !== state.app.settings.square_off)
           ? ` (${state.app.settings.trade_start}–${state.app.settings.trade_end}, sell everything at ${state.app.settings.square_off}), not the times above: change them in Settings to match.` : "."),
       structure: "The algo uses this option strategy, these times and days, strikes, lots and each leg's exit rules. The whole position closes at the maximum loss you set here (filled from the backtest's Stoploss in ₹ when you set one) and at the backtest's Target in ₹; the % stoploss and target for the whole position are not carried over.",
       futures: "The algo holds the near-month future while this strategy says so, on day candles. It closes everything at the maximum loss you set here.",
@@ -476,7 +500,7 @@
           await reloadStrategies();
         }
         await api("/algos", { method: "POST", body: { name, symbol: body.symbol, strategy, strategy_params: params, interval: body.interval,
-          budget: Number($("#bt-deploy-budget").value), mode, exits: body.exits } });
+          trade_type: body.trade_type, max_hold_days: body.max_hold_days || 0, budget: Number($("#bt-deploy-budget").value), mode, exits: body.exits } });
         await refreshAlgos();
       } else if (kind === "structure") {
         await api("/fno-algos", { method: "POST", body: { name, kind: "structure", structure: body.structure, underlying: body.underlying,
@@ -515,7 +539,7 @@
       m.reentries ? tile("Re-entries", String(m.reentries), "after a stoploss") : null,
       r.data_source ? tile("Prices from", r.data_source.name, `${r.data_source.first} to ${r.data_source.last}`) : null].filter(Boolean));
     renderChecks(r);
-    $("#bt-chart-title").textContent = `Portfolio value · ${r.symbol} · ${r.strategy.name} · ${state.app.intervals[r.interval]} candles · ${r.period.start} to ${r.period.end}`;
+    $("#bt-chart-title").textContent = `Portfolio value · ${r.symbol} · ${r.strategy.name} · ${state.app.intervals[r.interval]} candles · ${r.trade_type === "intraday" ? "Intraday" : "Positional"} · ${r.period.start} to ${r.period.end}`;
     $("#bt-note").textContent = r.data_note || ""; $("#bt-note").hidden = !r.data_note;
     const series = [{ name: r.strategy.name, color: "var(--s1)", points: r.equity },
       { name: r.buy_hold_name || "Buy & hold " + r.symbol, color: "var(--s2)", points: r.buy_hold_equity }];
@@ -1124,6 +1148,7 @@
         h("input", { name: "p_" + p.name, type: "number", min: p.minimum, max: p.maximum, step: p.integer ? 1 : 0.1, value: p.default, required: true }))));
     };
     form.strategy.addEventListener("change", params); params();
+    watchTradeType(form);
     $("#algo-exits").replaceWith(Object.assign(exitRulesBox(false), { id: "algo-exits" }));
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -1133,7 +1158,7 @@
       $$("#algo-params input").forEach((input) => { strategyParams[input.name.slice(2)] = Number(input.value); });
       const body = { name: form.name.value, symbol: form.symbol.value, strategy: form.strategy.value,
         strategy_params: strategyParams, budget: Number(form.budget.value), mode: form.mode.value, interval: form.interval.value,
-        exits: $("#algo-exits").read() };
+        trade_type: form.trade_type.value, max_hold_days: holdDays(form), exits: $("#algo-exits").read() };
       let saved = false;
       try {
         if (editing) await api(`/algos/${editing.id}`, { method: "PUT", body });
@@ -1198,13 +1223,15 @@
     form.strategy.value = a.strategy; form.strategy.dispatchEvent(new Event("change"));
     Object.entries(a.params || {}).forEach(([k, v]) => { const input = form.elements["p_" + k]; if (input) input.value = v; });
     form.interval.value = a.interval; form.budget.value = a.budget; form.mode.value = a.mode;
+    form.trade_type.dataset.chosen = a.trade_type || (a.product === "MIS" ? "intraday" : "positional");
+    form.max_hold_days.value = a.max_hold_days || 0; syncTradeType(form);
     $("#algo-exits").load(a.exits || { unit: "pct", stop_loss: a.stop_loss_pct || 0, target: a.target_pct || 0 });
     const holding = stockHolding(a), gttAtBroker = a.protect && a.mode === "live";
     const note = !holding ? `Editing “${a.name}”. ${a.enabled ? "It keeps running with the new settings; a new stock, strategy or candle waits for a fresh signal." : "It stays stopped."}`
       + " Changing Paper/Live stops it."
       : gttAtBroker ? `“${a.name}” holds ${a.position} shares with its target and stoploss at your broker (GTT ${a.protect}). Only the budget can change now.`
-        : `“${a.name}” holds a position, so only the budget and the exit rules can change. Close or clear the position to change the rest.`;
-    beginAlgoEdit("stock", a, note, holding ? (gttAtBroker ? ["budget"] : ["budget", "exits"]) : null);
+        : `“${a.name}” holds a position, so only the budget, the exit rules and the holding limit can change. Close or clear the position to change the rest.`;
+    beginAlgoEdit("stock", a, note, holding ? (gttAtBroker ? ["budget", "max_hold_days"] : ["budget", "exits", "max_hold_days"]) : null);
   }
 
   function editFnoAlgo(a) {
@@ -1354,7 +1381,8 @@
             act("Run now", "run"), !a.enabled && a.position ? act("Clear position", "clear") : null, !a.enabled ? act("Delete", "delete") : null)),
         h("dl", { class: "kv" },
           h("dt", { text: "Strategy" }), h("dd", { text: `${a.strategy_name} on ${a.symbol}` + (Object.keys(a.params).length ? ` · ${Object.entries(a.params).map(([k, v]) => `${k} ${v}`).join(", ")}` : "") }),
-          h("dt", { text: "Trades" }), h("dd", { text: `${state.app.intervals[a.interval]} candles · ${a.product === "MIS" ? "intraday (MIS)" : "delivery (CNC)"}` }),
+          h("dt", { text: "Trades" }), h("dd", { text: `${state.app.intervals[a.interval]} candles · ${a.product === "MIS" ? "Intraday (MIS)" : "Positional, delivery (CNC)"}`
+            + (a.product !== "MIS" && a.max_hold_days ? ` · sold after ${a.max_hold_days} day${a.max_hold_days > 1 ? "s" : ""} held` : "") }),
           h("dt", { text: "Exit rules" }), h("dd", { text: a.exits_text }),
           h("dt", { text: "Budget" }), h("dd", { text: rupees(a.budget) }),
           a.queued ? h("dt", { text: "Queued" }) : null, a.queued ? h("dd", { text: `${a.queued.side} (${a.queued.reason}), waiting for the trade window` }) : null,
@@ -2768,7 +2796,7 @@
   function startOptimiser() {
     const form = $("#form-opt");
     strategyOptions(form.strategy, (x) => !x.custom && x.params.length); intervalOptions(form.interval);
-    form.strategy.value = "supertrend";
+    form.strategy.value = "supertrend"; watchTradeType(form);
     form.objective.replaceChildren(...Object.entries(state.app.optimise_objectives).map(([k, label]) => h("option", { value: k, text: label })));
     const today = state.app.today, from = new Date(today); from.setFullYear(from.getFullYear() - 5);
     form.start.value = from.toISOString().slice(0, 10); form.end.value = today;
@@ -2779,7 +2807,7 @@
       const button = $("button[type=submit]", form); showError("#opt-error", null); busy(button, true, "Starting…");
       try {
         const { job } = await api("/optimise", { method: "POST", body: { symbol: form.symbol.value, start: form.start.value, end: form.end.value,
-          interval: form.interval.value, strategy: form.strategy.value, ranges: readRanges(), objective: form.objective.value,
+          interval: form.interval.value, trade_type: form.trade_type.value, strategy: form.strategy.value, ranges: readRanges(), objective: form.objective.value,
           folds: Number(form.folds.value), train_pct: Number(form.train_pct.value), min_trades: Number(form.min_trades.value),
           stop_loss_pct: Number(form.stop_loss_pct.value || 0) } });
         $("#opt-job").hidden = false; $("#opt-result").hidden = true;
@@ -4609,6 +4637,7 @@
       const from = new Date(today); from.setDate(from.getDate() - days); $("#bt-from").value = iso(from); syncSharedDates();
       syncStockForm();
     });
+    bt.trade_type.addEventListener("change", () => { bt.trade_type.dataset.chosen = bt.trade_type.value; syncStockForm(); });
     syncStockForm();
     const bta = $("#form-bta"), month = new Date(today); month.setDate(month.getDate() - 60);
     bta.start.value = iso(month); bta.end.value = today; bta.end.max = today;
