@@ -4,19 +4,19 @@ name: Desktop app
 # PyInstaller) for macOS (Apple Silicon and Intel), Windows and Linux, and
 # publishes the installers as a GitHub release with download links.
 #
-# Release:  bump "version" in desktop/app/src-tauri/tauri.conf.json, then
-#           git tag desktop-v<version> && git push origin desktop-v<version>
-# Test build without a release: run this workflow by hand with publish off.
+# Release: bump "version" in desktop/app/src-tauri/tauri.conf.json and merge
+# to main. The push to main builds and publishes release desktop-v<version>
+# (once per version; a later push with the same version builds but does not
+# publish). Pull requests that touch the app build the installers as
+# workflow artifacts, without a release.
 
 on:
   push:
-    tags: ["desktop-v*"]
+    branches: [main]
+    paths: ["desktop/**", "desk/**", "tradingagents/**", "pyproject.toml", ".github/workflows/desktop.yml"]
+  pull_request:
+    paths: ["desktop/**", "desk/app.py", "pyproject.toml", ".github/workflows/desktop.yml"]
   workflow_dispatch:
-    inputs:
-      publish:
-        description: "Publish a release (needs a desktop-v* tag as the ref)"
-        type: boolean
-        default: false
 
 permissions: {}
 
@@ -61,13 +61,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Check the tag matches the app version
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
+      - name: Check package.json and tauri.conf.json agree on the version
         run: |
-          version=$(python3 -c "import json; print(json.load(open('desktop/app/src-tauri/tauri.conf.json'))['version'])")
-          if [ "desktop-v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "tauri.conf.json says $version, but the tag is $GITHUB_REF_NAME"; exit 1
-          fi
+          a=$(python3 -c "import json; print(json.load(open('desktop/app/src-tauri/tauri.conf.json'))['version'])")
+          b=$(python3 -c "import json; print(json.load(open('desktop/app/package.json'))['version'])")
+          [ "$a" = "$b" ] || { echo "tauri.conf.json says $a, package.json says $b"; exit 1; }
 
       - uses: actions/setup-python@v7
         with:
@@ -134,21 +132,34 @@ jobs:
   release:
     name: publish release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/desktop-v') && (github.event_name == 'push' || inputs.publish)
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v7
+      - name: Decide the release tag
+        id: tag
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('desktop/app/src-tauri/tauri.conf.json'))['version'])")
+          tag="desktop-v$version"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag exists; bump the version in tauri.conf.json to publish a new one."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@v8
+        if: steps.tag.outputs.publish == 'true'
         with:
           pattern: installers-*
           path: out
           merge-multiple: true
       - name: Write checksums and release notes
+        if: steps.tag.outputs.publish == 'true'
         run: |
           cd out
           sha256sum * > SHA256SUMS.txt
@@ -190,10 +201,7 @@ jobs:
           sed -i 's/^          //' notes.md
           cat notes.md
       - name: Publish
+        if: steps.tag.outputs.publish == 'true'
         run: |
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" out/* --clobber --repo "$GITHUB_REPOSITORY"
-            gh release edit "$TAG" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create "$TAG" out/* --title "TradeSetu Desktop ${TAG#desktop-v}" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
-          fi
+          gh release create "$TAG" out/* --target "$GITHUB_SHA" --title "TradeSetu Desktop ${TAG#desktop-v}" \
+            --notes-file notes.md --repo "$GITHUB_REPOSITORY"

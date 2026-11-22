@@ -22,7 +22,7 @@ Needs Rust and Node.js 20+; on Linux also `libwebkit2gtk-4.1-dev libappindicator
 
 ## Release
 
-Bump `version` in `desktop/app/src-tauri/tauri.conf.json` (and `package.json`), then push a tag `desktop-v<version>`.
+Bump `version` in `desktop/app/src-tauri/tauri.conf.json` and `desktop/app/package.json`, then merge to main: the workflow publishes release `desktop-v<version>` with the installers. Pull requests that touch the app build the installers as workflow artifacts only.
 
 ## Signing
 
