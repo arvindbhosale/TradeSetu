@@ -298,7 +298,7 @@
   <div id="algo-stocks">
   <div class="panel">
     <h2 id="algo-form-title">New algo</h2>
-    <p class="hint">An algo runs one strategy on one stock by itself. The easiest way to make one is to backtest first, then press <strong>Create algo</strong> under the result. <strong>Day candles</strong>: delivery (CNC). It reads the day's candle after the close and sends its order when your trade window opens next session; the target and stoploss are placed as a GTT. <strong>Intraday candles</strong>: intraday (MIS). It trades inside your trade window, watches the target and stoploss on the live price, and sells everything at the sell-everything (square-off) time.</p>
+    <p class="hint">An algo runs one strategy on one stock by itself. The easiest way to make one is to backtest first, then press <strong>Create algo</strong> under the result. <strong>Intraday</strong> (minute or hourly candles): intraday (MIS). It trades inside your trade window, watches the target and stoploss on the live price, and sells everything at the sell-everything (square-off) time. <strong>Positional</strong>: delivery (CNC), held for days until the exit rule, the stoploss, the target or the holding limit closes it. On day candles it reads the day's candle after the close and sends its order when your trade window opens next session. On minute or hourly candles it reads each candle during market hours and watches the price, with no sell-everything time. Either way the target and stoploss are also placed at your broker as a GTT, so they still work overnight, while the app is off and before your morning login.</p>
     <form id="form-algo">
       <div class="editing-banner" id="algo-editing" hidden><span></span><button type="button" id="algo-edit-cancel">Cancel edit</button></div>
       <div class="row">
@@ -306,6 +306,7 @@
         <label>Symbol <input name="symbol" required placeholder="RELIANCE" autocomplete="off"></label>
         <label>Strategy <select name="strategy"></select></label>
         <label>Candle <select name="interval"></select></label>
+        <label>Trade type <select name="trade_type"><option value="intraday">Intraday: buy and sell the same day</option><option value="positional">Positional: hold for days</option></select></label>
       </div>
       <div class="row">
         <label>Budget (₹) <input name="budget" type="number" min="1000" step="1000" required value="25000"></label>
@@ -314,6 +315,9 @@
       <div class="row" id="algo-params"></div>
       <h3>Exit rules</h3>
       <div id="algo-exits"></div>
+      <details class="advanced tt-positional"><summary>Advanced</summary>
+        <div class="row"><label>Sell after holding this many trading days (0 = no limit) <input name="max_hold_days" type="number" min="0" max="2000" step="1" value="0"></label></div>
+      </details>
       <div class="row"><button class="primary" type="submit">Create algo</button><span class="hint" data-create-hint>Created stopped. Start it from the list below.</span></div>
     </form>
     <div id="algo-error" class="error" hidden></div>
@@ -567,6 +571,7 @@
           <label>From <input name="start" type="date" required></label>
           <label>To <input name="end" type="date" required></label>
           <label>Candle <select name="interval"></select></label>
+          <label>Trade type <select name="trade_type"><option value="intraday">Intraday: buy and sell the same day</option><option value="positional">Positional: hold for days</option></select></label>
           <label>Strategy <select name="strategy"></select></label>
         </div>
         <div id="opt-ranges"></div>
@@ -857,6 +862,7 @@
         <div class="row">
           <label>Stock <input name="symbol" required placeholder="RELIANCE" autocomplete="off"></label>
           <label>Candle <select name="interval"></select></label>
+          <label>Trade type <select name="trade_type"><option value="intraday">Intraday: buy and sell the same day</option><option value="positional">Positional: hold for days</option></select></label>
           <label class="bt-own" hidden>From <input name="start" type="date" required></label>
           <label class="bt-own" hidden>To <input name="end" type="date" required></label>
           <label class="bt-own" hidden>Capital (₹) <input name="capital" type="number" min="1000" step="1000" required></label>
@@ -872,8 +878,12 @@
           <label>Stop buying at <input name="trade_end" type="time" min="09:15" max="15:30"></label>
           <label>Sell everything at <input name="square_off" type="time" min="09:15" max="15:30"></label>
         </div>
+        <p class="hint tt-positional">Positional: held overnight until the exit rule, the stoploss or the target closes it, with delivery (CNC) charges. When the price opens past the stoploss or the target, it sells at that open price. A trade bought and sold the same day pays intraday charges.</p>
         <h3>Exit rules</h3>
         <div id="bt-exits"></div>
+        <details class="advanced tt-positional"><summary>Advanced</summary>
+          <div class="row"><label>Sell after holding this many trading days (0 = no limit) <input name="max_hold_days" type="number" min="0" max="2000" step="1" value="0"></label></div>
+        </details>
         <div class="row"><button class="primary" type="submit">Run backtest</button></div>
       </form>
       <div id="bt-error" class="error" hidden></div>

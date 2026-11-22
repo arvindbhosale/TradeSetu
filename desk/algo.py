@@ -1,16 +1,30 @@
 """Algo trading: a strategy that trades one stock by itself.
 
-Two kinds, chosen by the candle size:
+Two trade types. Day candles are always positional; intraday candles can be either.
 
-- **Daily (delivery, CNC).** After the close the algo reads the day's candle. If
+- **Positional on day candles (delivery, CNC).** After the close the algo reads the day's candle. If
   the strategy's position changed it queues one order and sends it when the
   trade window opens next session (09:30 by default). With the window switched
   off it sends at once, live as an AMO. A target and stoploss, when set, are
   placed as a GTT after the buy fills.
-- **Intraday (MIS).** During the trade window the algo reads each finished
-  candle and enters or exits on the strategy's signal. It watches the price for
-  the target and stoploss, takes no new entry after the window ends, and sells
-  whatever it holds at the square-off time. Nothing is carried overnight.
+- **Intraday (MIS), intraday candles.** During the trade window the algo reads
+  each finished candle and enters or exits on the strategy's signal. It watches
+  the price for the target and stoploss, takes no new entry after the window
+  ends, and sells whatever it holds at the square-off time. Nothing is carried
+  overnight.
+- **Positional (delivery, CNC), intraday candles.** Reads each finished candle
+  during market hours like an intraday algo, but there is no square-off: the
+  position is carried overnight until the strategy, the stoploss, the target or
+  the holding limit closes it. After the buy fills, the target and stoploss are
+  also placed as a GTT, so the broker still guards the position overnight,
+  across a desk restart and before the morning login; a trailing stoploss moves
+  the GTT up once a candle. The trade window in Settings limits its buys only
+  when Settings enforces it. The daily loss limit does not sell it (as with
+  delivery holdings).
+
+A holding limit (``max_hold_days``) sells a positional position once it has been
+held that many trading days: a day-candle algo queues the sell for the open of
+that day, an intraday-candle one sells at its first check that day.
 
 Every order passes the desk's risk checks. Things to know before going live:
 
@@ -88,7 +102,10 @@ class AlgoEngine:
             if isinstance(stored, list):
                 for algo in stored:
                     if isinstance(algo, dict) and "id" in algo:
-                        self._algos[algo["id"]] = {**_BLANK, **algo}
+                        algo = {**_BLANK, **algo}
+                        if not algo.get("trade_type"):        # saved before the choice: the product says which
+                            algo["trade_type"] = "intraday" if algo.get("product") == "MIS" else "positional"
+                        self._algos[algo["id"]] = algo
 
     # -- storage ------------------------------------------------------------
 
@@ -145,6 +162,16 @@ class AlgoEngine:
             raise AlgoError(f"Candle size must be one of {', '.join(data.INTERVALS)}.")
         if strategy.intraday_only and interval == "1d":
             raise AlgoError(f"{strategy.name} needs an intraday candle size.")
+        kind = str(raw.get("trade_type") or ("positional" if interval == "1d" else "intraday")).lower()
+        if kind not in ("intraday", "positional"):
+            raise AlgoError("Trade type must be intraday or positional.")
+        if kind == "intraday" and interval == "1d":
+            raise AlgoError("An intraday algo needs minute or hourly candles. Day candles are positional.")
+        hold = raw.get("max_hold_days") or 0
+        if isinstance(hold, bool) or not isinstance(hold, (int, float)) or hold != int(hold) or not 0 <= hold <= 2000:
+            raise AlgoError("Sell after (days held) must be a whole number of days from 0 (no limit) to 2000.")
+        if hold and kind == "intraday":
+            raise AlgoError("A holding limit in days needs a positional algo: intraday algos sell the same day.")
         mode = raw.get("mode", "paper")
         if mode not in ("paper", "live"):
             raise AlgoError("Mode must be paper or live.")
@@ -164,12 +191,16 @@ class AlgoEngine:
             raise AlgoError(f"{str(exc)[:1].upper()}{str(exc)[1:]}.") from None
         levels.update(target_pct=0.0, stop_loss_pct=0.0)       # kept for algos saved before exit rules
         return {"name": name, "symbol": symbol, "strategy": strategy.key, "strategy_name": strategy.name,
-                "params": params, "interval": interval, "product": "CNC" if interval == "1d" else "MIS",
+                "params": params, "interval": interval, "trade_type": kind, "max_hold_days": int(hold),
+                "product": "CNC" if kind == "positional" else "MIS",
                 "mode": mode, "budget": float(budget), **levels, "exits": exits.as_dict()}
 
     @staticmethod
     def _summary(algo: dict) -> str:
-        kind = "daily, delivery" if algo["interval"] == "1d" else f"{algo['interval']} candles, intraday"
+        kind = ("daily, delivery" if algo["interval"] == "1d" else
+                f"{algo['interval']} candles, {'positional (delivery)' if positional(algo) else 'intraday'}")
+        if positional(algo) and algo.get("max_hold_days"):
+            kind += f", sold after {algo['max_hold_days']} day{'s' if algo['max_hold_days'] > 1 else ''} held"
         exits = AlgoEngine.rules(algo).text()
         return (f"{algo['strategy_name']} on {algo['symbol']}, ₹{algo['budget']:,.0f}, {algo['mode']}, {kind}; "
                 f"{exits}")
@@ -213,11 +244,12 @@ class AlgoEngine:
                     changed.remove(key)                       # follow from the fields below
             if not changed:
                 return json.loads(json.dumps(algo))
-            core = [k for k in changed if k in ("symbol", "strategy", "params", "interval", "mode")]
+            core = [k for k in changed if k in ("symbol", "strategy", "params", "interval", "trade_type", "mode")]
             if self.holding(algo):
                 if core:
-                    raise AlgoError(f"This algo {self._holding_text(algo)}. While it does, only the budget and the "
-                                    f"exit rules can change. Close or clear the position to change the rest.")
+                    raise AlgoError(f"This algo {self._holding_text(algo)}. While it does, only the budget, the "
+                                    f"exit rules and the holding limit can change. Close or clear the position to "
+                                    f"change the rest.")
                 if "exits" in changed and algo["protect"] and algo["mode"] == "live":
                     raise AlgoError(f"The target and stoploss of this algo sit at your broker as GTT {algo['protect']}. "
                                     f"Change them there, or close the position first.")
@@ -288,7 +320,8 @@ class AlgoEngine:
             if algo["enabled"]:
                 raise AlgoError("Stop the algo first.")
             self._log(algo, f"Position of {algo['position']} cleared by hand; no order was sent.")
-            algo.update(position=0, average_price=0.0, pending=None, queued=None, protect=None, seen_flat=False)
+            algo.update(position=0, average_price=0.0, pending=None, queued=None, protect=None, seen_flat=False,
+                        entry_day=None)
             self._save()
             return json.loads(json.dumps(algo))
 
@@ -395,6 +428,20 @@ class AlgoEngine:
             return self._exit(algo)
         return self._daily(algo, force) if algo["interval"] == "1d" else self._intraday(algo, force)
 
+    def _days_held(self, algo: dict) -> int:
+        """Trading days since the buy, not counting the buy's own day: 0 on the day of the buy, 1 the next session.
+        A position bought before the entry day was recorded counts from today."""
+        start = algo.get("entry_day")
+        today = self._now().date()
+        if not start:
+            algo["entry_day"] = today.isoformat()
+            return 0
+        day, held = datetime.strptime(start, "%Y-%m-%d").date(), 0
+        while day < today and held < 5000:
+            day += timedelta(days=1)
+            held += market.is_trading_day(datetime.combine(day, clock_time(12), tzinfo=market.IST))
+        return held
+
     def _holding(self, algo: dict) -> str:
         return f"holding {algo['position']}" if algo["position"] else "flat"
 
@@ -486,7 +533,12 @@ class AlgoEngine:
 
         side = None
         reason = f"{last_bar} signal"
-        if target == 1 and algo["position"] == 0:
+        limit = algo.get("max_hold_days") or 0
+        if algo["position"] and limit and not algo["pending"] and self._days_held(algo) + 1 >= limit:
+            # Sold at the next open: that session is the limit-th trading day after the buy.
+            side, reason = "SELL", f"held {limit} day{'s' if limit > 1 else ''}"
+            algo["blocked"], algo["rearm"] = True, None
+        elif target == 1 and algo["position"] == 0:
             if not algo["seen_flat"]:
                 return self._result(algo, "Running: waiting for a fresh entry", True,
                                     f"{last_bar}: strategy is already long. Waiting for it to go flat and signal "
@@ -533,6 +585,10 @@ class AlgoEngine:
     def _intraday(self, algo: dict, force: bool) -> dict:
         window, now = self.desk.window_status(), self._now()
         cfg = self.desk.settings.all()
+        carry = positional(algo)
+        if not window["market"] and carry:
+            # Held overnight: nothing to do until the market opens. The GTT (if any) guards it at the broker.
+            return self._result(algo, f"Running: market closed, {self._holding(algo)}", True)
         if not window["market"]:
             if algo["position"] and algo["mode"] == "paper":
                 # Missed the square-off (the desk was down): nothing is carried overnight.
@@ -544,15 +600,27 @@ class AlgoEngine:
 
         instrument = "{}:{}".format(*kite_instrument(algo["symbol"]))
         price, _ = self.desk.last_price(instrument)
+        # A positional algo's buys: inside market hours, and inside the trade window only when Settings enforces it.
+        entries_open = (window["entries"] if cfg["enforce_trade_window"] else window["market"]) if carry else window["entries"]
 
-        # 1. Square-off time: sell and stop for the day.
-        if window["square_off"]:
+        if carry and algo["protect"]:
+            self._check_protection(algo)         # the GTT may have sold it at the open, before this check
+
+        # 1a. Positional: the holding limit.
+        limit = algo.get("max_hold_days") or 0
+        if carry and algo["position"] and limit and self._days_held(algo) >= limit:
+            algo["blocked"], algo["rearm"] = True, None
+            return self._send(algo, "SELL", f"held {limit} day{'s' if limit > 1 else ''}", fallback_price=price)
+
+        # 1. Intraday: square-off time, sell and stop for the day.
+        if not carry and window["square_off"]:
             if algo["position"]:
                 return self._send(algo, "SELL", f"square-off at {cfg['square_off']}", fallback_price=price)
             return self._result(algo, "Running: done for the day", True)
 
-        # 2. The daily loss limit was hit: close out and stay out.
-        if algo["position"] and self.desk.flatten_day == now.strftime("%Y-%m-%d"):
+        # 2. Intraday: the daily loss limit was hit, close out and stay out. Positional positions are held, like
+        # delivery holdings; the kill switch stops new buys.
+        if not carry and algo["position"] and self.desk.flatten_day == now.strftime("%Y-%m-%d"):
             algo["blocked"] = True
             return self._send(algo, "SELL", "daily loss limit", fallback_price=price)
 
@@ -569,7 +637,7 @@ class AlgoEngine:
                 return self._send(algo, "SELL", f"target ₹{goal:,.2f} (bought at ₹{entry:,.2f}), price ₹{price:,.2f}")
 
         # 3b. A re-entry after a stoploss, while the strategy still says buy.
-        if (algo.get("rearm") and (algo["last_signal"] or {}).get("target") == 1 and window["entries"]
+        if (algo.get("rearm") and (algo["last_signal"] or {}).get("target") == 1 and entries_open
                 and not self.desk.settings.get("kill_switch") and not self._held(algo)
                 and self._reentry_due(algo, price)):
             self._mark_entry(algo, reentry=True)
@@ -609,6 +677,8 @@ class AlgoEngine:
         close = float(bars["Close"].iloc[-1])
         algo["last_bar"] = last_bar
         algo["last_signal"] = {"bar": last_bar, "target": target, "close": round(close, 2)}
+        if carry and algo["position"] and target == 1:
+            self._trail_daily(algo, close)         # a trailing stoploss moves the GTT up, once a candle
         if target == 0:
             algo["blocked"], algo["rearm"] = False, None
         if target == 0 and algo["position"]:
@@ -621,9 +691,10 @@ class AlgoEngine:
                 return self._result(algo, "Running: new buys held", True,
                                     f"{last_bar}: BUY signal not taken: new buys are held until the end of "
                                     f"{algo['hold_until']}.")
-            if not window["entries"]:
+            if not entries_open:
+                where = f"{cfg['trade_start']}-{cfg['trade_end']}" if not carry or cfg["enforce_trade_window"] else "market hours"
                 return self._result(algo, "Running: outside the entry window", True,
-                                    f"{last_bar}: BUY signal outside {cfg['trade_start']}-{cfg['trade_end']}; not taken.")
+                                    f"{last_bar}: BUY signal outside {where}; not taken.")
             self._mark_entry(algo, reentry=False)
             return self._send(algo, "BUY", f"{last_bar} signal", fallback_price=price or close)
         return self._result(algo, f"Running: {self._holding(algo)}", True)
@@ -706,7 +777,7 @@ class AlgoEngine:
 
     def _protect(self, algo: dict) -> None:
         """After a delivery buy, place the target and stoploss as a GTT."""
-        if algo["interval"] != "1d" or not algo["position"]:
+        if not positional(algo) or not algo["position"]:
             return
         stop, kind, goal = self._levels(algo)
         if algo.get("trail_stop") and (stop is None or algo["trail_stop"] > stop):
@@ -799,14 +870,15 @@ class AlgoEngine:
                 self._stopped_out(algo, kind)
             else:
                 algo["blocked"], algo["rearm"] = True, None
-            algo.update(position=0, average_price=0.0)
+            algo.update(position=0, average_price=0.0, entry_day=None)
         else:
             self._log(algo, f"GTT {algo['protect']} is {state}. The position is no longer protected by it.")
         algo["protect"] = None
 
-    @staticmethod
-    def _apply_fill(algo: dict, side: str, quantity: int, price: float) -> None:
+    def _apply_fill(self, algo: dict, side: str, quantity: int, price: float) -> None:
         if side == "BUY":
+            if not algo["position"]:
+                algo["entry_day"] = self._now().strftime("%Y-%m-%d")
             total = algo["position"] + quantity
             algo["average_price"] = round((algo["position"] * algo["average_price"] + quantity * price) / total, 2)
             algo["position"] = total
@@ -814,7 +886,7 @@ class AlgoEngine:
         else:
             algo["position"] = max(algo["position"] - quantity, 0)
             if not algo["position"]:
-                algo["average_price"] = 0.0
+                algo["average_price"], algo["entry_day"] = 0.0, None
 
     def _reconcile(self, algo: dict) -> bool:
         """Settle a live order sent earlier. True once it is no longer pending."""
@@ -874,7 +946,10 @@ class AlgoEngine:
                         out.append(algo["id"])
                     continue
                 if algo["interval"] != "1d":
-                    if market.OPEN <= clock < market.CLOSE or algo["position"]:
+                    # An intraday position left open after the close is reported; a positional one simply waits,
+                    # once an order sent before the close is settled (the broker lists only the day's orders).
+                    if (market.OPEN <= clock < market.CLOSE or (algo["position"] and not positional(algo))
+                            or algo["pending"]):
                         out.append(algo["id"])
                 elif (algo["queued"] or algo["pending"] or algo["protect"]) and (
                         market.OPEN <= clock < market.CLOSE or RUN_AFTER <= clock <= RUN_UNTIL) or RUN_AFTER <= clock <= RUN_UNTIL and algo["last_bar"] != today:
@@ -966,5 +1041,10 @@ _BLANK = {
     "position": 0, "average_price": 0.0, "seen_flat": False, "blocked": False,
     "pending": None, "queued": None, "protect": None,
     "last_bar": None, "last_signal": None, "status": "Stopped", "log": [],
-    "exit_requested": False, "hold_until": None,
+    "exit_requested": False, "hold_until": None, "trade_type": None, "max_hold_days": 0, "entry_day": None,
 }
+
+
+def positional(algo: dict) -> bool:
+    """Whether the algo holds across days (CNC). Day-candle algos always do."""
+    return algo["interval"] == "1d" or algo.get("trade_type") == "positional"
