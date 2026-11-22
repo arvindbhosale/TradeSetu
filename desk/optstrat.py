@@ -206,6 +206,82 @@ def leg_specs(structure: str) -> list[dict]:
     return out
 
 
+CUSTOM = "custom"
+MAX_LEGS = 8
+MAX_STRIKES = 60       # a leg's strike at most this many strikes from the money
+MAX_RATIO = 10
+
+
+def own_legs(raw) -> list[dict]:
+    """Your own legs, checked: a list of {"side": "BUY"|"SELL", "type": "CE"|"PE"|"FUT", "strikes": strikes from the
+    at-the-money strike (+ above, − below; ignored for futures), "lots": lots of this leg per lot of the position,
+    "expiry": "near"|"far"}. Returned as leg specs (action, type, off, n, ratio, series).
+
+    Strikes are counted from the money, not fixed prices: a backtest opens a fresh position each time over months or
+    years while the index moves thousands of points, so "24000 CE" would be deep in or far out of the money on most
+    entries. ATM+2 means the same trade every time."""
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_LEGS:
+        raise ValueError(f"Give 1 to {MAX_LEGS} legs.")
+    out = []
+    for n, leg in enumerate(raw, 1):
+        if not isinstance(leg, dict):
+            raise ValueError(f"Leg {n} is not a leg.")
+        side = str(leg.get("side", "")).upper()
+        kind = str(leg.get("type", "")).upper()
+        if side not in ("BUY", "SELL"):
+            raise ValueError(f"Leg {n}: choose Buy or Sell.")
+        if kind not in ("CE", "PE", "FUT"):
+            raise ValueError(f"Leg {n}: choose Call (CE), Put (PE) or Futures.")
+        strikes, lots = leg.get("strikes", 0), leg.get("lots", 1)
+        for label, value, low, high in (("strikes from ATM", strikes, -MAX_STRIKES, MAX_STRIKES), ("lots", lots, 1, MAX_RATIO)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value) or not low <= value <= high:
+                raise ValueError(f"Leg {n}: {label} must be a whole number from {low} to {high}.")
+        series = str(leg.get("expiry") or "near")
+        if series not in ("near", "far"):
+            raise ValueError(f"Leg {n}: expiry must be near or far.")
+        if kind == "FUT":
+            strikes, series = 0, "near"
+        out.append({"action": 1 if side == "BUY" else -1, "type": kind, "off": f"{int(strikes):+d}" if strikes else "0",
+                    "n": int(strikes), "ratio": int(lots), "series": series})
+    if all(x["type"] == "FUT" for x in out):
+        raise ValueError("Add at least one option leg (the Futures backtest trades futures alone).")
+    if all(x["series"] == "far" for x in out if x["type"] != "FUT"):
+        raise ValueError("At least one option leg must be on the near expiry (the far one is sold back when it expires).")
+    return out
+
+
+def legs_for(structure: str, k: int, w: int, legs=None) -> list[dict]:
+    """The legs to trade, each with ``n``, its strikes from the money: your own ``legs`` (see ``own_legs``) when
+    given, otherwise the structure's at short distance ``k`` and wing ``w``."""
+    if legs is not None:
+        return own_legs(legs)
+    if structure not in STRUCTURES:
+        raise ValueError(f"structure must be one of {', '.join(STRUCTURES)} or {CUSTOM} with your own legs")
+    return [{**x, "n": _offset(x["off"], k, w)} for x in leg_specs(structure)]
+
+
+def strike_words(n: int) -> str:
+    """A leg's strike in words: ATM, ATM+2, ATM−3."""
+    return "ATM" if n == 0 else f"ATM{'+' if n > 0 else '−'}{abs(n)}"
+
+
+def legs_text(specs: list[dict]) -> str:
+    """Your own legs in short words: Sell ATM+2 CE, Buy ATM+6 CE (far)."""
+    parts = []
+    for x in specs:
+        what = "Futures" if x["type"] == "FUT" else f"{strike_words(x['n'])} {x['type']}"
+        parts.append(f"{'Buy' if x['action'] > 0 else 'Sell'} {str(x['ratio']) + '× ' if x['ratio'] > 1 else ''}{what}"
+                     f"{' (far)' if x['series'] == 'far' else ''}")
+    return ", ".join(parts)
+
+
+def strategy_name(structure: str, legs) -> str:
+    """What to call a structure: the preset's name, "<preset> (your strikes)" or "Your own strategy"."""
+    if structure in STRUCTURES:
+        return STRUCTURES[structure]["name"] + (" (your strikes)" if legs is not None else "")
+    return "Your own strategy"
+
+
 def _intrinsic(kind: str, strike: float, spot: float) -> float:
     return max(spot - strike, 0.0) if kind == "CE" else max(strike - spot, 0.0)
 
@@ -367,16 +443,20 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                   exit_days_before: int = 0, leg_sl_pct: float = 0.0, stop_pct: float = 0.0, target_pct: float = 0.0,
                   signal: pd.Series | None = None, margin_pct: float = 12.0, iv_scale: float = 1.0, skew: float = 0.0,
                   slippage_pct: float = 1.0, holidays=frozenset(), risk_free_rate_pct: float = 6.5,
-                  leg_exits: ExitRules | None = None, leg_scope: str = "sold", history=None) -> dict:
+                  leg_exits: ExitRules | None = None, leg_scope: str = "sold", history=None, legs=None,
+                  stop_rs: float = 0.0, target_rs: float = 0.0) -> dict:
     """Backtest one structure. ``leg_exits`` are each option leg's own exit rules (stoploss, target, trailing,
     stoploss to cost, re-entry; ``risk.ExitRules``, distances on the leg's premium) for the legs ``leg_scope``
     names: ``sold``, ``bought`` or ``all``. Without them ``leg_sl_pct`` is a % stoploss on each sold leg.
 
     ``history`` (a ``chainhistory.ChainHistory``): price legs from NSE's bhavcopy (day candles) or recorded live
     snapshots (intraday) where it has them, on the expiries NSE actually listed; the model fills the gaps. The
-    result's ``pricing`` counts where each fill's price came from."""
-    if structure not in STRUCTURES:
-        raise ValueError(f"structure must be one of {', '.join(STRUCTURES)}")
+    result's ``pricing`` counts where each fill's price came from.
+
+    ``legs``: your own legs in place of the structure's (see ``own_legs``; ``structure`` is then a preset whose
+    strikes you changed, or ``custom``). ``stop_rs`` / ``target_rs``: close the whole position when its profit or
+    loss (closed legs plus open ones at the candle's close, before charges) reaches this many rupees."""
+    specs = legs_for(structure, k, w, legs)
     if mode not in MODES:
         raise ValueError(f"mode must be one of {', '.join(MODES)}")
     intraday = mode == "intraday"
@@ -389,10 +469,16 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
     bias = STRUCTURES.get(structure, {}).get("bias")
     if mode == "signal" and not bias:
         raise ValueError("Signal mode is for directional structures (spreads, protective put, covered call). "
-                         "Run straddles, strangles, condors and flies on a calendar (intraday or positional).")
+                         "Run straddles, strangles, condors and flies on a calendar (intraday or positional)."
+                         if legs is None or structure in STRUCTURES else
+                         "Signal mode needs a bullish or bearish preset. Start your legs from one (a spread, "
+                         "protective put, covered call), or run your own strategy intraday or positional.")
     if lots < 1 or lot_size < 1 or not 0 <= k <= 40 or not 1 <= w <= 60:
         raise ValueError("lots ≥ 1; short distance 0-40 strikes; wing 1-60 strikes")
-    if k < STRUCTURES[structure].get("min_k", 0):
+    for label, value in (("Stoploss (₹)", stop_rs), ("Target (₹)", target_rs)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1e8:
+            raise ValueError(f"{label} for the whole position must be between 0 and 10 crore")
+    if legs is None and k < STRUCTURES[structure].get("min_k", 0):
         raise ValueError(f"{STRUCTURES[structure]['name']} needs the legs at least {STRUCTURES[structure]['min_k']} strike "
                          "from the money (k); at 0 it is a straddle.")
     if leg_scope not in LEG_SCOPES:
@@ -416,7 +502,7 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
         raise ValueError("The India VIX series does not look like VIX (values above 150).")
     pricer = (_HistoryPricer(vol, iv_scale, skew, history, underlying, intraday) if history is not None
               else _Pricer(vol, iv_scale, skew))
-    spec = STRUCTURES[structure]
+    name = strategy_name(structure, legs)
     step = STRIKE_STEP.get(underlying, 50)
     qty = lots * lot_size
     slip = slippage_pct / 100
@@ -433,8 +519,6 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
     cash, total_charges, in_market, skipped = capital, 0.0, 0, 0
     trades, equity = [], np.empty(len(bars))
     book = None             # {"legs": [...], "expiry", "opened_i", "margin", "net_open"}
-
-    specs = leg_specs(structure)
 
     def leg_fee(leg, side, price):
         if leg["type"] == "FUT":
@@ -459,9 +543,9 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
         legs = []
         for x in specs:
             kind = x["type"]
-            strike = atm + _offset(x["off"], k, w) * step if kind != "FUT" else 0.0
+            strike = max(atm + x["n"] * step, step) if kind != "FUT" else 0.0
             leg = {"action": x["action"], "type": kind, "strike": float(strike), "ratio": x["ratio"], "series": x["series"],
-                   "expiry": far if x["series"] == "far" else expiry, "open": True, "off": x["off"]}
+                   "expiry": far if x["series"] == "far" else expiry, "open": True, "n": x["n"]}
             mid = pricer.price(leg, spot, stamp, leg["expiry"])
             if kind != "FUT":
                 pricer.count()
@@ -566,7 +650,7 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
             if leg_exits.reentry_mode == "at_once":
                 # Straight away: the entry rule picks the strike again, from the index now.
                 atm = round(opens[i] / step) * step
-                fresh = {**g, "strike": float(atm + _offset(g["off"], k, w) * step)}
+                fresh = {**g, "strike": float(max(atm + g["n"] * step, step))}
                 reopen(fresh | {"rearm": rearm}, i, stamp, pricer.price(fresh, opens[i], stamp, g["expiry"]))
                 pricer.count()
                 g["rearm"] = None
@@ -610,11 +694,15 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                     close_leg(g, first if gapped else goal)
                 else:
                     g["best"] = max(g["best"], high) if side > 0 else min(g["best"], low)
-        if (stop_pct or target_pct) and book:
+        if (stop_pct or target_pct or stop_rs or target_rs) and book:
             base = abs(book["net_open"]) or book["margin"]
             running = book["realised"] + mtm(closes[i], stamp)
+            if stop_rs and running <= -stop_rs:
+                return "stoploss in ₹"
             if stop_pct and running <= -stop_pct / 100 * base:
                 return "stoploss"
+            if target_rs and running >= target_rs:
+                return "target in ₹"
             if target_pct and running >= target_pct / 100 * base:
                 return "target"
         return None
@@ -684,9 +772,12 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
     metrics.update(skipped_entries=skipped, legs_stopped=sum(t["legs_stopped"] for t in trades),
                    reentries=sum(t.get("reentries", 0) for t in trades),
                    avg_margin=round(float(np.mean([t["margin"] for t in trades])), 0) if trades else None)
-    return {"strategy": {"name": f"{spec['name']} · {mode}"}, "structure": structure, "mode": mode,
+    return {"strategy": {"name": f"{name} · {mode}"}, "structure": structure, "mode": mode,
+            "legs": [{"side": "BUY" if x["action"] > 0 else "SELL", "type": x["type"], "strikes": x["n"], "lots": x["ratio"],
+                      "expiry": x["series"]} for x in specs], "legs_text": legs_text(specs),
             "params": {**params.__dict__, "lots": lots, "lot_size": lot_size, "k": k, "w": w, "expiry_kind": expiry_kind,
                        "leg_sl_pct": leg_sl_pct, "stop_pct": stop_pct, "target_pct": target_pct, "iv_scale": iv_scale,
+                       "stop_rs": stop_rs, "target_rs": target_rs,
                        "leg_exits": leg_exits.as_dict(), "leg_scope": leg_scope},
             "simulated": pricer.used is None or pricer.used["model"] > 0, "pricing": pricer.used,
             "symbol": underlying, "skipped_entries": skipped,
@@ -700,7 +791,8 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
 
 def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: float, far_days: float | None = None,
             k: int = 2, w: int = 4, lots: int = 1, lot_size: int = 65, margin_pct: float = 12.0,
-            premiums: list | None = None, labels: list | None = None, rate: float = RATE, points: int = 241) -> dict:
+            premiums: list | None = None, labels: list | None = None, rate: float = RATE, points: int = 241,
+            legs=None) -> dict:
     """Legs, premiums, payoff, breakevens, maximum profit and loss, Greeks and margin of one structure, now.
 
     Premiums are Black-Scholes at ``iv`` (a fraction, 0.14 for 14%) unless ``premiums`` gives one per leg (for example
@@ -709,11 +801,10 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
     that price. ``labels`` names where each given premium came from (default "given"). ``days`` is the calendar days
     to the near expiry; calendars and diagonals also need ``far_days`` (default ``days`` + 7 for weekly, + 28 beyond).
     The expiry payoff is at the near expiry; a later-expiry leg is valued then at ``iv``. Rupee figures are for
-    ``lots`` × ``lot_size``.
+    ``lots`` × ``lot_size``. ``legs``: your own legs (see ``own_legs``) in place of the structure's.
     """
-    if structure not in STRUCTURES:
-        raise ValueError(f"structure must be one of {', '.join(STRUCTURES)}")
-    spec = STRUCTURES[structure]
+    specs = legs_for(structure, k, w, legs)
+    spec = STRUCTURES.get(structure, {"name": strategy_name(structure, legs), "about": legs_text(specs)})
     if not spot > 0:
         raise ValueError("spot must be above zero")
     if not 0.01 <= iv <= 3:
@@ -722,10 +813,9 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
         raise ValueError("days to expiry must be 0-400")
     if lots < 1 or lot_size < 1 or not 0 <= k <= 40 or not 1 <= w <= 60:
         raise ValueError("lots ≥ 1; short distance 0-40 strikes; wing 1-60 strikes")
-    if k < spec.get("min_k", 0):
+    if legs is None and k < spec.get("min_k", 0):
         raise ValueError(f"{spec['name']} needs the legs at least {spec['min_k']} strike from the money (k); "
                          "at 0 it is a straddle.")
-    specs = leg_specs(structure)
     has_far = any(x["series"] == "far" for x in specs)
     if has_far:
         far_days = far_days if far_days is not None else days + (7 if days <= 7 else 28)
@@ -751,7 +841,9 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
 
     legs = []
     for n, x in enumerate(specs):
-        leg = {**x, "strike": float(atm + _offset(x["off"], k, w) * step) if x["type"] != "FUT" else 0.0, "vol": iv,
+        if x["type"] != "FUT" and atm + x["n"] * step <= 0:
+            raise ValueError(f"{strike_words(x['n'])} is below zero at this index level. Choose a strike nearer the money.")
+        leg = {**x, "strike": float(atm + x["n"] * step) if x["type"] != "FUT" else 0.0, "vol": iv,
                "implied": None}
         years = years_left(leg, False)
         model = value(leg, spot, years)
@@ -860,10 +952,11 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
               for name in ("delta", "gamma", "theta", "vega")}
     margin = estimate_margin(legs, spot, qty, margin_pct)
     return {
-        "structure": structure, "name": spec["name"], "about": spec["about"], "underlying": underlying,
+        "structure": structure, "name": strategy_name(structure, legs), "about": spec["about"], "underlying": underlying,
+        "legs_text": legs_text(specs),
         "spot": round(spot, 2), "atm": atm, "step": step, "iv_pct": round(iv * 100, 2), "days": days,
         "far_days": far_days if has_far else None, "lots": lots, "lot_size": lot_size, "quantity": qty,
-        "legs": [{"side": "BUY" if g["action"] > 0 else "SELL", "type": g["type"], "strike": g["strike"] or None,
+        "legs": [{"side": "BUY" if g["action"] > 0 else "SELL", "type": g["type"], "strike": g["strike"] or None, "strikes": g["n"],
                   "lots": g["ratio"] * lots, "quantity": g["ratio"] * qty, "expiry": "far" if g["series"] == "far" else "near",
                   "days": g["days"], "premium": round(g["entry"], 2), "source": g["source"],
                   "iv_pct": None if g["type"] == "FUT" else round(g["vol"] * 100, 2), "iv_implied": g["implied"] is not None,

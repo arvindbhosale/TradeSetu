@@ -1062,7 +1062,7 @@ Settings: index, dates, candle, signal strategy, **Buy** (calls / puts / both), 
 
 #### Step by step
 
-1. **Strategy**: pick one. The list is grouped as *Neutral: sell premium*, *Big move either way: buy premium*, *Bullish* and *Bearish*. The line under it says what it does and shows the **Markets** badges.
+1. **Strategy**: pick one. The list is grouped as *Neutral: sell premium*, *Big move either way: buy premium*, *Bullish*, *Bearish* and *Your own* (build every leg yourself, see [Your own legs](#your-own-legs-and-strikes)). The line under it says what it does and shows the **Markets** badges.
 2. **Index**: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYNXT50, SENSEX, BANKEX or SENSEX50.
 3. **Expiry**: *Weekly* only for NIFTY (Tuesday) and SENSEX (Thursday). Every other index has had only monthly options since November 2024. Choose *Monthly* for them.
 4. **Strikes**. Every strike is counted in strikes from the at-the-money (ATM) strike, the strike nearest the index:
@@ -1071,7 +1071,16 @@ Settings: index, dates, candle, signal strategy, **Buy** (calls / puts / both), 
    - One strike is 50 points on NIFTY and FINNIFTY, 25 on MIDCPNIFTY, and 100 on BANKNIFTY, NIFTYNXT50, SENSEX and BANKEX. SENSEX50 uses the gap between the strikes in Kite's contract list. So on NIFTY, k = 2 and w = 4 put the sold legs 100 points out and the wings 200 points beyond them.
    - A box the strategy does not use is hidden.
 5. **Lots**: the quantity is lots × the exchange lot size (from Kite's contract list, or NIFTY 65, BANKNIFTY 30, FINNIFTY 60, MIDCPNIFTY 120, NIFTYNXT50 25, SENSEX 20, BANKEX 30; SENSEX50 only from Kite's list). A "2×" leg trades twice the lots.
-6. Open **Payoff now (today's market)** to see it on today's market, or press **Run** to backtest it. Margin %, Volatility × VIX, put skew and slippage are under **Advanced settings**.
+6. **Legs**: the strategy's legs, each with its strike. Change any of them (below).
+7. Press **Payoff now** to see it on today's market, or **Run backtest** to backtest it. Margin %, Volatility × VIX, put skew and slippage are under **Advanced settings**; your own Spot, IV and days to expiry for Payoff now are under **Advanced: Payoff now on your own market levels**.
+
+#### Your own legs and strikes
+
+The **Legs** table shows every leg of the chosen strategy: **Buy or Sell**, **Option** (Call, Put or Futures), **Strike**, **Lots** and **Expiry** (this expiry or the next one). Change any strike, add a leg with **Add leg**, or remove one. The name then reads, for example, *Iron condor (your strikes)*, and **Reset to the strategy's legs** puts the preset back. Pick **Your own strategy (build the legs)** to start from nothing (up to 8 legs).
+
+A strike is counted from the at-the-money strike **when the trade opens**: ATM+2 is two strikes above, ATM−3 three below. The price in brackets is that strike today (from Kite, else the last close). A backtest opens a fresh position on every entry over months or years while the index moves thousands of points, so a fixed price such as 24,000 CE would be deep in or far out of the money on most entries and the result would mean nothing. ATM+2 is the same trade every time. On **Payoff now** the strikes are today's, so ATM+2 is the exact contract you would trade now.
+
+Signal mode needs a bullish or bearish preset: your own legs started from a spread, protective put or covered call can run on a signal, a strategy built from nothing runs intraday or positional. **Run this as an algo** after the backtest carries your legs into the algo.
 
 #### Payoff now
 
@@ -1111,7 +1120,7 @@ The model prices every leg with Black-Scholes at one volatility. For figures on 
 - **Re-enter** sells that leg again, up to 5 times: when its premium comes back to the price it was first sold at, or straight away at the strike the entry rule picks then.
 - A **bought leg** that covers a sold leg is never closed alone. If its exit rule fires while a sold leg is still open, the whole position is closed, so you are never left with an uncovered sold option.
 
-**Exit rules for the whole position**: **Stoploss** and **Target** as a % of the premium received (or paid) for the whole position. **Put skew** raises the volatility of lower strikes (puts below the money are dearer in real markets; 0 = none). A calendar or diagonal sells its later-expiry leg back at the model price when the near expiry settles.
+**Exit rules for the whole position**: **Stoploss (₹)** and **Target (₹)** close every leg when the whole position's profit or loss (legs already closed plus open legs at the candle's close, before charges) reaches that many rupees; **Stoploss** and **Target, %** do the same as a % of the premium received (or paid). 0 is off; whichever is reached first closes the position. On day candles the check is at each day's close, so a loss can run past the stop on a gap day. Run this as an algo fills its maximum loss and target from the rupee figures. **Put skew** raises the volatility of lower strikes (puts below the money are dearer in real markets; 0 = none). A calendar or diagonal sells its later-expiry leg back at the model price when the near expiry settles.
 
 **Modelled premiums are a simulation.** Kite keeps no candles for expired options, so without stored history every premium is computed (Black-Scholes) from the index's real candles and India VIX. Real option sellers face things the model does not: volatility spikes and crush around events, skew, wide spreads in far strikes, and expiry-day gamma. Selling options wins often and loses big. The worst day matters more than the win rate, so look at **Max drawdown** first.
 

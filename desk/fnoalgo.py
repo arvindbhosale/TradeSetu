@@ -75,10 +75,11 @@ def arm_phrase(name: str) -> str:
     return f"ARM LIVE FNO {' '.join(name.upper().split())}"
 
 
-def naked(structure: str) -> bool:
-    """Whether a structure sells more options of a type than it buys (a call sold against long futures is covered)."""
+def naked(structure: str, legs=None) -> bool:
+    """Whether a structure (or your own ``legs``) sells more options of a type than it buys (a call sold against long
+    futures is covered)."""
     count = {"CE": 0, "PE": 0}
-    for leg in optstrat.leg_specs(structure):
+    for leg in optstrat.legs_for(structure, 2, 4, legs):
         if leg["type"] == "FUT":
             count["CE"] += leg["action"] * leg["ratio"]
         else:
@@ -192,18 +193,30 @@ class FnoAlgoEngine:
         out["entry_time"], out["exit_time"] = times
         if kind == "structure":
             structure = str(raw.get("structure", ""))
-            if structure not in optstrat.STRUCTURES:
+            own = raw.get("legs") or None
+            if structure == optstrat.CUSTOM and not own:
+                raise AlgoError("Your own strategy is made from a backtest: build its legs under Backtest > Option "
+                                "strategies, run it, then press Make an algo.")
+            if structure not in optstrat.STRUCTURES and structure != optstrat.CUSTOM:
                 raise AlgoError("Unknown option strategy.")
-            spec = optstrat.STRUCTURES[structure]
+            try:
+                specs = optstrat.legs_for(structure, 2, 4, own)
+            except ValueError as exc:
+                raise AlgoError(str(exc).rstrip(".") + ".") from None
+            spec = optstrat.STRUCTURES.get(structure, {"name": optstrat.strategy_name(structure, own)})
             schedule = str(raw.get("schedule", "intraday"))
             if schedule not in SCHEDULES:
                 raise AlgoError(f"Schedule must be one of {', '.join(SCHEDULES)}.")
             if schedule == "signal" and not spec.get("bias"):
                 raise AlgoError("Signal mode is for directional structures (spreads, protective put, covered call). "
                                 "Run straddles, strangles, condors and flies on a schedule (intraday or positional).")
-            out.update(structure=structure, structure_name=spec["name"], schedule=schedule, direction=None,
+            out.update(structure=structure, structure_name=optstrat.strategy_name(structure, own), schedule=schedule, direction=None,
+                       legs=None if own is None else [{"side": "BUY" if x["action"] > 0 else "SELL", "type": x["type"],
+                                                       "strikes": x["n"], "lots": x["ratio"], "expiry": x["series"]}
+                                                      for x in specs],
+                       legs_text=optstrat.legs_text(specs) if own else None,
                        k=number("k", 2, 0, 40, "Short distance (k)", True), w=number("w", spec.get("w", 4), 1, 60, "Wing width (w)", True),
-                       leg_sl_pct=number("leg_sl_pct", 0, 0, 1000, "Stoploss on each sold leg %"), naked=naked(structure))
+                       leg_sl_pct=number("leg_sl_pct", 0, 0, 1000, "Stoploss on each sold leg %"), naked=naked(structure, own))
             try:
                 exits = risk.from_payload(raw.get("leg_exits"), "Each leg", legacy={"stop_loss": out["leg_sl_pct"]})
             except ValueError as exc:
@@ -212,14 +225,14 @@ class FnoAlgoEngine:
             if scope not in optstrat.LEG_SCOPES:
                 raise AlgoError("The leg exit rules apply to sold legs, bought legs or all legs.")
             out.update(leg_exits=exits.as_dict(), leg_scope=scope, leg_sl_pct=0.0)
-            if out["k"] < spec.get("min_k", 0):
+            if own is None and out["k"] < spec.get("min_k", 0):
                 raise AlgoError(f"{spec['name']} needs its legs at least {spec['min_k']} strike from the money (k).")
         else:
             direction = str(raw.get("direction", "long"))
             if direction not in DIRECTIONS:
                 raise AlgoError("Direction must be long, short or both.")
             out.update(structure=None, structure_name=f"{underlying} futures, {direction}", schedule="signal",
-                       direction=direction, k=0, w=0, leg_sl_pct=0.0, naked=False,
+                       direction=direction, k=0, w=0, leg_sl_pct=0.0, naked=False, legs=None,
                        leg_exits=risk.NONE.as_dict(), leg_scope="sold")
         weekdays = raw.get("weekdays", [0, 1, 2, 3, 4])
         if (not isinstance(weekdays, list) or not weekdays
@@ -259,7 +272,7 @@ class FnoAlgoEngine:
 
     # While legs are open, only these can change: they are read afresh on every check and touch no leg's state.
     OPEN_EDITABLE = ("max_loss", "target", "limit_buffer_pct", "leg_exits", "leg_scope")
-    _DERIVED = ("exchange", "structure_name", "naked", "leg_sl_pct", "strategy_name")
+    _DERIVED = ("exchange", "structure_name", "naked", "leg_sl_pct", "strategy_name", "legs_text")
 
     def update(self, algo_id: str, raw: dict) -> dict:
         """Change an algo that is not trading live. The name is fixed (the P&L ledger files every fill under it).
@@ -271,7 +284,9 @@ class FnoAlgoEngine:
                 raise AlgoError("This algo is trading live. Stop it before editing.")
             if algo["exit_requested"]:
                 raise AlgoError("This algo is closing its legs. Edit it once it is flat.")
-            config = self.validate({**raw, "name": algo["name"]})
+            keep = ({"legs": algo.get("legs")} if "legs" not in raw and algo.get("legs")
+                    and str(raw.get("structure", algo.get("structure"))) == algo.get("structure") else {})
+            config = self.validate({**raw, **keep, "name": algo["name"]})
             changed = [k for k in config if k not in self._DERIVED and config[k] != algo.get(k)]
             if algo.get("leg_exits") is None and "leg_exits" in changed \
                     and config["leg_exits"] == self.leg_rules(algo).as_dict():
@@ -480,9 +495,9 @@ class FnoAlgoEngine:
         which, ``margin_note`` why). Raises AlgoError with the reason when it cannot be worked out."""
         u = algo["underlying"]
         if algo["kind"] == "futures":
-            specs = [{"action": direction, "type": "FUT", "off": "0", "ratio": 1, "series": "near"}]
+            specs = [{"action": direction, "type": "FUT", "off": "0", "n": 0, "ratio": 1, "series": "near"}]
         else:
-            specs = optstrat.leg_specs(algo["structure"])
+            specs = optstrat.legs_for(algo["structure"], algo["k"], algo["w"], algo.get("legs"))
         metal = self._metal(algo)
         if not metal:
             spot = self._prices([SPOT[u]]).get(SPOT[u])
@@ -536,7 +551,7 @@ class FnoAlgoEngine:
                     raise AlgoError(f"No {u} futures contract is loaded. Refresh the F&O contract list from Kite.")
                 contract, strike = future, None
             else:
-                strike = float(atm + optstrat._offset(s["off"], algo["k"], algo["w"]) * step)
+                strike = float(atm + s["n"] * step)
                 expiry = far if s["series"] == "far" else near
                 contract = by_key.get((strike, s["type"], expiry))
                 if contract is None:
@@ -738,7 +753,7 @@ class FnoAlgoEngine:
         except ValueError as exc:
             raise AlgoError(f"Strategy error: {exc}") from None
         long, started = int(positions.iloc[-1]) > 0, bool((positions > 0).any())
-        bias = (optstrat.STRUCTURES[algo["structure"]].get("bias") if algo["kind"] == "structure" else None)
+        bias = (optstrat.STRUCTURES.get(algo["structure"], {}).get("bias") if algo["kind"] == "structure" else None)
         if algo["kind"] == "futures":
             want = {"long": 1 if long else 0, "short": -1 if not long and started else 0,
                     "both": 1 if long else (-1 if started else 0)}[algo["direction"]]
