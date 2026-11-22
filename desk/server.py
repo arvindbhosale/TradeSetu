@@ -1122,6 +1122,15 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                     out[f"imported:{item['symbol']}"] = {"error": str(exc)}
         return {"prices": out, "session": market.session_status()}
 
+    @app.get("/api/md/layout")
+    def md_layout(view: str = "live"):
+        return {"layout": app.state.chartstore.layout(view)}
+
+    @app.put("/api/md/layout")
+    def md_layout_set(payload: dict):
+        body = body_of(payload)
+        return {"layout": app.state.chartstore.set_layout(str(body.get("view", "")), body.get("layout"))}
+
     @app.get("/api/md/drawings")
     def md_drawings(venue: str = "", symbol: str = ""):
         return {"items": app.state.chartstore.drawings(venue, symbol)}
