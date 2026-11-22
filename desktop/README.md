@@ -34,7 +34,13 @@ Needs Rust and Node.js 20+; on Linux also `libwebkit2gtk-4.1-dev libappindicator
 
 ## Release
 
-Bump `version` in `desktop/app/src-tauri/tauri.conf.json` and `desktop/app/package.json`, then merge to main: the workflow publishes release `desktop-v<version>` with the installers. Pull requests that touch the app build the installers as workflow artifacts only.
+Merging to main never publishes a release. Pull requests that touch the app build the installers as workflow artifacts only, so you can merge many changes first and release when you choose:
+
+1. On GitHub open **Actions > Desktop app > Run workflow**.
+2. Keep branch **main**, type the new version (for example `0.8.0`, higher than the last `desktop-v…` release), and press **Run workflow**.
+3. In about 15 minutes release `desktop-v<version>` appears under Releases with the macOS, Windows, Linux and Android installers.
+
+Pushing a tag `desktop-v<version>` does the same. The version you type is stamped into the build; `tauri.conf.json` and `package.json` in the repository do not need a bump. A version that is already released is refused. Run workflow on any branch other than main builds the installers without publishing.
 
 ## Signing
 
