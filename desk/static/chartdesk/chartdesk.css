@@ -1,0 +1,53 @@
+/* Charts tab. Uses the desk's colour tokens, so light and dark follow the app's theme. */
+.cd-view-seg { margin-bottom: 12px; }
+.cd-panel { padding-bottom: 12px; }
+.cd-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.cd-symbol { display: flex; gap: 6px; flex: 1 1 220px; min-width: 0; }
+.cd-symbol input { flex: 1; min-width: 0; text-transform: uppercase; }
+.cd-scroll { overflow-x: auto; max-width: 100%; flex-wrap: nowrap; scrollbar-width: none; }
+.cd-scroll button { flex: 0 0 auto; }
+.cd-menu { position: relative; border-top: 0; padding: 0; }
+.cd-adv { padding: 6px 0 0; }
+.cd-btn { list-style: none; cursor: pointer; padding: 8px 14px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); color: var(--text); font-weight: 600; user-select: none; }
+.cd-btn::-webkit-details-marker { display: none; }
+.cd-menu[open] .cd-btn { border-color: var(--accent); color: var(--accent); }
+.cd-drop { position: absolute; z-index: 20; right: 0; top: calc(100% + 6px); width: min(360px, calc(100vw - 32px)); max-height: 70vh; overflow: auto; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow); padding: 12px; display: grid; gap: 10px; }
+.cd-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.cd-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--text); font-size: 13px; }
+.cd-x { border: 0; background: transparent; color: var(--text2); font-size: 16px; line-height: 1; padding: 2px 6px; cursor: pointer; border-radius: 999px; }
+.cd-x:hover { background: var(--line); }
+.cd-add { display: flex; flex-wrap: wrap; gap: 6px; }
+.cd-add button { padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-2); color: var(--text); cursor: pointer; font-size: 13px; }
+.cd-add button:hover { border-color: var(--accent); }
+.cd-adv summary { cursor: pointer; color: var(--text2); font-size: 13px; }
+.cd-params { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.cd-params legend { font-size: 12px; color: var(--text2); padding: 0 4px; }
+.cd-params label { display: grid; gap: 2px; font-size: 12px; color: var(--text2); }
+.cd-params input { width: 90px; }
+.cd-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; justify-content: space-between; margin: 14px 0 6px; }
+.cd-title { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.cd-title strong { font-size: 17px; }
+.cd-last { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cd-change { font-weight: 600; font-variant-numeric: tabular-nums; }
+.cd-change.up { color: var(--good); } .cd-change.down { color: var(--bad); }
+.cd-error { margin-top: 12px; }
+.cd-retry { margin-left: 6px; }
+.cd-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text2); min-height: 18px; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.cd-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.cd-ohlc { color: var(--text); white-space: pre; }
+.cd-main { width: 100%; height: min(62vh, 560px); min-height: 320px; }
+.cd-pane { width: 100%; height: 140px; }
+.cd-pane:last-child { height: 166px; }
+.cd-pane-title { font-size: 12px; color: var(--text2); margin: 8px 0 2px; }
+.cd-credit { margin-top: 8px; }
+@media (max-width: 720px) {
+  .cd-bar { gap: 8px; }
+  .cd-symbol { flex-basis: 100%; }
+  .cd-main { height: 52vh; min-height: 280px; }
+  .cd-pane { height: 110px; }
+  .cd-pane:last-child { height: 136px; }
+  .cd-drop { position: fixed; left: 16px; right: 16px; top: auto; bottom: 16px; width: auto; max-height: 65vh; }
+  .cd-last { font-size: 18px; }
+  .cd-legend { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  .cd-head { margin-top: 10px; }
+}

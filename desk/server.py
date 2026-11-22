@@ -61,6 +61,8 @@ from .fnoalgo import FnoAlgoEngine, arm_phrase as fno_arm_phrase
 from .fundamentals import LABELS as FUNDAMENTAL_LABELS, Fundamentals
 from .indices import Indices
 from .kite import KiteError, KiteMCP
+from .marketdata import TIMEFRAMES as CHART_TIMEFRAMES, MarketDataError, broker as md_broker
+from .marketdata.crypto import PAIRS as CRYPTO_PAIRS, CryptoFeed
 from .markettools import MarketTools, finite
 from .nse import NseClient, exchange_proxy as nse_proxy
 from .optimiser import OBJECTIVES, optimise
@@ -206,7 +208,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             return response                       # Zerodha's own pages carry their own policy
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-            "connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; "
+            "connect-src 'self' wss://data-stream.binance.vision wss://ws-feed.exchange.coinbase.com; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; "
             "base-uri 'none'; form-action 'none'")
         return response
 
@@ -217,6 +219,11 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     @app.exception_handler(KiteError)
     async def kite_failed(_, exc: KiteError):
         return JSONResponse({"error": str(exc), "needs_login": exc.needs_login}, status_code=502)
+
+    @app.exception_handler(MarketDataError)
+    async def market_data_failed(_, exc: MarketDataError):
+        return JSONResponse({"error": str(exc), "provider": exc.provider, "needs_login": exc.needs_login},
+                            status_code=502)
 
     @app.exception_handler(data.NoData)
     async def no_data(_, exc: data.NoData):
@@ -878,6 +885,75 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             if price and source.startswith("Kite"):
                 out["live_price"] = price
         return out
+
+    # -- live charts (Charts tab): crypto public data or the connected broker, never Yahoo -------------------
+    app.state.crypto = CryptoFeed()
+
+    def chart_broker() -> str:
+        status = kite.status() or {}
+        return "Kite" if status.get("broker", "kite") == "kite" else (status.get("broker_label") or "Your broker")
+
+    def chart_instrument(symbol: str) -> tuple[str, bool, str]:
+        """An NSE/BSE chart symbol as (what the broker is asked for, raw EXCHANGE:NAME?, display name)."""
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("Enter a symbol.")
+        if symbol.upper().startswith("IDX:"):
+            entry = indices.entry(symbol[4:].lower())
+            if entry is None:
+                raise ValueError("no such index")
+            name = indices.kite_name(entry[0])
+            if not name:
+                broker = chart_broker()
+                raise MarketDataError(f"{broker} has not named {entry[1]} yet. Connect and log in to {broker}, then "
+                                      f"reopen it.", broker, needs_login=True)
+            return name, True, entry[1]
+        if re.fullmatch(r"(NSE|BSE|NFO|BFO|MCX):[A-Z0-9 &\-]{1,40}", symbol.upper()):
+            return symbol.upper(), True, symbol.upper()
+        canonical = symbol_of(symbol)
+        return canonical, False, canonical
+
+    @app.get("/api/md/catalog")
+    def md_catalog():
+        return {"timeframes": {k: v["label"] for k, v in CHART_TIMEFRAMES.items()},
+                "crypto": [{"symbol": p[0], "coin": p[1], "name": p[2]} for p in CRYPTO_PAIRS],
+                "indices": [{"symbol": "IDX:" + e[0], "name": e[1]} for e in indices.entries()]}
+
+    @app.get("/api/md/candles")
+    def md_candles(venue: str = "crypto", symbol: str = "", tf: str = "1h"):
+        if not settings.get("charts_enabled"):
+            raise ValueError("Charts are switched off in Settings.")
+        if venue == "crypto":
+            out = app.state.crypto.candles(symbol, tf)
+            return {**out, "market": "crypto", "tf": tf, "session": {"open": True, "note": "Crypto trades all day, every day."}}
+        if venue != "india":
+            raise ValueError("venue must be crypto or india")
+        instrument, raw, name = chart_instrument(symbol)
+        out = md_broker.candles(kite, instrument, tf, market.now_ist(), raw, chart_broker())
+        return {**out, "symbol": symbol.strip().upper(), "name": name, "market": "india", "tf": tf,
+                "live": {"kind": "poll", "every": 3}, "session": market.session_status()}
+
+    @app.get("/api/md/quote")
+    def md_quote(symbol: str = ""):
+        """The last traded price of an NSE/BSE chart symbol, from the broker only."""
+        instrument, raw, _ = chart_instrument(symbol)
+        broker = chart_broker()
+        if not raw:
+            pair = kite_instrument(instrument)
+            if not pair:
+                raise MarketDataError(f"{broker} has no instrument for {instrument}.", broker)
+            instrument = f"{pair[0]}:{pair[1]}"
+        if not kite.connected:
+            raise MarketDataError(f"Live prices come from your broker. Open Trade, press Connect and log in to {broker}.",
+                                  broker, needs_login=True)
+        try:
+            price = kite.ltp([instrument]).get(instrument)
+        except KiteError as exc:
+            raise MarketDataError(f"{broker} could not give the live price. {str(exc)[:200]}", broker,
+                                  needs_login=exc.needs_login) from exc
+        if not price:
+            raise MarketDataError(f"{broker} gave no live price for {instrument}.", broker)
+        return {"price": price, "session": market.session_status()}
 
     @app.get("/api/algos")
     def algo_list():

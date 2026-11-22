@@ -600,7 +600,34 @@ Kite only. Set up during installation. Leave it unless you move the Kite server.
 
 ## 4. Charts
 
-Candlestick charts in the TradingView style.
+The Charts section opens on the **Live chart**. The older chart, with Supertrend, Parabolic SAR, Donchian, pivots, ADX and Stochastic, is one tap away under **Classic chart** and works as before.
+
+### Live chart
+
+![Live Bitcoin chart with EMA, Bollinger Bands and RSI](img/07-live-chart.png)
+
+1. Pick **Crypto** or **NSE / BSE**.
+2. Type or pick a symbol (`BTCUSDT`, `ETHUSDT`; `RELIANCE`, `NIFTY`) and press **Show**.
+3. Pick the candle size: **1m**, **5m**, **15m**, **1h**, **4h**, **1D** or **1W**, and **Candles**, **Line** or **Area**.
+4. Open **Indicators** to add a moving average (simple or exponential), Bollinger Bands, VWAP, RSI or MACD. Add the same one twice for two periods (for example EMA 20 and EMA 50). Periods and widths are under **Advanced: indicator settings**. Tick **Volume bars** to show or hide volume.
+
+Indicators move with every live price, not only when a candle closes. The pill at the top right says where prices come from:
+
+- **Live · Binance stream** or **Live · Coinbase stream**: prices stream straight from the exchange.
+- **Updating every 5 s through the desk**: the exchange's stream could not connect from your network, so the desk fetches fresh candles instead.
+- **Live · Kite** (or your broker's name): NSE/BSE last price from your broker every 3 seconds, with fresh candles each minute.
+- **Market closed** or **Live prices stopped**: the reason is shown; the chart keeps the last prices it had.
+
+Where prices come from:
+
+- **Crypto**: Binance's public market data. If Binance does not answer (it has been blocked in India before), the desk uses Coinbase Exchange and says so above the chart. Coinbase quotes US dollars, so a USDT pair shows the coin's USD price (usually within 1%). BNB and TRX are not on Coinbase. No API key is needed.
+- **NSE / BSE**: only your broker (log in on the Trade section). There is no free, legal live feed for Indian stocks, so without a broker the chart says so instead of showing other data. Yahoo is never used here. 4-hour candles are 09:15–13:15 and 13:15–15:30; weekly candles start on Monday.
+
+If prices cannot be loaded you see **Chart not shown** with the reason and **Try again**, never an empty chart or a zero. Your symbol, candle size and indicators are remembered on this device.
+
+### Classic chart
+
+Candlestick charts with the desk's server-side indicators.
 
 ![Daily chart with Bollinger Bands and Supertrend](img/05-chart-daily.png)
 

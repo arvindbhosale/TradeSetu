@@ -157,7 +157,32 @@
     if (name === "algos") { refreshAlgos(); refreshFnoAlgos(); }
     if (name === "strategies") refreshStrategyList();
     if (name === "scanner") refreshScanner();
+    showChartDesk(name === "charts");
   }
+
+  // The live chart lives in its own files, loaded the first time the Charts tab opens.
+  const chartDesk = { view: "live", mod: null, loading: null };
+  function showChartDesk(onTab) {
+    const want = onTab && chartDesk.view === "live";
+    if (!want) { if (chartDesk.mod) chartDesk.mod.hide(); return; }
+    if (chartDesk.mod) { chartDesk.mod.show(); return; }
+    if (chartDesk.loading) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet"; link.href = "/static/chartdesk/chartdesk.css"; document.head.append(link);
+    chartDesk.loading = import("/static/chartdesk/chartdesk.js").then((m) => {
+      chartDesk.mod = m.mount($("#chartdesk"), { api });
+      if (!$("#tab-charts").hidden && chartDesk.view === "live") chartDesk.mod.show();
+    }).catch((err) => {
+      $("#chartdesk").replaceChildren(h("div", { class: "error", role: "alert", text: "The chart could not load: " + err.message + ". Reload the page." }));
+    }).finally(() => { chartDesk.loading = null; });
+  }
+  $$("#chart-view button").forEach((b) => b.addEventListener("click", () => {
+    chartDesk.view = b.dataset.view;
+    $$("#chart-view button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    $("#chartdesk").hidden = chartDesk.view !== "live";
+    $("#chart-classic").hidden = chartDesk.view !== "classic";
+    showChartDesk(true);
+  }));
   $$(".tabs button").forEach((b) => b.addEventListener("click", () => selectTab(b.dataset.tab)));
 
   function setMode(mode) {
