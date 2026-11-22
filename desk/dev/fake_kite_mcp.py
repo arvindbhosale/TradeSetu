@@ -324,6 +324,37 @@ if not READ_ONLY:
         return json.dumps({"trigger_id": int(trigger_id)})
 
     @server.tool()
+    def modify_order(variety: str, order_id: str, order_type: str, quantity: float = 0, price: float = 0,
+                     trigger_price: float = 0, validity: str = "DAY") -> str:
+        """Modify an open order."""
+        _need_login()
+        for order in STATE["orders"]:
+            if order["order_id"] == order_id:
+                if order["status"] != "OPEN":
+                    raise ToolError(f"Order cannot be modified: it is {order['status']}")
+                order.update(order_type=order_type, price=price, trigger_price=trigger_price,
+                             quantity=quantity or order["quantity"])
+                return json.dumps({"order_id": order_id})
+        raise ToolError("No such order")
+
+    @server.tool()
+    def modify_gtt_order(trigger_id: float, exchange: str, tradingsymbol: str, last_price: float,
+                         transaction_type: str, product: str, trigger_type: str, trigger_value: float = 0,
+                         quantity: float = 0, limit_price: float = 0, upper_trigger_value: float = 0,
+                         upper_quantity: float = 0, upper_limit_price: float = 0, lower_trigger_value: float = 0,
+                         lower_quantity: float = 0, lower_limit_price: float = 0) -> str:
+        """Modify an active GTT."""
+        _need_login()
+        for gtt in STATE["gtts"]:
+            if gtt["id"] == int(trigger_id) and gtt["status"] == "active":
+                gtt["type"] = trigger_type
+                gtt["condition"]["trigger_values"] = [trigger_value] if trigger_type == "single" \
+                    else [lower_trigger_value, upper_trigger_value]
+                gtt["condition"]["last_price"] = last_price
+                return json.dumps({"trigger_id": int(trigger_id)})
+        raise ToolError("No such active GTT")
+
+    @server.tool()
     def cancel_order(variety: str, order_id: str) -> str:
         """Cancel an order."""
         _need_login()

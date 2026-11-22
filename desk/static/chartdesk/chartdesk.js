@@ -8,6 +8,7 @@ import { mergeBar, startFeed } from "./feeds.js";
 import { DrawingLayer, TOOLS, timeOf } from "./drawings.js";
 import { mountWatchlist } from "./watchlist.js";
 import { mountPaper } from "./paper.js";
+import { mountTrade } from "./trade.js";
 
 /** @typedef {import("./indicators.js").Bar} Bar */
 /** @typedef {{ uid: number, kind: string, params: Record<string, number> }} Active */
@@ -63,9 +64,10 @@ function load() {
 
 /**
  * @param {HTMLElement} root
- * @param {{ api: (path: string, opts?: any) => Promise<any> }} deps
+ * @param {{ api: (path: string, opts?: any) => Promise<any>, mode?: () => string }} deps
+ *   ``mode`` is the desk's Paper or Live switch, for NSE/BSE orders from the chart (crypto is always paper).
  */
-export function mount(root, { api }) {
+export function mount(root, { api, mode = () => "paper" }) {
   const saved = load();
   let uid = 0;
   const st = {
@@ -112,6 +114,7 @@ export function mount(root, { api }) {
   const importPanel = h("div", { class: "cd-import", hidden: true });
   const watchRoot = h("aside", { class: "panel cd-watch", "aria-label": "Watchlist" });
   const paperRoot = h("section", { class: "panel cd-paper", hidden: true, "aria-label": "Paper trading" });
+  const tradeRoot = h("section", { class: "panel cd-trade", hidden: true, "aria-label": "Trade from the chart" });
   chartArea.insertBefore(drawBar, mainBox);
 
   root.replaceChildren(h("div", { class: "cd-grid" }, watchRoot, h("div", { class: "cd-col" },
@@ -121,12 +124,15 @@ export function mount(root, { api }) {
         h("div", { class: "cd-symbol" }, symbolInput, symbolList, h("button", { class: "primary", type: "submit", text: "Show" })),
         tfSeg, typeSeg, indicatorMenu),
       importPanel, head, error, note, loading, chartArea),
-    paperRoot)));
+    tradeRoot, paperRoot)));
 
   const watch = mountWatchlist(watchRoot, { api, open: (venue, symbol) => { st.venue = venue; st.symbol = symbol; renderControls(); open(); },
     current: () => ({ venue: st.venue, symbol: st.symbol }) });
-  const paper = mountPaper(paperRoot, { api, symbol: () => st.symbol, lastPrice: () => (st.bars.length ? st.bars[st.bars.length - 1].close : null),
-    onBook: (book) => { st.book = book; orderLines(); } });
+  const lastPrice = () => (st.bars.length ? st.bars[st.bars.length - 1].close : null);
+  const paper = mountPaper(paperRoot, { api, onBook: (book) => { st.book = book; orderLines(); trade.bookChanged(book); } });
+  const trade = mountTrade(tradeRoot, { api, venue: () => st.venue, symbol: () => st.symbol, lastPrice, mode,
+    decimals: () => st.decimals, money: (v) => money(v), onBook: (book) => paper.setBook(book),
+    chart: () => (st.main && st.price ? { main: st.main, price: st.price, box: mainBox } : null) });
 
   function segment(host, options, current, pick) {
     host.replaceChildren(...Object.entries(options).map(([key, label]) => h("button", { type: "button", "data-key": key,
@@ -163,6 +169,7 @@ export function mount(root, { api }) {
     symbolList.replaceChildren(...list.map(([value, label]) => h("option", { value, label })));
     renderIndicatorMenu(); renderDrawBar(); renderImport(); watch.render();
     if (st.visible && st.venue === "crypto") paper.show(); else paper.hide();
+    if (st.visible && st.info) trade.show(); else trade.hide();
   }
 
   // -- drawings ----------------------------------------------------------------------------------------
@@ -380,7 +387,7 @@ export function mount(root, { api }) {
       st.drawings = []; st.tool = null; st.firstPoint = null;
       draw(true);
       startLive();
-      renderControls(); paper.symbolChanged();
+      renderControls(); paper.symbolChanged(); trade.symbolChanged();
       loadDrawings(request);
     } catch (err) {
       if (request !== st.request) return;
@@ -488,6 +495,7 @@ export function mount(root, { api }) {
     st.price.attachPrimitive(st.layer);
     setData();
     orderLines();
+    trade.chartDrawn();
     const n = st.bars.length;
     main.timeScale().setVisibleLogicalRange(keep || { from: Math.max(0, n - 150), to: n + 4 });
   }
@@ -556,7 +564,7 @@ export function mount(root, { api }) {
         });
       });
       st.results = results;
-      describe(null); renderHead(); paper.priceChanged();
+      describe(null); renderHead(); trade.priceChanged();
     });
   }
 
@@ -623,6 +631,8 @@ export function mount(root, { api }) {
       if (!st.info) { if (error.hidden && !st.busy) open(); return; }
       if (!st.stopFeed) open();          // back on the tab: fresh candles, then live again
     },
-    hide() { st.visible = false; stopLive(); watch.hide(); paper.hide(); },
+    hide() { st.visible = false; stopLive(); watch.hide(); paper.hide(); trade.hide(); },
+    /** The desk's Paper / Live switch changed. */
+    modeChanged() { trade.modeChanged(); },
   };
 }

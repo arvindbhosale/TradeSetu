@@ -170,7 +170,7 @@
     const link = document.createElement("link");
     link.rel = "stylesheet"; link.href = "/static/chartdesk/chartdesk.css"; document.head.append(link);
     chartDesk.loading = import("/static/chartdesk/chartdesk.js").then((m) => {
-      chartDesk.mod = m.mount($("#chartdesk"), { api });
+      chartDesk.mod = m.mount($("#chartdesk"), { api, mode: () => state.mode });
       if (!$("#tab-charts").hidden && chartDesk.view === "live") chartDesk.mod.show();
     }).catch((err) => {
       $("#chartdesk").replaceChildren(h("div", { class: "error", role: "alert", text: "The chart could not load: " + err.message + ". Reload the page." }));
@@ -193,6 +193,7 @@
     pill.className = "pill " + (mode === "live" ? "bad" : "");
     clearReview();
     renderBanner();
+    if (chartDesk.mod && chartDesk.mod.modeChanged) chartDesk.mod.modeChanged();
   }
   $$("#mode button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
 

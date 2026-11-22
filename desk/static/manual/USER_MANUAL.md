@@ -661,12 +661,38 @@ If prices cannot be loaded you see **Chart not shown** with the reason and **Try
 
 **Crypto paper trading.** Under the chart, with practice money only. No real order is ever sent from here.
 
-1. Open the coin's chart. Pick **Buy** or **Sell**, **Market** or **Limit**, enter the quantity (and the limit price) and press **Buy BTC** / **Sell BTC**.
+1. Open the coin's chart. In **Trade from the chart** pick **Buy** or **Sell**, **Market** or **Limit**, enter the quantity (and the limit price), press **Review buy** / **Review sell** and then **Place paper order**. A buy can carry a stoploss and a target (see below).
 2. A market order fills at the last price. A limit order waits under **Waiting orders** and fills when the price reaches it; the desk checks every 5 seconds. A waiting buy holds its cash, a waiting sell holds its coins. You can only sell what you hold (no short selling).
 3. **Positions** shows quantity, average price, last price and profit/loss; **History** every fill with its fee. Your average price and waiting limit orders are drawn on the chart.
 4. The tiles show account value, profit/loss since the start, free cash and fees paid. If a coin's price cannot be loaded, account value shows **–** instead of a wrong number.
 
 Each fill pays a 0.1% fee and the smallest order is 1 USDT. **Advanced: fees, reset** has **Reset paper account**: set a starting balance (default 10,000 USDT) and press twice. It deletes all paper orders, positions and history.
+
+### Trade from the chart: Buy, Sell, Stoploss and Target
+
+Under the live chart, **Trade from the chart** places orders for the share or coin on screen. NSE/BSE shares follow the **Paper / Live** switch at the top of the desk; crypto is always paper.
+
+1. Pick **Buy** or **Sell**, **Market** or **Limit**, and for shares **Intraday** (MIS) or **Delivery** (CNC). Enter the quantity.
+2. For a buy, press **Add stoploss and target on chart**. A red **Stoploss** line (1% under the price) and a green **Target** line (2% over) appear, each labelled with what you would lose or make. Drag them up or down to where you want them, or type the prices. With a limit order, the blue **Limit price** line drags too.
+3. Press **Review buy**. The review shows the order, the price, order value, margin needed (Zerodha's figure when your Kite server has the margin calculator, otherwise an estimate), charges, the loss at the stoploss as a share of your capital, the gain at the target, and how the stoploss and target will be placed. Anything that blocks the order is listed: the kill switch, your trade window, the limit per order, the orders-a-day limit, the risk limit per trade, a stoploss above the price.
+4. Press **Place paper order**. A live order asks you to type the order (for example `BUY 10 RELIANCE`) and press **Place LIVE order**.
+
+How the stoploss and target are placed once the buy fills:
+
+| Order | Stoploss and target |
+|---|---|
+| Paper (shares) | A paper GTT on the paper book, checked about once a minute in market hours. |
+| Live delivery (CNC) | One GTT at Zerodha. Both together are an OCO GTT: when one triggers, the other is cancelled. It works with the desk closed. |
+| Live intraday (MIS) | Zerodha has no GTT for intraday, and two sell orders could both fill. So the desk keeps one sell order at Zerodha: a stoploss order. When the price reaches the target, the desk changes that same order into a limit sell at the target. The stoploss works with the desk closed; the target needs the desk running. Zerodha squares off what is left near 15:20. |
+| Crypto paper | Checked every 5 seconds on the server. The stoploss sells at the last price, the target at the target. |
+
+A live limit buy that has not filled has no stoploss yet: the desk places it when Kite reports the fill (checked every 20 seconds while the desk runs).
+
+**Move a stoploss or target.** Drag the placed order's solid line (labelled *(paper)* or *(live)*). The desk shows the old and new price and the loss or gain at the new one, checks that the price still lies between the stoploss and the target and that a lower stoploss stays inside your risk limit per trade, and asks you to confirm. **Cancel** puts the line back. A live GTT is changed in place; if your Kite server cannot change GTTs, the desk deletes the old one and places a new one and tells you before you confirm.
+
+**Remove.** Each order is listed under **Your stoploss and target orders** with its state. **Remove** takes off the stoploss and target and keeps your shares or coins; for a live buy that has not filled, it cancels the buy too. If Zerodha refuses the stoploss and target, the order shows **NOT protected** in red and you get an alert: move a line to place them again, or sell.
+
+**Sell** from the chart sells what you hold. There is no short selling from the chart.
 
 ### Classic chart
 
