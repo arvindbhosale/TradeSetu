@@ -5,6 +5,9 @@
 
 import { CATALOG, COMPUTE } from "./indicators.js";
 import { mergeBar, startFeed } from "./feeds.js";
+import { DrawingLayer, TOOLS, timeOf } from "./drawings.js";
+import { mountWatchlist } from "./watchlist.js";
+import { mountPaper } from "./paper.js";
 
 /** @typedef {import("./indicators.js").Bar} Bar */
 /** @typedef {{ uid: number, kind: string, params: Record<string, number> }} Active */
@@ -12,7 +15,7 @@ import { mergeBar, startFeed } from "./feeds.js";
 const LW = /** @type {any} */ (window).LightweightCharts;
 const STORE = "desk-chartdesk";
 const TYPES = { candles: "Candles", line: "Line", area: "Area" };
-const VENUES = { crypto: "Crypto", india: "NSE / BSE" };
+const VENUES = { crypto: "Crypto", india: "NSE / BSE", imported: "Imported" };
 const DEFAULTS = { venue: "crypto", symbol: "BTCUSDT", tf: "1h", type: "candles", volume: true,
   indicators: [{ kind: "ema", params: { period: 20 } }, { kind: "bollinger", params: { period: 20, width: 2 } }, { kind: "rsi", params: { period: 14 } }] };
 
@@ -60,7 +63,7 @@ function load() {
 
 /**
  * @param {HTMLElement} root
- * @param {{ api: (path: string) => Promise<any> }} deps
+ * @param {{ api: (path: string, opts?: any) => Promise<any> }} deps
  */
 export function mount(root, { api }) {
   const saved = load();
@@ -75,6 +78,8 @@ export function mount(root, { api }) {
     charts: /** @type {any[]} */ ([]), main: /** @type {any} */ (null), price: /** @type {any} */ (null), vol: /** @type {any} */ (null),
     series: /** @type {Map<number, any[]>} */ (new Map()), frame: 0, decimals: 2,
     results: /** @type {Map<number, any>|null} */ (null), pendingAll: false, panesLeft: 0,
+    busy: false, importMsg: "", drawings: /** @type {any[]} */ ([]), tool: /** @type {string|null} */ (null), firstPoint: /** @type {any} */ (null),
+    layer: /** @type {DrawingLayer|null} */ (null), book: /** @type {any} */ (null), orderLines: /** @type {any[]} */ ([]),
   };
 
   function defaultsOf(kind) { return Object.fromEntries(Object.entries(CATALOG[kind].params).map(([k, p]) => [k, p.value])); }
@@ -103,14 +108,25 @@ export function mount(root, { api }) {
       h("a", { href: "https://www.tradingview.com/", target: "_blank", rel: "noopener noreferrer", text: "TradingView Lightweight Charts" }),
       ". Crypto prices from Binance or Coinbase public data; NSE/BSE from your broker."));
   const loading = h("p", { class: "hint", text: "Loading…", hidden: true });
+  const drawBar = h("div", { class: "cd-drawbar", role: "group", "aria-label": "Drawing tools" });
+  const importPanel = h("div", { class: "cd-import", hidden: true });
+  const watchRoot = h("aside", { class: "panel cd-watch", "aria-label": "Watchlist" });
+  const paperRoot = h("section", { class: "panel cd-paper", hidden: true, "aria-label": "Paper trading" });
+  chartArea.insertBefore(drawBar, mainBox);
 
-  root.replaceChildren(
+  root.replaceChildren(h("div", { class: "cd-grid" }, watchRoot, h("div", { class: "cd-col" },
     h("div", { class: "panel cd-panel" },
       h("form", { class: "cd-bar", onsubmit: (e) => { e.preventDefault(); st.symbol = symbolInput.value.trim().toUpperCase(); open(); } },
         venueSeg,
         h("div", { class: "cd-symbol" }, symbolInput, symbolList, h("button", { class: "primary", type: "submit", text: "Show" })),
         tfSeg, typeSeg, indicatorMenu),
-      head, error, note, loading, chartArea));
+      importPanel, head, error, note, loading, chartArea),
+    paperRoot)));
+
+  const watch = mountWatchlist(watchRoot, { api, open: (venue, symbol) => { st.venue = venue; st.symbol = symbol; renderControls(); open(); },
+    current: () => ({ venue: st.venue, symbol: st.symbol }) });
+  const paper = mountPaper(paperRoot, { api, symbol: () => st.symbol, lastPrice: () => (st.bars.length ? st.bars[st.bars.length - 1].close : null),
+    onBook: (book) => { st.book = book; orderLines(); } });
 
   function segment(host, options, current, pick) {
     host.replaceChildren(...Object.entries(options).map(([key, label]) => h("button", { type: "button", "data-key": key,
@@ -119,19 +135,168 @@ export function mount(root, { api }) {
   function renderControls() {
     segment(venueSeg, VENUES, st.venue, (key) => {
       if (key === st.venue) return;
-      st.venue = key; st.symbol = key === "crypto" ? "BTCUSDT" : "RELIANCE"; renderControls(); open();
+      st.venue = key;
+      const imports = st.catalog ? st.catalog.imports : [];
+      st.symbol = key === "crypto" ? "BTCUSDT" : key === "india" ? "RELIANCE" : (imports[0] ? imports[0].symbol : "");
+      renderControls(); open();
     });
     const tfs = st.catalog ? st.catalog.timeframes : {};
     segment(tfSeg, Object.fromEntries(Object.keys(tfs).map((k) => [k, k === "1d" ? "1D" : k === "1w" ? "1W" : k])), st.tf,
       (key) => { st.tf = key; renderControls(); open(); });
     [...tfSeg.children].forEach((b) => b.setAttribute("title", tfs[/** @type {HTMLElement} */ (b).dataset.key || ""] || ""));
+    const meta = st.venue === "imported" && st.catalog ? st.catalog.imports.find((i) => i.symbol === st.symbol) : null;
+    if (meta) {
+      const secs = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400, "1w": 604800 };
+      [...tfSeg.children].forEach((b) => {
+        const s = secs[/** @type {HTMLElement} */ (b).dataset.key || ""];
+        if (s < meta.base_seconds || (s < 86400 && s % meta.base_seconds)) {
+          b.setAttribute("disabled", ""); b.setAttribute("title", `This file has ${meta.candle} candles`);
+        }
+      });
+    }
     segment(typeSeg, TYPES, st.type, (key) => { st.type = key; renderControls(); save(); draw(); });
     symbolInput.value = st.symbol;
     symbolInput.placeholder = st.venue === "crypto" ? "BTCUSDT" : "RELIANCE, NIFTY";
-    const list = st.catalog ? (st.venue === "crypto" ? st.catalog.crypto.map((c) => [c.symbol, `${c.name} (${c.coin})`])
-      : st.catalog.indices.map((i) => [i.symbol, i.name])) : [];
+    const list = !st.catalog ? [] : st.venue === "crypto" ? st.catalog.crypto.map((c) => [c.symbol, `${c.name} (${c.coin})`])
+      : st.venue === "imported" ? st.catalog.imports.map((i) => [i.symbol, `${i.rows} ${i.candle} candles`])
+      : st.catalog.indices.map((i) => [i.symbol, i.name]);
     symbolList.replaceChildren(...list.map(([value, label]) => h("option", { value, label })));
-    renderIndicatorMenu();
+    renderIndicatorMenu(); renderDrawBar(); renderImport(); watch.render();
+    if (st.visible && st.venue === "crypto") paper.show(); else paper.hide();
+  }
+
+  // -- drawings ----------------------------------------------------------------------------------------
+  function renderDrawBar() {
+    const need = st.tool ? TOOLS[st.tool].points : 0;
+    drawBar.replaceChildren(
+      ...Object.entries(TOOLS).map(([k, t]) => h("button", { type: "button", "aria-pressed": String(st.tool === k), text: t.label,
+        onclick: () => { st.tool = st.tool === k ? null : k; st.firstPoint = null; if (st.layer) { st.layer.preview = null; st.layer.update(); } renderDrawBar(); } })),
+      h("button", { type: "button", text: "Undo", disabled: !st.drawings.length, onclick: () => { st.drawings.pop(); saveDrawings(); } }),
+      h("button", { type: "button", text: "Clear all", disabled: !st.drawings.length, onclick: () => { st.drawings = []; saveDrawings(); } }),
+      h("span", { class: "hint cd-draw-hint", text: !st.tool ? "" : st.firstPoint ? "Now tap the second point." :
+        need === 1 ? "Tap the chart at the price." : st.tool === "fib" ? "Tap the swing start, then the swing end." : "Tap the first point." }));
+  }
+
+  /** @param {any} param */
+  function pointAt(param) {
+    if (!param || !param.point || param.logical == null || !st.price || !st.info) return null;
+    const price = st.price.coordinateToPrice(param.point.y);
+    if (price == null || !(price > 0)) return null;
+    return { time: timeOf(st.bars, param.logical, st.info.seconds), price };
+  }
+
+  // Taps are read from the chart box directly: the library drops a second click that comes quickly after
+  // the first (it waits to see a double click), which loses the second point of a line.
+  let down = /** @type {{x: number, y: number}|null} */ (null);
+  mainBox.addEventListener("pointerdown", (e) => { down = { x: e.clientX, y: e.clientY }; }, true);
+  mainBox.addEventListener("pointerup", (e) => {
+    if (!down || !st.tool || !st.main) return;
+    const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+    down = null;
+    if (moved > 6) return;                              // a drag pans the chart
+    const rect = mainBox.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    if (x > rect.width - st.main.priceScale("right").width()) return;     // on the price scale
+    chartClick({ point: { x, y }, logical: st.main.timeScale().coordinateToLogical(x) });
+  }, true);
+
+  /** @param {any} param */
+  function chartClick(param) {
+    if (!st.tool) return;
+    const pt = pointAt(param);
+    if (!pt) return;
+    const need = TOOLS[st.tool].points;
+    if (st.firstPoint && st.firstPoint.time === pt.time && Math.abs(st.firstPoint.price - pt.price) < 1e-9 * pt.price) return;
+    if (need === 1 || st.firstPoint) {
+      const points = need === 1 ? [pt] : [st.firstPoint, pt];
+      st.drawings.push({ id: Math.random().toString(36).slice(2, 10), kind: st.tool, points });
+      st.firstPoint = null; st.tool = null;
+      if (st.layer) st.layer.preview = null;
+      saveDrawings();
+    } else {
+      st.firstPoint = pt; renderDrawBar();
+    }
+  }
+
+  /** @param {any} param */
+  function chartMove(param) {
+    if (!st.layer || !st.tool || !st.firstPoint) return;
+    const pt = pointAt(param);
+    st.layer.preview = pt ? { id: "preview", kind: /** @type {any} */ (st.tool), points: [st.firstPoint, pt] } : null;
+    st.layer.update();
+  }
+
+  async function saveDrawings() {
+    if (st.layer) { st.layer.items = st.drawings; st.layer.update(); }
+    renderDrawBar();
+    try { await api("/md/drawings", { method: "PUT", body: { venue: st.venue, symbol: st.symbol, items: st.drawings } }); }
+    catch (err) { setStatus({ state: "error", text: `Drawings not saved: ${err.message}` }); }
+  }
+
+  async function loadDrawings(request) {
+    try {
+      const items = (await api("/md/drawings?" + new URLSearchParams({ venue: st.venue, symbol: st.symbol }))).items;
+      if (request !== st.request) return;
+      st.drawings = items;
+    } catch (err) {
+      st.drawings = [];
+      note.textContent = `Saved drawings could not be loaded: ${err.message}`; note.hidden = false;
+    }
+    if (st.layer) { st.layer.items = st.drawings; st.layer.update(); }
+    renderDrawBar();
+  }
+
+  // -- paper orders on the chart -----------------------------------------------------------------------
+  function orderLines() {
+    st.orderLines.forEach((line) => { try { st.price && st.price.removePriceLine(line); } catch (err) { /* chart redrawn */ } });
+    st.orderLines = [];
+    if (!st.price || !st.book || st.venue !== "crypto") return;
+    const pos = st.book.positions.find((p) => p.symbol === st.symbol);
+    if (pos) st.orderLines.push(st.price.createPriceLine({ price: pos.avg, color: css("--accent"), lineWidth: 1, lineStyle: LW.LineStyle.Dashed, axisLabelVisible: true, title: "Paper average" }));
+    st.book.orders.filter((o) => o.symbol === st.symbol).forEach((o) => st.orderLines.push(st.price.createPriceLine({
+      price: o.price, color: o.side === "BUY" ? css("--good") : css("--bad"), lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: true,
+      title: `Paper ${o.side === "BUY" ? "buy" : "sell"} limit` })));
+  }
+
+  // -- imported files ----------------------------------------------------------------------------------
+  function renderImport() {
+    importPanel.hidden = st.venue !== "imported";
+    if (importPanel.hidden) return;
+    const imports = st.catalog ? st.catalog.imports : [];
+    const nameIn = /** @type {HTMLInputElement} */ (h("input", { name: "cd-import-name", placeholder: "RELIANCE", autocomplete: "off", "aria-label": "Name for the import" }));
+    const fileIn = /** @type {HTMLInputElement} */ (h("input", { type: "file", accept: ".csv,text/csv,text/plain", "aria-label": "CSV file" }));
+    const result = h("p", { class: "hint", hidden: !st.importMsg, text: st.importMsg });
+    fileIn.addEventListener("change", () => { const f = fileIn.files && fileIn.files[0]; if (f && !nameIn.value) nameIn.value = f.name.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9&._-]/g, "").slice(0, 30).toUpperCase(); });
+    const go = async (e) => {
+      e.preventDefault();
+      const f = fileIn.files && fileIn.files[0];
+      result.hidden = false; result.className = "hint";
+      if (!f) { result.className = "error"; result.textContent = "Choose a CSV file first."; return; }
+      if (f.size > 5_000_000) { result.className = "error"; result.textContent = "The file is larger than 5 MB."; return; }
+      result.textContent = "Importing…";
+      try {
+        const meta = await api("/md/imports", { method: "POST", body: { symbol: nameIn.value, text: await f.text() } });
+        st.catalog = await api("/md/catalog");
+        st.symbol = meta.symbol;
+        const dropped = meta.dropped ? ` ${meta.dropped} bad row(s) skipped (lines ${meta.dropped_lines.join(", ")}${meta.dropped > 5 ? ", …" : ""}).` : "";
+        st.importMsg = `Imported ${meta.rows.toLocaleString("en-IN")} ${meta.candle} candles, ${meta.first.slice(0, 10)} to ${meta.last.slice(0, 10)} (dates read ${meta.dates}).${dropped}`;
+        renderControls(); open();
+      } catch (err) { result.className = "error"; result.textContent = `Not imported: ${err.message}`; }
+    };
+    result.classList.add("cd-import-result");
+    importPanel.replaceChildren(
+      h("form", { class: "cd-import-form", onsubmit: go },
+        h("label", {}, "CSV file", fileIn), h("label", {}, "Name", nameIn), h("button", { type: "submit", class: "primary", text: "Import CSV" })),
+      h("p", { class: "hint", text: "Columns: Date (or Date and Time), Open, High, Low, Close, and Volume if you have it. Times are read as India time. For NSE/BSE charts without a broker; imported prices are never live." }),
+      result,
+      h("div", { class: "cd-chips" }, imports.length ? h("div", { class: "cd-chips" }, imports.map((i) => h("span", { class: "cd-chip" + (i.symbol === st.symbol ? " on" : "") },
+        h("button", { type: "button", class: "cd-chip-open", text: i.symbol, title: `${i.rows} ${i.candle} candles`, onclick: () => { st.symbol = i.symbol; renderControls(); open(); } }),
+        h("button", { type: "button", class: "cd-x", "aria-label": `Delete import ${i.symbol}`, text: "×", onclick: async () => {
+          try { await api(`/md/imports/${encodeURIComponent(i.symbol)}`, { method: "DELETE" }); st.catalog = await api("/md/catalog");
+            if (st.symbol === i.symbol) st.symbol = st.catalog.imports[0] ? st.catalog.imports[0].symbol : "";
+            renderControls(); open();
+          } catch (err) { result.hidden = false; result.className = "error"; result.textContent = `Not deleted: ${err.message}`; }
+        } })))) : null));
   }
 
   function renderIndicatorMenu() {
@@ -170,14 +335,18 @@ export function mount(root, { api }) {
   // -- data --------------------------------------------------------------------------------------------
   function query(tf = st.tf) { return "/md/candles?" + new URLSearchParams({ venue: st.venue, symbol: st.symbol, tf }); }
 
-  function showError(message) {
-    error.replaceChildren(h("strong", { text: "Chart not shown. " }), message, " ",
-      h("button", { type: "button", class: "cd-retry", text: "Try again", onclick: () => open() }));
+  /** @param {string} message @param {boolean} [suggestImport] */
+  function showError(message, suggestImport) {
+    error.replaceChildren(h("span", {}, h("strong", { text: "Chart not shown. " }), message, " ",
+      h("button", { type: "button", class: "cd-retry", text: "Try again", onclick: () => open() }),
+      suggestImport ? h("button", { type: "button", class: "cd-retry", text: "Import a CSV instead",
+        onclick: () => { st.venue = "imported"; st.symbol = st.catalog && st.catalog.imports[0] ? st.catalog.imports[0].symbol : ""; renderControls(); open(); } }) : null));
     error.hidden = false;
   }
 
   async function open() {
     const request = ++st.request;
+    st.busy = true;
     stopLive();
     error.hidden = true; loading.hidden = false;
     save();
@@ -187,6 +356,19 @@ export function mount(root, { api }) {
         if (!(st.tf in st.catalog.timeframes)) st.tf = "1h";
         renderControls();
       }
+      if (st.venue === "imported" && st.symbol) {
+        // An import has one candle size; a smaller one cannot be shown, so step up to the first that can.
+        const meta = st.catalog.imports.find((i) => i.symbol === st.symbol);
+        const secs = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400, "1w": 604800 };
+        const fits = (tf) => secs[tf] >= meta.base_seconds && (secs[tf] >= 86400 || secs[tf] % meta.base_seconds === 0);
+        if (meta && !fits(st.tf)) { st.tf = Object.keys(secs).find(fits) || "1d"; renderControls(); }
+      }
+      if (st.venue === "imported" && !st.symbol) {
+        loading.hidden = true; chartArea.hidden = true; destroy(); st.bars = []; st.info = null; head.replaceChildren(); note.hidden = true;
+        renderControls();
+        return;
+      }
+      if (st.venue !== "imported") st.importMsg = "";
       const info = await api(query());
       if (request !== st.request) return;
       if (!Array.isArray(info.candles) || !info.candles.length) throw new Error(`${info.source || "The provider"} sent no candles.`);
@@ -195,13 +377,20 @@ export function mount(root, { api }) {
       loading.hidden = true; chartArea.hidden = false;
       const notes = info.notes || [];
       note.textContent = notes.join(" "); note.hidden = !notes.length;
+      st.drawings = []; st.tool = null; st.firstPoint = null;
       draw(true);
       startLive();
+      renderControls(); paper.symbolChanged();
+      loadDrawings(request);
     } catch (err) {
       if (request !== st.request) return;
       loading.hidden = true; chartArea.hidden = true; destroy(); st.bars = []; st.info = null;
       head.replaceChildren(); note.hidden = true;
-      showError(err instanceof Error ? err.message : String(err));
+      const payload = /** @type {any} */ (err).payload || {};
+      showError(err instanceof Error ? err.message : String(err), st.venue === "india" && !!payload.needs_login);
+      renderControls();
+    } finally {
+      if (request === st.request) st.busy = false;
     }
   }
 
@@ -240,7 +429,7 @@ export function mount(root, { api }) {
 
   function destroy() {
     st.charts.forEach((c) => c.remove());
-    st.charts = []; st.series = new Map(); st.main = st.price = st.vol = null;
+    st.charts = []; st.series = new Map(); st.main = st.price = st.vol = null; st.layer = null; st.orderLines = [];
     panes.replaceChildren();
   }
 
@@ -292,8 +481,13 @@ export function mount(root, { api }) {
       st.charts.forEach((other) => { if (other !== chart) other.timeScale().setVisibleLogicalRange(range); });
       syncing = false;
     }));
-    main.subscribeCrosshairMove((param) => describe(param && param.time != null ? param.time : null));
+    main.subscribeCrosshairMove((param) => { describe(param && param.time != null ? param.time : null); chartMove(param); });
+    st.layer = new DrawingLayer({ bars: st.bars, seconds: st.info.seconds, colors: [css("--s4"), css("--s6"), css("--s5"), css("--s1")],
+      text: css("--text"), format: (p) => num(p) });
+    st.layer.items = st.drawings;
+    st.price.attachPrimitive(st.layer);
     setData();
+    orderLines();
     const n = st.bars.length;
     main.timeScale().setVisibleLogicalRange(keep || { from: Math.max(0, n - 150), to: n + 4 });
   }
@@ -362,7 +556,7 @@ export function mount(root, { api }) {
         });
       });
       st.results = results;
-      describe(null); renderHead();
+      describe(null); renderHead(); paper.priceChanged();
     });
   }
 
@@ -424,10 +618,11 @@ export function mount(root, { api }) {
   renderControls();
   return {
     show() {
-      st.visible = true;
-      if (!st.info) { if (error.hidden) open(); return; }
+      st.visible = true; watch.show();
+      if (st.venue === "crypto") paper.show();
+      if (!st.info) { if (error.hidden && !st.busy) open(); return; }
       if (!st.stopFeed) open();          // back on the tab: fresh candles, then live again
     },
-    hide() { st.visible = false; stopLive(); },
+    hide() { st.visible = false; stopLive(); watch.hide(); paper.hide(); },
   };
 }

@@ -220,3 +220,87 @@ class CryptoFeed:
         with self._lock:
             self._cache[key] = (self.now(), result)
         return result
+
+
+def _tickers_binance(get, symbols: list[str]) -> dict:
+    errors = []
+    for host in BINANCE_HOSTS:
+        try:
+            status, payload = get(f"{host}/api/v3/ticker/24hr",
+                                  {"symbols": "[" + ",".join(f'"{s}"' for s in symbols) + "]", "type": "MINI"})
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{host.split('//')[1]}: {type(exc).__name__}: {str(exc)[:100]}")
+            continue
+        if status != 200 or not isinstance(payload, list):
+            errors.append(f"{host.split('//')[1]}: {_reason(status, payload)}")
+            continue
+        out = {}
+        for item in payload:
+            try:
+                last, open_ = _number(item["lastPrice"]), _number(item["openPrice"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if last > 0:
+                out[item.get("symbol")] = {"price": last, "change_pct": (last / open_ - 1) * 100 if open_ > 0 else None,
+                                           "source": "Binance"}
+        return out
+    raise MarketDataError("Binance did not answer: " + "; ".join(errors), "Binance")
+
+
+def _ticker_coinbase(get, product: str) -> dict:
+    try:
+        status, payload = get(f"{COINBASE_HOST}/products/{product}/stats", {})
+    except Exception as exc:  # noqa: BLE001
+        raise MarketDataError(f"Coinbase did not answer: {type(exc).__name__}: {str(exc)[:100]}", "Coinbase") from exc
+    if status != 200 or not isinstance(payload, dict):
+        raise MarketDataError(f"Coinbase did not answer: {_reason(status, payload)}", "Coinbase")
+    try:
+        last, open_ = _number(payload["last"]), _number(payload["open"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise MarketDataError(f"Coinbase sent no price for {product}.", "Coinbase") from exc
+    if last <= 0:
+        raise MarketDataError(f"Coinbase sent no price for {product}.", "Coinbase")
+    return {"price": last, "change_pct": (last / open_ - 1) * 100 if open_ > 0 else None, "source": "Coinbase"}
+
+
+def tickers(feed: CryptoFeed, symbols: list[str]) -> dict:
+    """Last price and 24-hour change for each symbol: {symbol: {price, change_pct, source} | {error}}.
+
+    One Binance request for all of them; when Binance fails, Coinbase one coin at a time (USD price).
+    Cached for 2 seconds, so a watchlist and the paper book polling together cost one request.
+    """
+    wanted = [pair(s)[0] for s in dict.fromkeys(symbols)]
+    if not wanted:
+        return {}
+    now = feed.now()
+    with feed._lock:
+        cache = feed._cache.setdefault("tickers", {})
+    fresh = {s: v for s, (t, v) in cache.items() if now - t < 2 and s in wanted}
+    missing = [s for s in wanted if s not in fresh]
+    if missing:
+        got, reason = {}, ""
+        if now - feed._binance_failed_at >= SKIP_AFTER_FAILURE:
+            try:
+                got = _tickers_binance(feed.binance.get, missing)
+            except MarketDataError as exc:
+                feed._binance_failed_at, feed._binance_error = now, str(exc)
+                reason = str(exc)
+        else:
+            reason = feed._binance_error
+        for symbol in missing:
+            if symbol in got:
+                continue
+            product = BY_SYMBOL[symbol][3]
+            if product is None:
+                got[symbol] = {"error": (reason or "Binance sent no price.") + f" Coinbase does not list {BY_SYMBOL[symbol][1]}."}
+                continue
+            try:
+                got[symbol] = _ticker_coinbase(feed.coinbase.get, product)
+            except MarketDataError as exc:
+                got[symbol] = {"error": f"{reason} {exc}".strip()}
+        with feed._lock:
+            for symbol, value in got.items():
+                if "error" not in value:
+                    cache[symbol] = (now, value)
+        fresh.update(got)
+    return {s: fresh[s] for s in wanted}

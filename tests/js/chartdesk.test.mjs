@@ -100,3 +100,25 @@ test("binance kline messages update the chart", async () => {
   stop();
   assert.equal(bars.length, 2); assert.equal(bars[1].time, 60 + 19800); assert.equal(changes.length, 1);
 });
+
+import { fibLevels, logicalOf, timeOf } from "../../desk/static/chartdesk/drawings.js";
+
+test("drawing points map to bar positions and back, past both ends too", () => {
+  const bars = [{ time: 100 }, { time: 160 }, { time: 220 }];
+  assert.equal(logicalOf(bars, 160, 60), 1);
+  assert.equal(logicalOf(bars, 190, 60), 1.5);
+  assert.equal(logicalOf(bars, 340, 60), 4);
+  assert.equal(logicalOf(bars, 40, 60), -1);
+  assert.equal(timeOf(bars, 1.4, 60), 160);
+  assert.equal(timeOf(bars, 4, 60), 340);
+  assert.equal(timeOf(bars, -2, 60), -20);
+  // a line drawn on hourly candles lands between the right bars on 4-hour candles
+  const fourHour = [{ time: 0 }, { time: 14400 }];
+  assert.equal(logicalOf(fourHour, 7200, 14400), 0.5);
+});
+
+test("Fibonacci levels run from the first point (0%) to the second (100%)", () => {
+  const levels = fibLevels(200, 100);
+  assert.deepEqual(levels.map((l) => l.ratio), [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]);
+  near(levels[0].price, 200); near(levels[3].price, 150); near(levels[4].price, 138.2); near(levels[6].price, 100);
+});

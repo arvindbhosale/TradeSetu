@@ -71,6 +71,11 @@ export function startFeed(info, hooks) {
     }, POLL_SECONDS * 1000);
   };
 
+  if (live.kind === "none") {          // an imported file: nothing to follow
+    hooks.onStatus({ state: "closed", text: `${info.source || "Imported file"} · not live` });
+    return stop;
+  }
+
   if (live.kind === "poll") {          // NSE/BSE: the broker's last price, plus fresh candles each minute
     let ticks = 0, warned = false;
     const tick = async () => {

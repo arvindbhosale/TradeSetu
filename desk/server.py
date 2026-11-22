@@ -54,6 +54,8 @@ from .chainhistory import (
     ChainHistory,
     Recorder,
 )
+from .chartstore import ChartStore
+from .cryptopaper import CryptoPaper
 from .custom import OPS as RULE_OPS, TIME_OPS as RULE_TIME_OPS, CustomStrategies
 from .financials import Financials, peer_rows
 from .fno import BSE_INDICES, Derivatives, exchange_of
@@ -62,7 +64,8 @@ from .fundamentals import LABELS as FUNDAMENTAL_LABELS, Fundamentals
 from .indices import Indices
 from .kite import KiteError, KiteMCP
 from .marketdata import TIMEFRAMES as CHART_TIMEFRAMES, MarketDataError, broker as md_broker
-from .marketdata.crypto import PAIRS as CRYPTO_PAIRS, CryptoFeed
+from .marketdata.crypto import PAIRS as CRYPTO_PAIRS, CryptoFeed, tickers as crypto_tickers
+from .marketdata.csvfeed import Imports as ChartImports
 from .markettools import MarketTools, finite
 from .nse import NseClient, exchange_proxy as nse_proxy
 from .optimiser import OBJECTIVES, optimise
@@ -913,11 +916,16 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         canonical = symbol_of(symbol)
         return canonical, False, canonical
 
+    app.state.chartstore = ChartStore(home() / "charts.json")
+    app.state.imports = ChartImports(home() / "chart_imports")
+    app.state.cpaper = CryptoPaper(home() / "crypto_paper.json", lambda symbols: crypto_tickers(app.state.crypto, symbols))
+
     @app.get("/api/md/catalog")
     def md_catalog():
         return {"timeframes": {k: v["label"] for k, v in CHART_TIMEFRAMES.items()},
                 "crypto": [{"symbol": p[0], "coin": p[1], "name": p[2]} for p in CRYPTO_PAIRS],
-                "indices": [{"symbol": "IDX:" + e[0], "name": e[1]} for e in indices.entries()]}
+                "indices": [{"symbol": "IDX:" + e[0], "name": e[1]} for e in indices.entries()],
+                "imports": app.state.imports.list()}
 
     @app.get("/api/md/candles")
     def md_candles(venue: str = "crypto", symbol: str = "", tf: str = "1h"):
@@ -926,6 +934,10 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if venue == "crypto":
             out = app.state.crypto.candles(symbol, tf)
             return {**out, "market": "crypto", "tf": tf, "session": {"open": True, "note": "Crypto trades all day, every day."}}
+        if venue == "imported":
+            out = app.state.imports.candles(symbol, tf)
+            return {**out, "symbol": symbol.strip().upper(), "market": "imported", "tf": tf,
+                    "session": {"open": False, "note": "Imported prices are not live."}}
         if venue != "india":
             raise ValueError("venue must be crypto or india")
         instrument, raw, name = chart_instrument(symbol)
@@ -954,6 +966,113 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if not price:
             raise MarketDataError(f"{broker} gave no live price for {instrument}.", broker)
         return {"price": price, "session": market.session_status()}
+
+    # -- Charts tab: watchlist, drawings, imported files, crypto paper trading ---------------------------
+    @app.get("/api/md/watchlist")
+    def md_watchlist():
+        return {"items": app.state.chartstore.watchlist()}
+
+    @app.put("/api/md/watchlist")
+    def md_watchlist_set(payload: dict):
+        return {"items": app.state.chartstore.set_watchlist(body_of(payload).get("items"))}
+
+    @app.get("/api/md/prices")
+    def md_prices():
+        """The watchlist's last prices: crypto from the exchange, NSE/BSE from the broker, imports' last close."""
+        items = app.state.chartstore.watchlist()
+        out: dict[str, dict] = {}
+        crypto = [i["symbol"] for i in items if i["venue"] == "crypto"]
+        if crypto:
+            try:
+                for symbol, value in crypto_tickers(app.state.crypto, crypto).items():
+                    out[f"crypto:{symbol}"] = value
+            except ValueError as exc:
+                for symbol in crypto:
+                    out[f"crypto:{symbol}"] = {"error": str(exc)}
+        india = [i["symbol"] for i in items if i["venue"] == "india"]
+        if india:
+            broker = chart_broker()
+            names: dict[str, str] = {}
+            for symbol in india:
+                try:
+                    instrument, raw, _ = chart_instrument(symbol)
+                    if not raw:
+                        pair = kite_instrument(instrument)
+                        if not pair:
+                            raise ValueError(f"{broker} has no instrument for {instrument}.")
+                        instrument = f"{pair[0]}:{pair[1]}"
+                    names[symbol] = instrument
+                except (ValueError, MarketDataError) as exc:
+                    out[f"india:{symbol}"] = {"error": str(exc)}
+            if names and not kite.connected:
+                for symbol in names:
+                    out[f"india:{symbol}"] = {"error": f"Log in to {broker} for live prices."}
+            elif names:
+                try:
+                    quotes = kite.quotes(sorted(set(names.values())))
+                except Exception as exc:  # noqa: BLE001 - shown against each symbol
+                    quotes, failure = {}, str(exc)[:160]
+                else:
+                    failure = f"{broker} gave no price."
+                for symbol, instrument in names.items():
+                    q = quotes.get(instrument) or {}
+                    last = q.get("last_price")
+                    close = (q.get("ohlc") or {}).get("close")
+                    out[f"india:{symbol}"] = ({"price": float(last), "source": broker,
+                                               "change_pct": (last / close - 1) * 100 if close else None}
+                                              if last else {"error": failure})
+        for item in items:
+            if item["venue"] == "imported":
+                try:
+                    rows = app.state.imports.candles(item["symbol"], "1d")["candles"]
+                    prev = rows[-2]["close"] if len(rows) > 1 else None
+                    out[f"imported:{item['symbol']}"] = {"price": rows[-1]["close"], "source": "Imported file",
+                                                         "change_pct": (rows[-1]["close"] / prev - 1) * 100 if prev else None,
+                                                         "stale": True}
+                except (ValueError, MarketDataError) as exc:
+                    out[f"imported:{item['symbol']}"] = {"error": str(exc)}
+        return {"prices": out, "session": market.session_status()}
+
+    @app.get("/api/md/drawings")
+    def md_drawings(venue: str = "", symbol: str = ""):
+        return {"items": app.state.chartstore.drawings(venue, symbol)}
+
+    @app.put("/api/md/drawings")
+    def md_drawings_set(payload: dict):
+        body = body_of(payload)
+        return {"items": app.state.chartstore.set_drawings(str(body.get("venue", "")), body.get("symbol"), body.get("items"))}
+
+    @app.get("/api/md/imports")
+    def md_imports():
+        return {"items": app.state.imports.list()}
+
+    @app.post("/api/md/imports")
+    def md_import(payload: dict):
+        body = body_of(payload)
+        return app.state.imports.save(str(body.get("symbol", "")), str(body.get("text", "")))
+
+    @app.delete("/api/md/imports/{symbol}")
+    def md_import_delete(symbol: str):
+        app.state.imports.delete(symbol)
+        return {"items": app.state.imports.list()}
+
+    @app.get("/api/cpaper")
+    def cpaper_view():
+        return app.state.cpaper.view()
+
+    @app.post("/api/cpaper/order")
+    def cpaper_order(payload: dict):
+        result = app.state.cpaper.place(body_of(payload))
+        return {**result, "book": app.state.cpaper.view()}
+
+    @app.delete("/api/cpaper/order/{order_id}")
+    def cpaper_cancel(order_id: str):
+        app.state.cpaper.cancel(order_id)
+        return app.state.cpaper.view()
+
+    @app.post("/api/cpaper/reset")
+    def cpaper_reset(payload: dict):
+        return app.state.cpaper.reset(body_of(payload).get("balance", 10_000))
 
     @app.get("/api/algos")
     def algo_list():
