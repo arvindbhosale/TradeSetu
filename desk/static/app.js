@@ -1318,6 +1318,7 @@
       body = { phrase: typed };
     }
     if (action === "delete" && !window.confirm(`Delete the algo “${algo.name}”?`)) return;
+    if (action === "exit" && !window.confirm(`Sell the ${algo.position} shares “${algo.name}” holds now and stop it?${algo.mode === "live" ? " This is a LIVE order." : ""}`)) return;
     if (action === "clear" && !window.confirm(`Mark “${algo.name}” as holding nothing? No order is sent; do this only after you have dealt with its ${algo.position} shares yourself.`)) return;
     busy(button, true, "…");
     try {
@@ -1340,9 +1341,12 @@
         h("div", { class: "head" },
           h("span", {}, h("button", { type: "button", class: "name", text: a.name, title: "Buy and sell prices, P&L and orders", onclick: () => openAlgoDetail("stock", a.id) }), " ",
             h("span", { class: "pill " + (a.mode === "live" ? "bad" : ""), text: a.mode === "live" ? "LIVE" : "Paper" }), " ",
-            h("span", { class: "pill " + (blocked ? "warn" : a.enabled ? "good" : ""), text: a.status })),
+            h("span", { class: "pill " + (blocked ? "warn" : a.enabled ? "good" : ""), text: a.status }), " ",
+            a.hold_until ? h("span", { class: "pill warn", text: `Buys held to ${a.hold_until}` }) : null),
           h("span", { class: "actions" },
             h("button", { type: "button", text: "Details", onclick: () => openAlgoDetail("stock", a.id) }),
+            a.enabled && a.position && !a.exit_requested ? act("Exit", "exit", "danger") : null,
+            a.hold_until ? act("Allow buys", "release") : null,
             canEdit(a) ? h("button", { type: "button", text: "Edit", onclick: () => editStockAlgo(a) }) : null,
             a.enabled ? act("Stop", "stop") : act("Start", "start", a.mode === "live" ? "danger" : "primary"),
             act("Run now", "run"), !a.enabled && a.position ? act("Clear position", "clear") : null, !a.enabled ? act("Delete", "delete") : null)),
@@ -1370,7 +1374,9 @@
     $$("#algo-kind button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
     $("#algo-stocks").hidden = b.dataset.kind !== "stocks";
     $("#algo-fno").hidden = b.dataset.kind !== "fno";
+    $("#algo-supervisor").hidden = b.dataset.kind !== "supervisor";
     if (b.dataset.kind === "fno") refreshFnoAlgos();
+    if (b.dataset.kind === "supervisor") refreshSupervisor();
   }));
 
   function fnoBody(form) {
@@ -1529,9 +1535,11 @@
           h("span", {}, h("button", { type: "button", class: "name", text: a.name, title: "Each leg's buy and sell prices, P&L and orders", onclick: () => openAlgoDetail("fno", a.id) }), " ",
             h("span", { class: "pill " + (a.mode === "live" ? "bad" : ""), text: a.mode === "live" ? "LIVE" : "Paper" }), " ",
             a.naked ? h("span", { class: "pill warn", text: "naked short" }) : null, " ",
-            h("span", { class: "pill " + (blocked ? "warn" : a.enabled ? "good" : ""), text: a.status })),
+            h("span", { class: "pill " + (blocked ? "warn" : a.enabled ? "good" : ""), text: a.status }), " ",
+            a.hold_until ? h("span", { class: "pill warn", text: `Entries held to ${a.hold_until}` }) : null),
           h("span", { class: "actions" },
             h("button", { type: "button", text: "Details", onclick: () => openAlgoDetail("fno", a.id) }),
+            a.hold_until ? act("Allow entries", "release") : null,
             canEdit(a) && !a.exit_requested ? h("button", { type: "button", text: "Edit", onclick: () => editFnoAlgo(a) }) : null,
             a.enabled ? act("Stop", "stop") : act("Start", "start", a.mode === "live" ? "danger" : "primary"),
             a.enabled ? act("Run now", "run") : null, book ? act("Exit", "exit", "danger") : null,
@@ -1551,6 +1559,71 @@
           h("pre", { class: "log", text: a.log.slice().reverse().map((e) => `${e.time_ist}  ${e.message}`).join("\n") })));
     }));
   }
+
+  // -- supervisor: holds algos, closes positions, kill switch; never opens a trade ------
+
+  async function refreshSupervisor(fill = true) {
+    let d;
+    try { d = await api("/supervisor"); } catch (err) { showError("#sup-error", err); return; }
+    showError("#sup-error", null);
+    const form = $("#form-supervisor"), s = d.settings;
+    if (fill) {
+      form.supervisor_mode.value = s.mode; form.supervisor_loss_pct.value = s.loss_pct; form.supervisor_ai.checked = s.ai;
+      form.supervisor_minutes.value = s.minutes; form.supervisor_max_actions.value = s.max_actions; form.supervisor_live.checked = s.live;
+    }
+    $("#sup-state").textContent = [d.reviewing ? "AI review running…" : null,
+      s.ai && d.llm_problem ? `AI not ready: ${d.llm_problem}` : null,
+      s.ai && d.next_review_ist ? `next AI review about ${d.next_review_ist}` : null,
+      `AI actions today: ${d.actions_today} of ${s.max_actions}`].filter(Boolean).join(" · ");
+    const last = d.reviews[0];
+    $("#sup-reviews").replaceChildren(last ? h("p", { class: last.error ? "hint warn" : "hint",
+      text: `Last AI review ${last.time_ist}${last.seconds != null ? ` (${last.seconds}s)` : ""}: ${last.error ? "failed: " + last.error : last.summary || "nothing to report"}` }) : h("p", { class: "hint", text: "No AI review yet." }));
+    if (!d.log.length) { $("#sup-log").replaceChildren(h("p", { class: "hint", text: "Nothing yet. With the supervisor on, every step it takes or suggests shows here." })); return; }
+    const by = { rule: "Rule", ai: "AI" };
+    const what = { hold: "Hold new entries", exit: "Close position", kill_switch: "Kill switch on", suggest: "Suggestion" };
+    $("#sup-log").replaceChildren(h("div", { class: "scroll" }, h("table", {},
+      h("thead", {}, h("tr", {}, ["Time", "By", "Action", "Algo", "Why", "Result"].map((t) => h("th", { text: t })))),
+      h("tbody", {}, d.log.slice(0, 100).map((e) => h("tr", {},
+        h("td", { text: e.time_ist }), h("td", { text: by[e.source] || e.source }), h("td", { text: what[e.action] || e.action }),
+        h("td", { text: e.algo || "–" }), h("td", { text: e.reason || "–" }),
+        h("td", { class: e.applied ? "up" : "", text: e.note || (e.applied ? "Done." : "–") })))))));
+  }
+
+  $("#form-supervisor").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target, button = form.querySelector("button[type=submit]");
+    if (form.supervisor_live.checked && !state.supervisorLiveOk) {
+      if (!window.confirm("Let the supervisor close positions and hold algos that trade with real money?")) { form.supervisor_live.checked = false; return; }
+      state.supervisorLiveOk = true;
+    }
+    busy(button, true, "Saving…");
+    try {
+      await api("/settings", { method: "PUT", body: { supervisor_mode: form.supervisor_mode.value, supervisor_ai: form.supervisor_ai.checked,
+        supervisor_loss_pct: Number(form.supervisor_loss_pct.value || 0), supervisor_minutes: Number(form.supervisor_minutes.value || 15),
+        supervisor_max_actions: Number(form.supervisor_max_actions.value || 0), supervisor_live: form.supervisor_live.checked } });
+      await refreshSupervisor();
+    } catch (err) { showError("#sup-error", err); }
+    busy(button, false);
+  });
+  $("#sup-check").addEventListener("click", async (e) => {
+    busy(e.target, true, "…");
+    try { await api("/supervisor/check", { method: "POST", body: {} }); } catch (err) { showError("#sup-error", err); }
+    busy(e.target, false); await refreshSupervisor(false); refreshAlgos();
+  });
+  $("#sup-review").addEventListener("click", async (e) => {
+    busy(e.target, true, "Asking…");
+    try {
+      const r = await api("/supervisor/review", { method: "POST", body: {} });
+      if (r.message) $("#sup-state").textContent = r.message;
+      for (let i = 0; i < 40; i += 1) {                       // the answer usually takes a few seconds
+        await new Promise((ok) => setTimeout(ok, 3000));
+        const d = await api("/supervisor");
+        if (!d.reviewing) break;
+      }
+    } catch (err) { showError("#sup-error", err); }
+    busy(e.target, false); await refreshSupervisor(false);
+  });
+  $("#sup-refresh").addEventListener("click", () => refreshSupervisor(false));
 
   // -- markets: sector cards -----------------------------------------------------------
 

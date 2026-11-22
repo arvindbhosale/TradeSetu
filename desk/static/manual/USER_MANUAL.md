@@ -1300,6 +1300,36 @@ Open **Activity** to see everything the algo did and why.
 
 Yahoo's intraday candles arrive late. A live intraday algo uses Kite's candles when your Kite Connect key includes historical data; otherwise it reports *Blocked: candles are delayed* rather than trading on old prices. Paper intraday algos have the same safeguard.
 
+### Supervisor
+
+**Algos → Supervisor** watches your running algos and steps in only to cut risk. Your algos still place every order. The supervisor can do four things and nothing else:
+
+| Action | What happens |
+|---|---|
+| **Hold** | The algo takes no new buy or entry for the rest of the day. Its stoploss, target and square-off keep working. **Allow buys** (stocks) or **Allow entries** (F&O) on the algo lifts it. |
+| **Close** | The algo sells what it holds (F&O: closes every leg) and stops. Works with the kill switch on. |
+| **Kill switch** | Turns the desk's kill switch on: no new order anywhere, exits still work. You switch it off yourself. |
+| **Suggestion** | A note and an alert. Nothing is done. |
+
+It never opens a trade, starts an algo, changes its size or settings, goes live, or switches the kill switch off.
+
+**Modes.** *Off*. *Watch*: every action becomes an alert and a suggestion. *Protect*: actions are carried out, on paper algos; on live algos only when you tick **act on live algos too**.
+
+**Fixed rules** (every minute, no AI):
+
+- A stock algo's position this far below its buy price is closed (default 10%; 0 switches it off). A backstop for algos run without a stoploss.
+- When today's loss on an account passes 80% of the daily loss limit, every algo on that account is held for the day.
+- An F&O algo past 80% of its maximum loss is flagged (it closes itself at the maximum).
+- Live algos running with no daily loss limit are flagged.
+
+**AI review** (optional). In market hours, every few minutes (15 by default), the algos' state goes to the AI service in Settings → AI, which answers with actions from the list above. Its answer is checked: only those four actions, only algos that are running, a reason for each; anything else is refused and logged. The AI acts at most **Most AI actions a day** times (3 by default); after that its answers become suggestions. Treat it as a second opinion: a language model can be wrong, and its trading judgement cannot be backtested honestly, so run it on paper first. Each review is one request to your AI service.
+
+Every step, carried out or not, is listed under **What it did** with the reason. **Check now** runs the fixed rules at once; **Ask the AI now** runs one AI review.
+
+![Supervisor](img/supervisor.png)
+
+The stock algo list also has **Exit**: sell what the algo holds now and stop it.
+
 ### Options & Futures algos
 
 **Algos → Options & Futures** runs an option strategy (any option strategy from the Backtest screen) or an index future by itself, in **Paper** or **Live**. Both modes take the same path: every leg is a limit order through your risk limits, kill switch and trade window. Paper fills in the paper book at Kite's last price; Live waits for Zerodha to fill each order.
