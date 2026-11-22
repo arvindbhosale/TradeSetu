@@ -16,11 +16,19 @@ import uvicorn
 from . import APP_NAME
 from .server import create_app
 
+# The usual local port: a fixed one keeps the Kite Connect redirect URL the same at every start.
+LOCAL_PORT = 47800
+
 
 def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+    for port in (LOCAL_PORT, 0):
+        with socket.socket() as sock:
+            try:
+                sock.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return sock.getsockname()[1]
+    raise OSError("no free local port")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -42,6 +50,7 @@ def main(argv: list[str] | None = None) -> None:
 
     port = args.port or _free_port()
     app = create_app()
+    _resume_kite(app, f"http://127.0.0.1:{port}/broker/callback")
     app.state.algos.start()
     app.state.sectors.start()
     app.state.price_alerts.start()
@@ -83,6 +92,17 @@ def main(argv: list[str] | None = None) -> None:
     app.state.kite.disconnect()
     server.should_exit = True
     thread.join(timeout=5)
+
+
+def _resume_kite(app, redirect_uri: str) -> bool:
+    """Reconnect Kite at start with your saved Kite Connect keys, so today's login carries over a restart."""
+    from .kiteconnect import resume
+
+    try:
+        return resume(app.state.kite, app.state.settings, redirect_uri)
+    except Exception as exc:  # noqa: BLE001 - the Trade tab shows a Connect button
+        logging.getLogger(__name__).warning("Kite not reconnected at start: %s", exc)
+        return False
 
 
 def _quit_when_stdin_closes(server: uvicorn.Server) -> None:
@@ -158,7 +178,10 @@ def serve_hosted(host: str, port: int) -> None:
     app.state.sectors.start()
     app.state.price_alerts.start()
     _start_indices(app)
-    if kite_url:
+    public_url = (os.environ.get("DESK_PUBLIC_URL") or "").strip().rstrip("/")
+    if _resume_kite(app, f"{public_url}/broker/callback" if public_url else ""):
+        kite_url = ""            # today's Kite Connect login is back; no MCP server to wait for
+    if kite_url and not getattr(app.state.kite, "is_direct", False):
         # Reconnect to the Kite server after a redeploy without waiting for a click.
         # Signing in to Kite itself is still the user's step, every morning.
         def connect_kite():
