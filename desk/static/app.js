@@ -2902,6 +2902,8 @@
       tile("Breakeven" + (r.breakevens.length === 1 ? "" : "s"), r.breakevens.length ? r.breakevens.map((b) => inr.format(b)).join(" / ") : "–",
         r.breakevens.length ? r.breakevens.map((b) => pct((b / r.spot - 1) * 100)).join(" / ") + " from spot" : "none in range"),
       tile("Chance of profit", r.pop_pct == null ? "–" : r.pop_pct + "%", "lognormal at this IV"),
+      tile("Expected move", r.expected_move ? `±${r.expected_move.pct.toFixed(2)}%` : "–",
+        r.expected_move ? `${r.underlying} ${inr.format(r.expected_move.low)} to ${inr.format(r.expected_move.high)} by expiry, about a 68% chance` : "no time left to expiry"),
       tile("Margin (estimate)", rupees(r.margin), "check the broker's calculator"),
       tile("Delta", inr2.format(r.greeks.delta), "₹ per 1 point move"),
       tile("Theta", rupees(r.greeks.theta), "₹ per day", r.greeks.theta >= 0 ? "pos" : "neg"),
@@ -2972,6 +2974,13 @@
       const v = x0 + ((x1 - x0) * i) / ticks;
       const label = svg("text", { x: x(v), y: H - pad.b + 16, "text-anchor": i === 0 ? "start" : i === ticks ? "end" : "middle" }); label.textContent = inr.format(v); root.append(label);
     }
+    // Expected move: one standard deviation either side of spot by the near expiry, shaded behind everything.
+    const move = r.expected_move && r.expected_move.high > x0 && r.expected_move.low < x1 ? r.expected_move : null;
+    if (move) {
+      const a = x(Math.max(move.low, x0)), b = x(Math.min(move.high, x1));
+      root.append(svg("rect", { x: a, y: pad.t, width: Math.max(b - a, 1), height: H - pad.t - pad.b, fill: "var(--s6)", opacity: 0.08 }));
+      [move.low, move.high].forEach((v) => { if (v > x0 && v < x1) root.append(svg("line", { x1: x(v), x2: x(v), y1: pad.t, y2: H - pad.b, stroke: "var(--s6)", "stroke-width": 1, "stroke-dasharray": "5 4", opacity: 0.6 })); });
+    }
     // Profit shaded green, loss red, under the expiry line.
     const area = (keep, color) => {
       let d = `M${x(x0).toFixed(1)},${y(0).toFixed(1)}`;
@@ -3004,8 +3013,17 @@
       rowEnds[row] = cx + w / 2;
       text(str, { x: cx, y: 14 + row * 16, "text-anchor": "middle", style: "fill:var(--text)" });
     });
-    const spotStr = `Spot ${inr.format(r.spot)}`, sw = width(spotStr);
-    text(spotStr, { x: Math.min(Math.max(x(r.spot), left + sw / 2), right - sw / 2), y: H - 4, "text-anchor": "middle", style: "fill:var(--s4)" });
+    const spotStr = `Spot ${inr.format(r.spot)}`, sw = width(spotStr), spotX = Math.min(Math.max(x(r.spot), left + sw / 2), right - sw / 2);
+    text(spotStr, { x: spotX, y: H - 4, "text-anchor": "middle", style: "fill:var(--s4)" });
+    // The expected-move edges share the spot row, each shown only where it clears the spot label.
+    if (move) {
+      [[move.low, "end", `−1 SD ${inr.format(move.low)}`], [move.high, "start", `+1 SD ${inr.format(move.high)}`]].forEach(([v, anchor, str]) => {
+        if (v <= x0 || v >= x1) return;
+        const w = width(str), at = x(v) + (anchor === "end" ? -4 : 4), from = anchor === "end" ? at - w : at;
+        if (from < left - pad.l + 2 || from + w > W - 2 || (from < spotX + sw / 2 + 6 && from + w > spotX - sw / 2 - 6)) return;
+        text(str, { x: at, y: H - 4, "text-anchor": anchor, style: "fill:var(--s6)" });
+      });
+    }
     // Max profit and max loss: highlight the index range on the expiry line and say the index level(s).
     // Profit labels go above the line and loss labels below it: at an extreme the rest of the curve is on the other side.
     // A label that would overlap one already placed goes to the other side of the line.
@@ -3052,7 +3070,8 @@
     host.replaceChildren(root);
     legend.replaceChildren(h("span", {}, h("i", { style: "background:var(--s1)" }), "At expiry"), h("span", {}, h("i", { style: "background:var(--s2)" }), "Today (T+0)"),
       h("span", {}, h("i", { style: "background:var(--s4)" }), "Spot now"), h("span", {}, "○ Breakeven (no profit, no loss)"),
-      h("span", {}, h("i", { style: "background:var(--good)" }), "Max profit"), h("span", {}, h("i", { style: "background:var(--bad)" }), "Max loss"));
+      h("span", {}, h("i", { style: "background:var(--good)" }), "Max profit"), h("span", {}, h("i", { style: "background:var(--bad)" }), "Max loss"),
+      ...(r.expected_move ? [h("span", {}, h("i", { style: "background:var(--s6);opacity:.5" }), "Expected move (±1 SD, about 68%)")] : []));
   }
 
   function startPortfolios() {
