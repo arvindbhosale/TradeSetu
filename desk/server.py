@@ -967,6 +967,63 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             raise MarketDataError(f"{broker} gave no live price for {instrument}.", broker)
         return {"price": price, "session": market.session_status()}
 
+    # -- price alerts: a share, a future or a coin reaching a price, to the alert log and Telegram ----------
+    def _india_prices(instruments: list[str]) -> dict:
+        if not kite.connected:
+            raise MarketDataError("connect and log in to your broker on the Trade tab", "Broker", needs_login=True)
+        return kite.ltp(instruments)
+
+    def _crypto_prices(symbols: list[str]) -> dict:
+        return crypto_tickers(app.state.crypto, symbols)
+
+    from .pricealerts import CONDITIONS as ALERT_CONDITIONS, MARKETS as ALERT_MARKETS, PriceAlerts
+    app.state.price_alerts = PriceAlerts(home() / "price_alerts.json", desk.notifier.notify, _india_prices, _crypto_prices)
+
+    @app.get("/api/price-alerts")
+    def price_alerts_list():
+        return {**app.state.price_alerts.list(), "markets": ALERT_MARKETS, "conditions": ALERT_CONDITIONS,
+                "telegram": bool(settings.get("alerts_enabled"))}
+
+    @app.post("/api/price-alerts")
+    def price_alerts_add(payload: dict):
+        from .marketdata.crypto import pair as crypto_pair
+        payload = body_of(payload)
+        kind, current = str(payload.get("market", "")), None
+        raw_symbol = str(payload.get("symbol") or "").strip()
+        if kind == "crypto":
+            instrument = crypto_pair(raw_symbol)[0]
+            label = instrument
+            with contextlib.suppress(Exception):
+                got = app.state.price_alerts.crypto_prices([instrument]).get(instrument) or {}
+                current = float(got["price"]) if got.get("price") else None
+        elif kind == "india":
+            instrument, raw, label = chart_instrument(raw_symbol)
+            if not raw:
+                found = kite_instrument(instrument)
+                if not found:
+                    raise ValueError(f"No broker instrument for {instrument}.")
+                instrument = f"{found[0]}:{found[1]}"
+                label = found[1] if found[0] == "NSE" else instrument
+            if kite.connected:
+                with contextlib.suppress(Exception):
+                    value = kite.ltp([instrument]).get(instrument)
+                    current = float(value) if value else None
+        else:
+            raise ValueError("Choose Indian market or Crypto")
+        alert = app.state.price_alerts.add({**payload, "label": label}, instrument=instrument, current=current)
+        return {"alert": alert, **app.state.price_alerts.list()}
+
+    @app.delete("/api/price-alerts/{alert_id}")
+    def price_alerts_remove(alert_id: str):
+        if not re.fullmatch(r"[0-9a-f]{10}", alert_id) or not app.state.price_alerts.remove(alert_id):
+            raise HTTPException(404, "no such alert")
+        return app.state.price_alerts.list()
+
+    @app.post("/api/price-alerts/clear")
+    def price_alerts_clear():
+        app.state.price_alerts.clear_done()
+        return app.state.price_alerts.list()
+
     # -- Charts tab: watchlist, drawings, imported files, crypto paper trading ---------------------------
     @app.get("/api/md/watchlist")
     def md_watchlist():
@@ -1643,6 +1700,101 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             return result
 
         job = runner.submit("optimise", f"Optimise {strategy.name} on {canonical}", work)
+        return {"job": job.view()}
+
+    # -- pair trading and the signal test (Backtest > More tools) ----------------------------------------
+
+    @app.get("/api/pairs/options")
+    def pairs_options():
+        from . import factortest, pairs
+        return {"examples": [{"a": a, "b": b, "group": g} for a, b, g in pairs.EXAMPLES],
+                "signals": {k: {"name": v[0], "text": v[1]} for k, v in factortest.SIGNALS.items()},
+                "indices": scan_indices()}
+
+    @app.post("/api/pairs/backtest")
+    def pairs_backtest(payload: dict):
+        from . import pairs
+        payload = body_of(payload)
+        first, second = symbol_of(payload.get("a")), symbol_of(payload.get("b"))
+        if first == second:
+            raise ValueError("Choose two different stocks")
+        start, end = date_of(payload.get("start"), "Start date"), date_of(payload.get("end"), "End date")
+        if end <= start:
+            raise ValueError("End date must be after the start date")
+        lookback = int(_number(payload, "lookback", 60))
+        # Fetch the look-back before the start too, so the first day of the test already has a usable gap.
+        from datetime import date as _date, timedelta as _td
+        early = (_date.fromisoformat(start) - _td(days=int(lookback * 1.6) + 10)).isoformat()
+        bars_a, source_a = stock_bars(first, "1d", early, end)
+        bars_b, _ = stock_bars(second, "1d", early, end)
+        result = pairs.backtest(bars_a, bars_b, lookback=lookback, entry_z=_number(payload, "entry_z", 2.0),
+                                exit_z=_number(payload, "exit_z", 0.5), stop_z=_number(payload, "stop_z", 4.0),
+                                max_days=int(_number(payload, "max_days", 0)), capital=_number(payload, "capital", 1_000_000),
+                                cost_pct=_number(payload, "cost_pct", 0.05),
+                                names=(first.removesuffix(".NS"), second.removesuffix(".NS")), start=start)
+        result["data_note"] = f"Daily prices from {source_a['name']}."
+        return result
+
+    @app.post("/api/signal-test")
+    def signal_test_start(payload: dict):
+        import time as time_module
+
+        from . import aiscan, factortest
+        payload = body_of(payload)
+        index_id = str(payload.get("index", "nifty500"))
+        entry = indices.entry(index_id)
+        if entry is None or not entry[3] or entry[3] == "bse":
+            raise ValueError("Choose an NSE index with a published stock list")
+        rows = indices.constituents(index_id)
+        if not rows:
+            raise ValueError(f"The stock list of {entry[1]} has not loaded yet. Open Indices, wait a moment and try again.")
+        signal = str(payload.get("signal", ""))
+        if signal not in factortest.SIGNALS:
+            raise ValueError("Choose a signal")
+        start, end = date_of(payload.get("start"), "Start date"), date_of(payload.get("end"), "End date")
+        if end <= start:
+            raise ValueError("End date must be after the start date")
+        hold, groups = int(_number(payload, "hold", 5)), int(_number(payload, "groups", 5))
+        cost_pct = _number(payload, "cost_pct", 0.2)
+        from datetime import date as _date, timedelta as _td
+        early = (_date.fromisoformat(start) - _td(days=420)).isoformat()      # a year of warm-up for 12-month signals
+        cache = aiscan.PriceCache(home() / "scan_cache")
+
+        def load(symbol: str):
+            hit = cache.get(symbol, early, end)
+            if hit:
+                return hit[0]
+            bars, source = stock_bars(symbol, "1d", early, end)
+            cache.put(symbol, early, end, bars, source["name"])
+            if source["name"] != "Yahoo":
+                time_module.sleep(0.35)               # brokers cap history requests (Kite: three a second)
+            return bars
+
+        def work(job):
+            closes, names, skipped = {}, {}, []
+            job.progress = {"done": 0, "total": len(rows)}
+            for i, row in enumerate(rows, 1):
+                if job.stop_requested:
+                    job.log(f"Stopped after {i - 1} stocks; testing on those.")
+                    break
+                symbol = row["symbol"]
+                try:
+                    closes[symbol] = load(symbol)["Close"]
+                    names[symbol] = row.get("name") or symbol
+                except Exception as exc:  # noqa: BLE001 - one missing stock does not stop the test
+                    skipped.append(symbol)
+                    job.log(f"{symbol}: skipped ({str(exc)[:80]})")
+                job.progress = {"done": i, "total": len(rows)}
+                if i % 50 == 0:
+                    job.log(f"Prices loaded for {i} of {len(rows)} stocks")
+            job.log(f"Ranking {len(closes)} stocks every {hold} trading days")
+            result = factortest.run(closes, signal, start=start, end=end, hold=hold, groups=groups, cost_pct=cost_pct,
+                                    names=names)
+            result.update(index_name=entry[1], skipped=skipped)
+            job.log("Done")
+            return result
+
+        job = scan_runner.submit("signal", f"Signal test: {factortest.SIGNALS[signal][0]} on {entry[1]}", work)
         return {"job": job.view()}
 
     # -- options ----------------------------------------------------------------

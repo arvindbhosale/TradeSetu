@@ -20,6 +20,7 @@ The screenshots use sample data, not real prices.
    - [Index futures: prices and charts](#index-futures-prices-and-charts)
    - [Gold & silver (MCX)](#gold--silver-mcx)
    - [P&L and alerts](#pl-and-alerts)
+   - [Price alerts](#price-alerts)
    - [Learn from your trades](#learn-from-your-trades)
    - [Export and tax report](#export-and-tax-report)
 3. [Settings](#3-settings)
@@ -30,6 +31,9 @@ The screenshots use sample data, not real prices.
 6. [Backtest](#6-backtest)
    - [Exit rules: stoploss, target, trailing, re-entry](#exit-rules-stoploss-target-trailing-re-entry)
    - [Create an algo from the result](#create-an-algo-from-the-result)
+   - [Optimise a strategy (walk-forward)](#optimise-a-strategy-walk-forward)
+   - [Pair trading: two stocks that move together](#pair-trading-two-stocks-that-move-together)
+   - [Test a stock-picking signal across an index](#test-a-stock-picking-signal-across-an-index)
    - [Index futures backtest](#index-futures-backtest)
    - [Option strategies: straddles, condors, spreads, hedges](#option-strategies-straddles-condors-spreads-hedges)
    - [Portfolios: Ray Dalio's All Weather](#portfolios-ray-dalios-all-weather)
@@ -377,6 +381,25 @@ Below: **Still holding** (each open position with its entry and current price), 
 It counts fills the desk made: every paper fill, and live fills read from Kite's trade book for orders this desk placed. Trades you place in Kite directly, and the order a triggered live GTT sends, are not seen. For the live account Kite's console is the final word.
 
 Every tile with a **?** explains itself: press it for what the number means, worked out with the number on screen, and a link to this manual.
+
+### Price alerts
+
+**P&L & alerts → Price alerts.** A message when a share, a future or a coin reaches your price.
+
+![Price alerts](img/21-price-alerts.png)
+
+1. Choose **Market**: *Indian shares, F&O and MCX* or *Crypto*.
+2. Type the **Symbol**: `RELIANCE`, `BSE:TCS`, `NFO:NIFTY25DECFUT`, `MCX:GOLDM25DECFUT`, or a coin such as `BTCUSDT`.
+3. Choose **rises to** or **falls to**, enter the **Price** and an optional **Note** (it comes with the message), then **Add alert**.
+
+How it behaves:
+
+- Each alert fires **once**, then shows *Fired* with the time and price. **Delete** removes one; **Remove fired alerts** clears the old ones.
+- An alert on the wrong side is refused. If the price is already 2,600, "rises to 2,500" would fire at once, so the desk says so instead.
+- **Indian prices come from your broker only**, and only while that market is open (NSE/BSE 09:15–15:30, MCX in its own hours). The broker must be connected and logged in. A delayed free price is never used, because it would fire late or on yesterday's close.
+- **Crypto** is checked all day, every day, from the exchange's public prices.
+- Prices are checked every 15 seconds while TradeSetu is running. On the desktop app that means the app must be open; on a server it runs all the time.
+- The message goes to the **Alerts** list below and, when set up, to **Telegram** (Settings → Alerts to your phone).
 
 ### Learn from your trades
 
@@ -933,6 +956,66 @@ How to read it:
 - **Efficiency** = unseen CAGR ÷ in-sample CAGR. Under about 50%, the "best" settings were fitted to noise.
 - **Settings stable?** Whether the windows kept choosing similar settings. If every window picks something different, no setting is really better.
 - **In-sample grid**: every combination on all the data, best first. It flatters; do not trade its top row just because it is top.
+- **Is the best setting luck?** A score from 0% to 100%. The period is cut into 10 pieces; many times over, the best setting is picked on half of them and checked on the other half. The score is how often that pick then landed in the bottom half. Under 20% is good. Over 50% means the winner is mostly luck: do not trust it, whatever its return.
+- **Every setting at a glance**: a coloured map of every combination of two settings (green better, red worse; the best has a dark border). A winner in a broad green area is believable. A lone green square among red ones is usually luck. A dash means the setting was impossible (for example a fast average longer than the slow one) or traded too little.
+
+![Is the best setting luck?](img/31-optimiser-luck.png)
+
+### Pair trading: two stocks that move together
+
+**Backtest → What to test → Pair trading.** Some stocks usually move together, like two large private banks. When the gap between them becomes unusually wide, the test buys the cheaper one and sells the dearer one, equal money in each, and closes when the gap is back to normal.
+
+![Pair trading](img/32-pair-trading.png)
+
+1. Pick an **Example pair** or type **Stock A** and **Stock B**, the dates and the capital.
+2. **Run pair test.**
+
+Advanced settings, in plain words:
+
+| Setting | Meaning |
+|---|---|
+| **Look back (days)** | How many past days decide what "normal" is. 60 by default. |
+| **Open when the gap is** | How unusual the gap must be to trade, in multiples of its usual size (a z-score). 2 means about the widest 5% of days. |
+| **Close when it is back to** | The gap at which the trade is closed. 0.5 by default. |
+| **Stoploss gap** | Close if the gap keeps widening to this size. 0 turns it off. |
+| **Close after (days)** | Close a trade that has not worked after this many days. 0 turns it off. |
+| **Costs per trade, each stock** | Brokerage, taxes and slippage, charged on both stocks at entry and at exit. |
+
+How to read it:
+
+- **Move together** is the correlation of the two stocks' daily moves (1 = always together). Pairs work best above about 0.7.
+- **Gap closes in** is how long the gap usually takes to halve. If it "does not", it is not a pair.
+- **Right now** says whether the rule would trade today, and which way.
+- **The gap** chart shows the z-score with the opening levels as dotted lines.
+
+Decisions use each day's closing prices and are traded at the next day's open, so the test never uses a price it could not have had.
+
+**In India:** a share you sell must be bought back the same day. To hold a pair overnight you need the stock futures of both, so choose two F&O stocks and size by lots. This test uses share prices and ignores lot sizes and the cost of rolling futures each month.
+
+### Test a stock-picking signal across an index
+
+**Backtest → What to test → Test a stock-picking signal.** Does "buy the stocks with the best 6-month return" really work on Nifty 500? This test answers that kind of question.
+
+![Signal test](img/33-signal-test.png)
+
+1. Choose the **Index** (Nifty 500 by default), the **Signal**, the dates and how long to **Hold** (1 week to 3 months).
+2. **Run signal test.** Nifty 500 loads 500 price histories the first time (a few minutes through your broker, which limits history requests); they are saved, so the next test is quick. **Stop** tests on what has loaded so far.
+
+Signals: 12-month momentum (leaving out the last month), 6- and 3-month momentum, last week's losers, near the 52-week high, low volatility, above the 200-day average, and low RSI.
+
+How it works: every holding period, all stocks are ranked by the signal using only prices up to that day, and we look at what each did over the next period.
+
+| Result | Meaning |
+|---|---|
+| **Verdict** | *Works*, *Weak*, *Does not work* or *Works in reverse* (the stocks ranked first did worse). |
+| **Rank match** | How well the ranking matched what happened next: −1 exactly backwards, 0 no link, +1 perfect. A steady 0.03 or more is already useful. |
+| **Right more often than not?** | Share of dates on which the ranking pointed the right way. |
+| **Steadiness** | Above 2, the result is unlikely to be chance. |
+| **Groups** | The stocks split into 5 groups by signal, with each group's next return per year. A working signal climbs from the lowest group to the highest. |
+| **Top group against all stocks** | ₹1 in the top group, rebalanced each period with costs, against ₹1 spread over every stock. |
+| **Ranked first today** | The stocks the signal picks on the latest date. |
+
+**Caution:** the stock list is today's index. Stocks that dropped out of the index in the past (often after falling) are missing, which makes every signal look a little better than it was. See *What a backtest leaves out*.
 
 ### Options buying backtest (simulated)
 

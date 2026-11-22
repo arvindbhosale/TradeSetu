@@ -476,6 +476,8 @@
         </optgroup>
         <optgroup label="More tools">
           <option value="optimise">Find the best settings (walk-forward)</option>
+          <option value="pairs">Pair trading: two stocks that move together</option>
+          <option value="signal">Test a stock-picking signal across an index</option>
           <option value="portfolio">ETF portfolios (All Weather and others)</option>
           <option value="agents">AI agents' ratings</option>
         </optgroup>
@@ -554,8 +556,83 @@
     <div id="opt-result" hidden>
       <div class="tiles" id="opt-tiles"></div>
       <div class="panel"><h3>Walk-forward equity (out-of-sample only)</h3><div class="tvchart short" id="opt-chart"></div></div>
+      <div class="panel" id="opt-luck-panel"><h3>Is the best setting luck?</h3><div id="opt-luck"></div>
+        <h3>Every setting at a glance</h3><p class="hint">Each square is one combination of settings, scored on the whole period. Green is better. A good result sits in a broad green area; a lone green square among red ones is usually luck.</p><div class="scroll" id="opt-heatmap"></div></div>
       <div class="panel"><h3>Each window</h3><div class="scroll" id="opt-windows"></div></div>
       <div class="panel"><h3>Best settings on the whole period</h3><p class="hint">In-sample: every setting tested on all the data. The top of this list is what a plain optimiser would pick, and it flatters.</p><div class="scroll" id="opt-grid"></div></div>
+    </div>
+  </div>
+  <div id="bt-pairs" hidden>
+    <div class="panel">
+      <h2>Pair trading: two stocks that move together</h2>
+      <p class="hint">Some stocks usually move together, like two big private banks. When the gap between them becomes unusually wide, this buys the cheaper one and sells the dearer one, equal money in each, and closes when the gap is back to normal. Decisions use the day's closing prices and trade at the next day's open.</p>
+      <p class="hint"><strong>In India:</strong> a sold share must be bought back the same day, so to hold a pair overnight you need the futures of both stocks. Pick two F&amp;O stocks. This test uses share prices and ignores lot sizes.</p>
+      <form id="form-pair">
+        <div class="row">
+          <label>Example pairs <select name="example"><option value="">Choose…</option></select></label>
+          <label>Stock A <input name="a" required placeholder="HDFCBANK" autocomplete="off"></label>
+          <label>Stock B <input name="b" required placeholder="ICICIBANK" autocomplete="off"></label>
+          <label>From <input name="start" type="date" required></label>
+          <label>To <input name="end" type="date" required></label>
+          <label>Capital (₹) <input name="capital" type="number" min="10000" step="10000" value="1000000" required></label>
+          <button class="primary" type="submit">Run pair test</button>
+        </div>
+        <details class="advanced"><summary>Advanced</summary>
+          <div class="row">
+            <label>Look back (days) <input name="lookback" type="number" min="20" max="250" value="60" required></label>
+            <label>Open when the gap is (z-score) <input name="entry_z" type="number" min="0.5" max="5" step="0.1" value="2" required></label>
+            <label>Close when it is back to <input name="exit_z" type="number" min="0" max="4.9" step="0.1" value="0.5" required></label>
+            <label>Stoploss gap (0 = none) <input name="stop_z" type="number" min="0" max="10" step="0.1" value="4" required></label>
+            <label>Close after (days, 0 = never) <input name="max_days" type="number" min="0" max="250" value="0" required></label>
+            <label>Costs per trade, each stock (%) <input name="cost_pct" type="number" min="0" max="2" step="0.01" value="0.05" required></label>
+          </div>
+          <p class="hint">The gap is measured as a z-score: how many times its usual size it is away from its average over the look-back. 2 means unusually wide.</p>
+        </details>
+      </form>
+      <div id="pair-error" class="error" hidden></div>
+    </div>
+    <div id="pair-result" hidden>
+      <div class="tiles" id="pair-tiles"></div>
+      <div class="panel"><h3>Right now</h3><p id="pair-now"></p><ul class="hint" id="pair-quality"></ul></div>
+      <div class="panel"><h3>Money over time</h3><div class="tvchart short" id="pair-chart"></div></div>
+      <div class="panel"><h3>The gap (z-score)</h3><p class="hint">Above the top dotted line: A is dear against B. Below the bottom one: A is cheap.</p><div class="tvchart short" id="pair-zchart"></div></div>
+      <div class="panel"><h3>Trades</h3><div class="scroll" id="pair-trades"></div></div>
+    </div>
+  </div>
+  <div id="bt-signal" hidden>
+    <div class="panel">
+      <h2>Test a stock-picking signal across an index</h2>
+      <p class="hint">Every few days, all stocks of the index are ranked by the signal using only past prices. We then check what each stock did next. If the stocks ranked first keep doing better than the ones ranked last, the signal works. Nifty 500 takes a few minutes the first time; prices are saved for next time.</p>
+      <form id="form-signal">
+        <div class="row">
+          <label>Index <select name="index" required></select></label>
+          <label>Signal <select name="signal" required></select></label>
+          <label>From <input name="start" type="date" required></label>
+          <label>To <input name="end" type="date" required></label>
+          <label>Hold for <select name="hold"><option value="5">1 week</option><option value="10">2 weeks</option><option value="21" selected>1 month</option><option value="63">3 months</option></select></label>
+          <button class="primary" type="submit">Run signal test</button>
+        </div>
+        <p class="hint" id="signal-text"></p>
+        <details class="advanced"><summary>Advanced</summary>
+          <div class="row">
+            <label>Groups <input name="groups" type="number" min="3" max="10" value="5" required></label>
+            <label>Costs per trade (%) <input name="cost_pct" type="number" min="0" max="2" step="0.05" value="0.2" required></label>
+          </div>
+        </details>
+      </form>
+      <div id="signal-error" class="error" hidden></div>
+    </div>
+    <div class="panel" id="signal-job" hidden>
+      <div class="jobhead"><h3 id="signal-title"></h3><span class="pill" id="signal-status"></span><button type="button" id="signal-stop">Stop</button></div>
+      <progress id="signal-progress" max="1" value="0"></progress>
+      <pre class="log" id="signal-log"></pre>
+    </div>
+    <div id="signal-result" hidden>
+      <div class="panel"><h3 id="signal-verdict"></h3><p id="signal-verdict-text"></p><p class="hint" id="signal-caution"></p></div>
+      <div class="tiles" id="signal-tiles"></div>
+      <div class="panel"><h3>Next-period return of each group, per year</h3><p class="hint">Group 1 has the lowest signal, the last group the highest. A working signal climbs from left to right.</p><div id="signal-groups"></div></div>
+      <div class="panel"><h3>Top group against all stocks</h3><p class="hint">₹1 in the top group, rebalanced each time with costs, against ₹1 spread equally over every stock.</p><div class="tvchart short" id="signal-chart"></div></div>
+      <div class="panel"><h3 id="signal-top-title">Ranked first today</h3><div class="scroll" id="signal-top"></div></div>
     </div>
   </div>
   <div id="bt-structures" hidden>
@@ -974,6 +1051,23 @@
     <div class="scroll" id="tax-years"></div>
     <p class="hint"><strong>What this counts.</strong> Fills the desk made: every paper fill, and live fills read from your broker's trade book for orders this desk placed. It does not see trades you place with your broker directly, or the order a triggered live GTT sends. For the live account, your broker's console is the final word. Open profit/loss is before the charges of closing.</p>
   </details>
+  <div class="panel" id="price-alerts">
+    <div class="jobhead"><h2>Price alerts</h2><span class="hint" id="palert-state"></span></div>
+    <p class="hint">Get a message when a share, a future or a coin reaches your price. Each alert fires once. Indian prices come from your broker while the market is open; crypto is checked all day. TradeSetu must be running for alerts to be checked.</p>
+    <form id="form-palert">
+      <div class="row">
+        <label>Market <select name="market"><option value="india">Indian shares, F&amp;O and MCX</option><option value="crypto">Crypto</option></select></label>
+        <label>Symbol <input name="symbol" required placeholder="RELIANCE" autocomplete="off"></label>
+        <label>When the price <select name="condition"><option value="above">rises to</option><option value="below">falls to</option></select></label>
+        <label>Price <input name="price" type="number" min="0" step="any" required></label>
+        <label>Note (optional) <input name="note" maxlength="120" placeholder="e.g. breakout, book profit"></label>
+        <button class="primary" type="submit">Add alert</button>
+      </div>
+    </form>
+    <div id="palert-error" class="error" hidden></div>
+    <div class="scroll" id="palert-list"></div>
+    <div class="row"><button type="button" id="palert-clear" hidden>Remove fired alerts</button></div>
+  </div>
   <div class="panel">
     <div class="jobhead"><h2>Alerts</h2><span class="hint" id="alerts-state"></span></div>
     <div class="scroll" id="alerts-list"></div>

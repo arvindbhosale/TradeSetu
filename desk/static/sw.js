@@ -2,7 +2,7 @@
 // TradeSetu service worker. It makes the desk installable and keeps the
 // interface files ready, and that is all: prices, orders and account data are
 // never cached, because a stale price or order status is worse than none.
-const CACHE = "desk-shell-v5";
+const CACHE = "desk-shell-v6";
 const SHELL = ["/static/app.css", "/static/app.js", "/static/theme.js", "/static/lightweight-charts.js",
   "/static/offline.html", "/static/icon-192.png", "/static/logo-mark.png", "/static/favicon.ico"];
 

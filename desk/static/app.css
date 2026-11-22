@@ -323,3 +323,16 @@ dialog#note-dialog::backdrop { background: rgba(8, 11, 18, .55); }
 @media (max-width: 480px) { #funds-tiles .tile .v { font-size: 17px; } }
 #scan-progress { width: 100%; height: 8px; margin: 0 0 10px; accent-color: var(--s1); }
 #scan-explain p { margin: 0 0 10px; line-height: 1.55; } #scan-explain p:last-child { color: var(--text2); font-size: 13px; }
+
+/* Optimiser: every setting at a glance */
+.heat-table td, .heat-table th { padding: 6px 8px; min-width: 52px; }
+.heat-table td { color: var(--text); font-variant-numeric: tabular-nums; }
+.heat-table td.heat-best { outline: 2px solid var(--text); outline-offset: -2px; font-weight: 600; }
+
+/* Signal test: one bar per group */
+.group-bars { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 10px; align-items: end; max-width: 720px; }
+.group-bar { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
+.group-track { width: 100%; max-width: 72px; height: 140px; display: flex; align-items: flex-end; background: var(--surface-2); border-radius: 6px; overflow: hidden; }
+.group-fill { width: 100%; border-radius: 6px 6px 0 0; }
+.group-fill.pos { background: var(--good); } .group-fill.neg { background: var(--bad); }
+.group-value { font-weight: 600; font-variant-numeric: tabular-nums; font-size: 13px; }

@@ -347,7 +347,7 @@
   // -- one Backtest screen: what to test, then one set of dates and capital ----------------
 
   const BT_PANES = { strategy: "#bt-strategy", aiscan: "#bt-aiscan", structures: "#bt-structures", options: "#bt-options", futures: "#bt-futures",
-    optimise: "#bt-optimise", portfolio: "#bt-portfolio", agents: "#bt-agents" };
+    optimise: "#bt-optimise", portfolio: "#bt-portfolio", agents: "#bt-agents", pairs: "#bt-pairs", signal: "#bt-signal" };
   const BT_SHARED = ["#form-bt", "#form-sbt", "#form-obt", "#form-fbt"];     // these take From, To and Capital from the top
 
   function syncSharedDates() {
@@ -2746,6 +2746,194 @@
       { label: "Return", num: true, get: (x) => pct(x.metrics.total_return_pct), tone: (x) => tone(x.metrics.total_return_pct) },
       { label: "Max DD", num: true, get: (x) => pct(x.metrics.max_drawdown_pct, false) }, { label: "Trades", num: true, get: (x) => x.metrics.trades },
       { label: "Win rate", num: true, get: (x) => (x.metrics.win_rate_pct == null ? "–" : x.metrics.win_rate_pct + "%") }], r.grid, ""));
+    renderLuck(r);
+  }
+
+  // Overfitting score and the settings heatmap, under the optimiser's result.
+  function renderLuck(r) {
+    const luck = r.luck, map = r.heatmap;
+    $("#opt-luck-panel").hidden = !luck && !map;
+    $("#opt-luck").replaceChildren(luck
+      ? h("div", {}, h("p", {}, h("span", { class: "pill " + ({ low: "good", medium: "warn", high: "bad" }[luck.verdict]), text: `Chance it is luck: ${luck.score_pct}%` }), " ", luck.text),
+        h("p", { class: "hint", text: `How this is worked out: the period is cut into ${luck.blocks} pieces. ${luck.splits} times, the best of ${luck.settings} settings is picked on half the pieces and checked on the other half. The score is how often the pick then landed in the bottom half. Under 20% is good; over 50% means the winner is mostly luck.` }))
+      : h("p", { class: "hint", text: "Not enough settings with trades, or too short a period, to judge luck." }));
+    if (!map) { $("#opt-heatmap").replaceChildren(h("p", { class: "hint", text: "The map needs one or two settings to vary." })); return; }
+    const scores = map.cells.flat().filter((v) => v != null), lo = Math.min(...scores), hi = Math.max(...scores);
+    const colour = (v) => (v == null || hi === lo ? "var(--surface-2)" : heatColour(((v - lo) / (hi - lo)) * 6 - 3));
+    const best = scores.length ? hi : null;
+    $("#opt-heatmap").replaceChildren(h("table", { class: "heat-table" },
+      h("thead", {}, h("tr", {}, h("th", { text: map.y ? `${map.y} ↓ / ${map.x} →` : map.x }), map.xs.map((x) => h("th", { class: "num", text: x })))),
+      h("tbody", {}, map.ys.map((y, row) => h("tr", {}, h("th", { class: "num", text: y == null ? "" : y }),
+        map.cells[row].map((v) => h("td", { class: "num" + (v === best ? " heat-best" : ""), style: `background:${colour(v)}`, title: v == null ? "not tested (impossible setting) or too few trades" : `${r.objective_name}: ${v}`, text: v == null ? "–" : v })))))));
+  }
+
+  // -- price alerts (P&L & alerts tab) -----------------------------------------------------------
+
+  function renderPriceAlerts(r) {
+    const s = r.status || {};
+    const notes = [s.india, s.crypto].filter(Boolean).join(" ");
+    $("#palert-state").textContent = (r.telegram ? "Sent to Telegram and listed below." : "Listed below only. Set up Telegram in Settings to get them on your phone.")
+      + (s.checked_ist ? ` Last checked ${s.checked_ist.slice(11, 16)} IST. ${notes}` : "");
+    const level = (a) => `${r.conditions[a.condition]} ${inr2.format(a.price)}`;
+    $("#palert-list").replaceChildren(table([
+      { label: "Symbol", get: (a) => a.label }, { label: "Alert when the price", get: level },
+      { label: "Price now", num: true, get: (a) => (a.last_price != null ? inr2.format(a.last_price) : a.price_when_set != null ? inr2.format(a.price_when_set) : "–") },
+      { label: "Status", get: (a) => (a.status === "waiting" ? h("span", { class: "pill warn", text: "Waiting" })
+        : h("span", { class: "pill good", text: `Fired ${a.triggered_ist.slice(5, 16)} at ${inr2.format(a.triggered_price)}` })) },
+      { label: "Note", get: (a) => a.note || "" }, { label: "Set", get: (a) => a.created_ist },
+      { label: "", get: (a) => h("button", { type: "button", text: "Delete", onclick: async () => {
+        try { renderPriceAlerts({ ...r, ...(await api(`/price-alerts/${a.id}`, { method: "DELETE" })) }); } catch (err) { showError("#palert-error", err); } } }) }],
+      r.alerts, "No price alerts yet."));
+    $("#palert-clear").hidden = !r.alerts.some((a) => a.status !== "waiting");
+  }
+  async function refreshPriceAlerts() {
+    try { renderPriceAlerts(await api("/price-alerts")); } catch (err) { showError("#palert-error", err); }
+  }
+  function startPriceAlerts() {
+    const form = $("#form-palert");
+    const hint = () => { form.symbol.placeholder = form.market.value === "crypto" ? "BTCUSDT" : "RELIANCE or NFO:NIFTY25DECFUT"; };
+    form.market.addEventListener("change", hint); hint();
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = $("button[type=submit]", form); showError("#palert-error", null); busy(button, true, "Adding…");
+      try {
+        const out = await api("/price-alerts", { method: "POST", body: { market: form.market.value, symbol: form.symbol.value,
+          condition: form.condition.value, price: Number(form.price.value), note: form.note.value } });
+        form.price.value = ""; form.note.value = "";
+        await refreshPriceAlerts(); if (!out.alert) throw new Error("Not added");
+      } catch (err) { showError("#palert-error", err); }
+      busy(button, false);
+    });
+    $("#palert-clear").addEventListener("click", async () => {
+      try { await api("/price-alerts/clear", { method: "POST" }); refreshPriceAlerts(); } catch (err) { showError("#palert-error", err); }
+    });
+    refreshPriceAlerts();
+    setInterval(() => { if (!$("#tab-pnl").hidden && !document.hidden) refreshPriceAlerts(); }, 15000);
+  }
+
+  // -- pair trading ------------------------------------------------------------------------------
+
+  let pairCharts = [];
+  function startPairs() {
+    const form = $("#form-pair");
+    const today = state.app.today, from = new Date(today); from.setFullYear(from.getFullYear() - 3);
+    form.start.value = from.toISOString().slice(0, 10); form.end.value = today;
+    api("/pairs/options").then((o) => {
+      form.example.append(...o.examples.map((x) => h("option", { value: `${x.a}|${x.b}`, text: `${x.a} / ${x.b} (${x.group})` })));
+      fillSignalOptions(o);
+    }).catch((err) => showError("#pair-error", err));
+    form.example.addEventListener("change", () => { if (form.example.value) [form.a.value, form.b.value] = form.example.value.split("|"); });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = $("button[type=submit]", form); showError("#pair-error", null); busy(button, true, "Running…");
+      const num = (name) => Number(form[name].value);
+      try {
+        renderPair(await api("/pairs/backtest", { method: "POST", body: { a: form.a.value, b: form.b.value, start: form.start.value, end: form.end.value,
+          capital: num("capital"), lookback: num("lookback"), entry_z: num("entry_z"), exit_z: num("exit_z"), stop_z: num("stop_z"),
+          max_days: num("max_days"), cost_pct: num("cost_pct") } }));
+      } catch (err) { showError("#pair-error", err); }
+      busy(button, false);
+    });
+  }
+  function renderPair(r) {
+    $("#pair-result").hidden = false;
+    const m = r.metrics, [a, b] = r.names;
+    const tile = (k, v, sub, cls) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v " + (cls || ""), text: v }), sub ? h("div", { class: "s", text: sub }) : null);
+    $("#pair-tiles").replaceChildren(
+      tile("Total return", pct(m.total_return_pct), `${r.period[0]} to ${r.period[1]}`, tone(m.total_return_pct)),
+      tile("Yearly return", pct(m.cagr_pct), `worst fall ${pct(m.max_drawdown_pct, false)}`),
+      tile("Trades", String(m.trades), m.win_rate_pct == null ? "" : `${m.win_rate_pct}% made money`),
+      tile("Average hold", m.avg_days == null ? "–" : `${m.avg_days} days`, m.open_position ? "a trade is still open" : null),
+      tile("Move together", r.correlation.toFixed(2), "correlation of daily moves; 1 = always together"),
+      tile("Gap closes in", r.half_life_days == null ? "does not" : `~${r.half_life_days} days`, "time for the gap to halve"));
+    $("#pair-now").textContent = r.now;
+    $("#pair-quality").replaceChildren(...[...r.quality, r.data_note].filter(Boolean).map((q) => h("li", { text: q })));
+    pairCharts.forEach((c) => c.remove()); pairCharts = [];
+    const money = LightweightCharts.createChart($("#pair-chart"), { ...chartOptions(260), timeScale: { borderColor: cssVar("--line"), timeVisible: false }, localization: { priceFormatter: (v) => "₹" + inr.format(v) } });
+    money.addLineSeries({ color: cssVar("--s1"), lineWidth: 2 }).setData(r.equity.map(([time, value]) => ({ time, value })));
+    money.timeScale().fitContent();
+    const gap = LightweightCharts.createChart($("#pair-zchart"), { ...chartOptions(220), timeScale: { borderColor: cssVar("--line"), timeVisible: false } });
+    const z = gap.addLineSeries({ color: cssVar("--s2"), lineWidth: 1.5 });
+    z.setData(r.z.map(([time, value]) => ({ time, value })));
+    [r.params.entry_z, -r.params.entry_z].forEach((price) => z.createPriceLine({ price, color: cssVar("--text2"), lineStyle: 2, lineWidth: 1, axisLabelVisible: true }));
+    z.createPriceLine({ price: 0, color: cssVar("--line"), lineWidth: 1, axisLabelVisible: false });
+    gap.timeScale().fitContent();
+    pairCharts = [money, gap];
+    $("#pair-trades").replaceChildren(table([
+      { label: "Opened", get: (t) => t.entry_date }, { label: "Trade", get: (t) => t.side }, { label: "Gap", num: true, get: (t) => t.entry_z },
+      { label: `${a} in → out`, num: true, get: (t) => `${inr2.format(t.entry_a)} → ${inr2.format(t.exit_a)}` },
+      { label: `${b} in → out`, num: true, get: (t) => `${inr2.format(t.entry_b)} → ${inr2.format(t.exit_b)}` },
+      { label: "Closed", get: (t) => t.exit_date }, { label: "Why", get: (t) => t.why }, { label: "Days", num: true, get: (t) => t.days },
+      { label: "Profit/Loss", num: true, get: (t) => rupees(t.pnl), tone: (t) => tone(t.pnl) }], [...r.trades].reverse(), "No trades: the gap never stretched that far."));
+  }
+
+  // -- signal test -------------------------------------------------------------------------------
+
+  let signalChart = null, signalJob = null;
+  function fillSignalOptions(o) {
+    const form = $("#form-signal");
+    form.index.replaceChildren(...o.indices.map((x) => h("option", { value: x.id, text: `${x.name}${x.stocks ? ` (${x.stocks} stocks)` : " (list loading)"}` })));
+    if (o.indices.some((x) => x.id === "nifty500")) form.index.value = "nifty500";
+    form.signal.replaceChildren(...Object.entries(o.signals).map(([k, v]) => h("option", { value: k, text: v.name })));
+    const text = () => { $("#signal-text").textContent = o.signals[form.signal.value].text; };
+    form.signal.addEventListener("change", text); text();
+  }
+  function startSignalTest() {
+    const form = $("#form-signal");
+    const today = state.app.today, from = new Date(today); from.setFullYear(from.getFullYear() - 5);
+    form.start.value = from.toISOString().slice(0, 10); form.end.value = today;
+    $("#signal-stop").addEventListener("click", async () => {
+      if (!signalJob) return;
+      try { await api(`/jobs/${signalJob}/stop`, { method: "POST" }); $("#signal-stop").disabled = true; } catch (err) { showError("#signal-error", err); }
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = $("button[type=submit]", form); showError("#signal-error", null); busy(button, true, "Starting…");
+      try {
+        const { job } = await api("/signal-test", { method: "POST", body: { index: form.index.value, signal: form.signal.value,
+          start: form.start.value, end: form.end.value, hold: Number(form.hold.value), groups: Number(form.groups.value), cost_pct: Number(form.cost_pct.value) } });
+        signalJob = job.id;
+        $("#signal-job").hidden = false; $("#signal-result").hidden = true; $("#signal-stop").disabled = false; $("#signal-stop").hidden = false;
+        const bar = $("#signal-progress");
+        const timer = setInterval(async () => {
+          try { const j = await api("/jobs/" + job.id); if (j.progress) { bar.max = j.progress.total || 1; bar.value = j.progress.done; } } catch (err) { /* watchJob reports it */ }
+        }, 1500);
+        watchJob(job.id, { title: $("#signal-title"), status: $("#signal-status"), log: $("#signal-log") }, (done) => {
+          clearInterval(timer); busy(button, false); $("#signal-stop").hidden = true;
+          if (done.status === "done") { bar.value = bar.max; renderSignal(done.result); }
+        });
+      } catch (err) { showError("#signal-error", err); busy(button, false); }
+    });
+  }
+  function renderSignal(r) {
+    $("#signal-result").hidden = false;
+    const words = { works: ["Works", "good"], weak: ["Weak", "warn"], none: ["Does not work", "bad"], reverse: ["Works in reverse", "warn"] }[r.verdict];
+    $("#signal-verdict").replaceChildren(`${r.signal_name} on ${r.index_name}: `, h("span", { class: "pill " + words[1], text: words[0] }));
+    $("#signal-verdict-text").textContent = r.verdict_text;
+    $("#signal-caution").textContent = `Tested ${r.stocks} stocks, ranked ${r.rebalances} times from ${r.period[0]} to ${r.period[1]}, holding ${r.hold} trading days each time.`
+      + " The stock list is today's index: stocks that dropped out in the past are missing, which flatters every signal a little."
+      + (r.skipped && r.skipped.length ? ` ${r.skipped.length} stocks had no prices and were left out.` : "");
+    const tile = (k, v, sub, cls) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v " + (cls || ""), text: v }), sub ? h("div", { class: "s", text: sub }) : null);
+    $("#signal-tiles").replaceChildren(
+      tile("Rank match", r.mean_ic.toFixed(3), "−1 backwards, 0 no link, +1 perfect. 0.03 or more is useful", tone(r.mean_ic)),
+      tile("Right more often than not?", `${r.ic_hit_pct}%`, "share of dates the ranking pointed the right way"),
+      tile("Steadiness", r.ic_t.toFixed(1), "above 2: unlikely to be chance"),
+      tile("Top group, yearly", pct(r.top.cagr_pct), `all stocks ${pct(r.all.cagr_pct)}`, tone(r.top.cagr_pct - r.all.cagr_pct)),
+      tile("Top minus bottom, yearly", pct(r.top_minus_bottom_yearly_pct), "before costs"),
+      tile("Top group changes", `${r.avg_turnover_pct}%`, `of its stocks each time; costs ${r.cost_pct}% a trade`));
+    const values = r.group_yearly_pct, top = Math.max(...values.map(Math.abs), 1);
+    $("#signal-groups").replaceChildren(h("div", { class: "group-bars" }, values.map((v, i) => h("div", { class: "group-bar" },
+      h("div", { class: "group-track" }, h("div", { class: "group-fill " + (v >= 0 ? "pos" : "neg"), style: `height:${Math.round(Math.abs(v) / top * 100)}%` })),
+      h("div", { class: "group-value " + tone(v), text: pct(v) }), h("div", { class: "hint", text: i === 0 ? "Lowest" : i === values.length - 1 ? "Highest" : `Group ${i + 1}` })))));
+    if (signalChart) signalChart.remove();
+    signalChart = LightweightCharts.createChart($("#signal-chart"), { ...chartOptions(260), timeScale: { borderColor: cssVar("--line"), timeVisible: false }, localization: { priceFormatter: (v) => "₹" + v.toFixed(2) } });
+    signalChart.addLineSeries({ color: cssVar("--s1"), lineWidth: 2, title: "Top group" }).setData(r.equity.map(([time, a]) => ({ time, value: a })));
+    signalChart.addLineSeries({ color: cssVar("--s2"), lineWidth: 1.5, title: "All stocks" }).setData(r.equity.map(([time, , b]) => ({ time, value: b })));
+    signalChart.timeScale().fitContent();
+    $("#signal-top-title").textContent = `Ranked first on ${r.latest_date}`;
+    $("#signal-top").replaceChildren(table([
+      { label: "#", num: true, get: (x) => r.latest_top.indexOf(x) + 1 }, { label: "Stock", get: (x) => x.name }, { label: "Symbol", get: (x) => x.symbol.replace(/\.NS$/, "") },
+      { label: "Last price ₹", num: true, get: (x) => inr2.format(x.price) }, { label: "Signal value", num: true, get: (x) => x.value }], r.latest_top, ""));
   }
 
   // -- options backtest ------------------------------------------------------------------------
@@ -4293,7 +4481,7 @@
     bta.start.value = iso(month); bta.end.value = today; bta.end.max = today;
     $("#form-order").product.value = state.app.settings.product;
     $("#form-order").risk_pct.value = state.app.settings.risk_per_trade_pct;
-    fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startAiScan(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startMarginCalc(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); startMarketTools(); renderTheme();
+    fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startPairs(); startSignalTest(); startPriceAlerts(); startAiScan(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startMarginCalc(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); startMarketTools(); renderTheme();
     syncSharedDates(); showBacktestPane($("#bt-what").value);
     if (state.app.hosted) { $("#logout").hidden = false; $("#logout-2").hidden = false; $("#logout").title = "Signed in as " + state.app.user; }
     const wanted = location.hash.slice(1);        // an app shortcut or a reload opens the same section
