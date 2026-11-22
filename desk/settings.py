@@ -81,6 +81,13 @@ DEFAULTS: dict = {
     # today's loss reaches it the kill switch turns on and intraday algos close
     # their positions. 0 switches the limit off.
     "daily_loss_limit": 0.0,
+    # Supervisor (desk/supervisor.py): off, watch (alerts only) or protect (may hold entries and close positions).
+    "supervisor_mode": "off",
+    "supervisor_ai": False,          # also ask the AI service in Settings → AI, every supervisor_minutes
+    "supervisor_minutes": 15,
+    "supervisor_live": False,        # protect mode acts on live algos too (otherwise suggestions only)
+    "supervisor_loss_pct": 10.0,     # close a stock algo's position this far below its buy price (0: off)
+    "supervisor_max_actions": 3,     # automatic AI actions per day
     # Alerts
     "alerts_enabled": False,
     "telegram_chat_id": "",
@@ -336,6 +343,17 @@ def _validated(key: str, value, current):
         if text and not re.fullmatch(r"-?\d{3,20}|@[A-Za-z0-9_]{4,40}", text):
             raise ValueError("The Telegram chat id is a number (for example 123456789) or a channel name starting with @")
         return text
+    if key == "supervisor_mode" and value not in ("off", "watch", "protect"):
+        raise ValueError("supervisor_mode must be off, watch or protect")
+    if key in ("supervisor_minutes", "supervisor_max_actions"):
+        low, high = (5, 120) if key == "supervisor_minutes" else (0, 20)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value \
+                or not low <= value <= high:
+            raise ValueError(f"{key} must be a whole number from {low} to {high}")
+        return int(value)
+    if key == "supervisor_loss_pct" and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                         or not 0 <= value <= 50):
+        raise ValueError("supervisor_loss_pct must be between 0 and 50 (0 for off)")
     if key == "chart_source" and value not in ("kite", "kite_then_yahoo"):
         raise ValueError("chart_source must be kite or kite_then_yahoo")
     if key == "default_exchange" and value not in ("NSE", "BSE"):
