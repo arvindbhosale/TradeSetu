@@ -310,7 +310,7 @@
     const current = select.value, list = state.app.strategies.filter(keep);
     const group = (label, items) => (items.length ? h("optgroup", { label }, items.map((s) => h("option", { value: s.key, text: s.name }))) : null);
     const styles = [["Legend", "Market legends"], ["Trend", "Trend following"], ["Breakout", "Breakout"], ["Swing", "Swing trading"],
-      ["Mean reversion", "Mean reversion (sideways markets)"], ["Scalping", "Scalping & intraday (1-15 min candles)"], ["Baseline", "Baseline"], ["Other", "Other"]];
+      ["Mean reversion", "Mean reversion (sideways markets)"], ["Scalping", "Scalping & intraday (1-15 min candles)"], ["Machine learning", "Machine learning"], ["Baseline", "Baseline"], ["Other", "Other"]];
     select.replaceChildren(...[group("My strategies", list.filter((s) => s.custom)),
       ...styles.map(([key, label]) => group(label, list.filter((s) => !s.custom && (s.style || "Other") === key)))].filter(Boolean));
     if (list.some((s) => s.key === current)) select.value = current;
