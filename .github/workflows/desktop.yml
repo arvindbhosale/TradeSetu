@@ -2,22 +2,29 @@ name: Desktop app
 
 # Builds the native app (Tauri window + the desk backend frozen with
 # PyInstaller) for macOS (Apple Silicon and Intel), Windows and Linux, plus an
-# Android APK that opens a hosted desk, and publishes them as a GitHub
-# release with download links.
+# Android APK that opens a hosted desk.
 #
-# Release: bump "version" in desktop/app/src-tauri/tauri.conf.json and merge
-# to main. The push to main builds and publishes release desktop-v<version>
-# (once per version; a later push with the same version builds but does not
-# publish). Pull requests that touch the app build the installers as
-# workflow artifacts, without a release.
+# Merging to main never publishes. Pull requests that touch the app build the
+# installers as workflow artifacts only. A release is published only when you
+# ask for one, in either of two ways:
+#   1. Actions > Desktop app > Run workflow, branch main, type a version
+#      (for example 0.8.0). Leave it empty to use the version in
+#      desktop/app/src-tauri/tauri.conf.json.
+#   2. Push a tag desktop-v<version> (for example desktop-v0.8.0).
+# Either way the release is tagged desktop-v<version>; a version that is
+# already released is refused. Run workflow on another branch builds only.
 
 on:
-  push:
-    branches: [main]
-    paths: ["desktop/**", "desk/**", "tradingagents/**", "pyproject.toml", ".github/workflows/desktop.yml"]
   pull_request:
     paths: ["desktop/**", "desk/app.py", "pyproject.toml", ".github/workflows/desktop.yml"]
+  push:
+    tags: ["desktop-v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, for example 0.8.0 (empty: the version in tauri.conf.json)"
+        required: false
+        default: ""
 
 permissions: {}
 
@@ -30,8 +37,48 @@ env:
   PYINSTALLER_VERSION: "6.22.3"
 
 jobs:
+  version:
+    name: decide version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          file=$(python3 -c "import json; print(json.load(open('desktop/app/src-tauri/tauri.conf.json'))['version'])")
+          case "$EVENT" in
+            push)              version="${REF_NAME#desktop-v}"; publish=true ;;
+            workflow_dispatch) version="${INPUT_VERSION:-$file}"; version="${version#v}"
+                               [ "$REF" = "refs/heads/main" ] && publish=true || publish=false ;;
+            *)                 version="$file"; publish=false ;;
+          esac
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::Version '$version' is not like 0.8.0"; exit 1; }
+          if [ "$publish" = true ] && gh release view "desktop-v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release desktop-v$version already exists. Pick a higher version."
+            exit 1
+          fi
+          if [ "$EVENT" = workflow_dispatch ] && [ "$publish" = true ] && \
+             git ls-remote --exit-code --tags origin "refs/tags/desktop-v$version" >/dev/null 2>&1; then
+            echo "::error::Tag desktop-v$version already exists. Pick a higher version."
+            exit 1
+          fi
+          echo "Version $version, publish=$publish"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.name }}
+    needs: version
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -67,6 +114,21 @@ jobs:
           a=$(python3 -c "import json; print(json.load(open('desktop/app/src-tauri/tauri.conf.json'))['version'])")
           b=$(python3 -c "import json; print(json.load(open('desktop/app/package.json'))['version'])")
           [ "$a" = "$b" ] || { echo "tauri.conf.json says $a, package.json says $b"; exit 1; }
+
+      - name: Set the app version
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          v = os.environ["VERSION"]
+          for p in ("desktop/app/src-tauri/tauri.conf.json", "desktop/app/package.json"):
+              with open(p, encoding="utf-8") as f:
+                  d = json.load(f)
+              d["version"] = v
+              with open(p, "w", encoding="utf-8") as f:
+                  f.write(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
+          PY
 
       - uses: actions/setup-python@v7
         with:
@@ -132,6 +194,7 @@ jobs:
 
   android:
     name: Android
+    needs: version
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -140,6 +203,21 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
+
+      - name: Set the app version
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          v = os.environ["VERSION"]
+          for p in ("desktop/app/src-tauri/tauri.conf.json", "desktop/app/package.json"):
+              with open(p, encoding="utf-8") as f:
+                  d = json.load(f)
+              d["version"] = v
+              with open(p, "w", encoding="utf-8") as f:
+                  f.write(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
+          PY
 
       - uses: actions/setup-node@v7
         with:
@@ -206,8 +284,8 @@ jobs:
 
   release:
     name: publish release
-    needs: [build, android]
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [version, build, android]
+    if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -215,26 +293,14 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
-      - name: Decide the release tag
-        id: tag
-        run: |
-          version=$(python3 -c "import json; print(json.load(open('desktop/app/src-tauri/tauri.conf.json'))['version'])")
-          tag="desktop-v$version"
-          echo "TAG=$tag" >> "$GITHUB_ENV"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $tag exists; bump the version in tauri.conf.json to publish a new one."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Release tag
+        run: echo "TAG=desktop-v${{ needs.version.outputs.version }}" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v8
-        if: steps.tag.outputs.publish == 'true'
         with:
           pattern: installers-*
           path: out
           merge-multiple: true
       - name: Write checksums and release notes
-        if: steps.tag.outputs.publish == 'true'
         run: |
           cd out
           sha256sum * > SHA256SUMS.txt
@@ -278,7 +344,6 @@ jobs:
           sed -i 's/^          //' notes.md
           cat notes.md
       - name: Publish
-        if: steps.tag.outputs.publish == 'true'
         run: |
           gh release create "$TAG" out/* --target "$GITHUB_SHA" --title "TradeSetu Desktop ${TAG#desktop-v}" \
             --notes-file notes.md --repo "$GITHUB_REPOSITORY"
