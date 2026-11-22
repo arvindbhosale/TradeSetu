@@ -1,8 +1,9 @@
 name: Desktop app
 
-# Builds the native desktop app (Tauri window + the desk backend frozen with
-# PyInstaller) for macOS (Apple Silicon and Intel), Windows and Linux, and
-# publishes the installers as a GitHub release with download links.
+# Builds the native app (Tauri window + the desk backend frozen with
+# PyInstaller) for macOS (Apple Silicon and Intel), Windows and Linux, plus an
+# Android APK that opens a hosted desk, and publishes them as a GitHub
+# release with download links.
 #
 # Release: bump "version" in desktop/app/src-tauri/tauri.conf.json and merge
 # to main. The push to main builds and publishes release desktop-v<version>
@@ -129,9 +130,83 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/app/src-tauri -> target
+          key: android
+
+      - name: Build the APK
+        working-directory: desktop/app
+        run: |
+          # The runner image ships the Android SDK, NDK and JDK 17.
+          export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          npm ci
+          npx tauri android init --ci
+          npx tauri icon ../../desk/static/icon-512.png
+          npx tauri android build --apk --target aarch64 armv7 x86_64 --ci
+
+      - name: Sign the APK
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('desktop/app/src-tauri/tauri.conf.json'))['version'])")
+          name=$(python3 -c "import json; print(json.load(open('desktop/app/src-tauri/tauri.conf.json'))['productName'].replace(' ', ''))")
+          apk=$(find desktop/app/src-tauri/gen/android/app/build/outputs/apk -name '*release*.apk' | head -1)
+          [ -n "$apk" ] || { echo "no release APK was built"; exit 1; }
+          tools="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > release.jks
+            alias="${KEY_ALIAS:-upload}"
+          else
+            # No signing key in the repository secrets: sign with a key made for this build.
+            # The APK installs, but the next version signed with another key must replace it by uninstall first.
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set; signing with a one-off key"
+            KEYSTORE_PASSWORD=$(openssl rand -hex 16)
+            alias=build
+            keytool -genkeypair -keystore release.jks -storepass "$KEYSTORE_PASSWORD" -keypass "$KEYSTORE_PASSWORD" \
+              -alias "$alias" -keyalg RSA -keysize 3072 -validity 10000 -dname "CN=$name"
+          fi
+          mkdir -p out
+          "$tools/zipalign" -f -p 4 "$apk" aligned.apk
+          "$tools/apksigner" sign --ks release.jks --ks-pass "pass:$KEYSTORE_PASSWORD" --ks-key-alias "$alias" \
+            --out "out/$name-$version-Android.apk" aligned.apk
+          "$tools/apksigner" verify --print-certs "out/$name-$version-Android.apk" | head -3
+          rm -f release.jks aligned.apk
+          ls -la out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: installers-Android
+          path: out/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: publish release
-    needs: build
+    needs: [build, android]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -180,6 +255,7 @@ jobs:
           | Windows 10 / 11 (MSI, for managed PCs) | $(link '*Windows-x64.msi') |
           | Linux, any distribution (AppImage) | $(link '*Linux-x86_64.AppImage') |
           | Ubuntu / Debian (.deb) | $(link '*Linux-x86_64.deb') |
+          | Android 8+ phone or tablet (APK) | $(link '*Android.apk') |
 
           Checksums: [SHA256SUMS.txt]($base/SHA256SUMS.txt)
 
@@ -189,6 +265,7 @@ jobs:
 
           - **Mac**: open the .dmg and drag TradeSetu to Applications. Open it once; when macOS says it cannot verify the developer, go to System Settings > Privacy & Security and press **Open Anyway**. If macOS says the app "is damaged", run this once in Terminal: \`xattr -cr /Applications/TradeSetu.app\`
           - **Windows**: if SmartScreen shows "Windows protected your PC", press **More info** then **Run anyway**.
+          - **Android**: open the APK on the phone and allow "Install unknown apps" for your browser or file manager when asked. The Android app opens your hosted desk (enter its https address on first start); a phone cannot run the desk itself. The existing website / PWA keeps working as before.
           - **Linux AppImage**: \`chmod +x TradeSetu-*.AppImage\` then run it. Needs WebKitGTK 4.1 (present on Ubuntu 22.04+, Fedora 36+, Debian 12+).
 
           ## How it runs

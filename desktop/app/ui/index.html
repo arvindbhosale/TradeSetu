@@ -38,7 +38,8 @@
 
   <section id="starting">
     <p><span class="spinner"></span><span id="starting-text">Starting the desk…</span></p>
-    <p style="font-size:13px">The first start after installing can take up to a minute.</p>
+    <p style="font-size:13px" id="starting-hint">The first start after installing can take up to a minute.</p>
+    <div class="row" id="starting-actions" hidden><button id="change-server">Change server</button></div>
   </section>
 
   <section id="failed" hidden>
@@ -52,11 +53,11 @@
   </section>
 
   <form id="settings" hidden>
-    <p>Where should TradeSetu run?</p>
-    <label><input type="radio" name="mode" value="local">
+    <p id="settings-question">Where should TradeSetu run?</p>
+    <label id="local-option"><input type="radio" name="mode" value="local">
       <div><b>On this computer</b><span>Recommended. The desk runs here, so NSE and BSE requests come from your own internet connection. Your settings and keys stay on this computer.</span></div>
     </label>
-    <label><input type="radio" name="mode" value="server">
+    <label id="server-option"><input type="radio" name="mode" value="server">
       <div><b>My server</b><span>Open a desk you already host (Dokploy, VPS). Sign in as you do in the browser.</span>
         <input type="url" id="server-url" placeholder="https://desk.example.com" autocomplete="url"></div>
     </label>
@@ -67,9 +68,12 @@
 <script>
   const { invoke } = window.__TAURI__.core;
   const $ = (id) => document.getElementById(id);
+  let mobile = false;
+  let pendingOpen = null;
   const show = (id) => ["starting", "failed", "settings"].forEach((s) => ($(s).hidden = s !== id));
 
   async function openSettings() {
+    clearTimeout(pendingOpen);
     const config = await invoke("get_config");
     document.querySelector(`input[name=mode][value=${config.mode === "server" ? "server" : "local"}]`).checked = true;
     $("server-url").value = config.server_url || "";
@@ -79,11 +83,16 @@
 
   async function launch() {
     const config = await invoke("get_config");
+    if (mobile && !config.server_url) return openSettings();
     $("starting-text").textContent = config.mode === "server" ? `Opening ${config.server_url}…` : "Starting the desk…";
+    $("starting-hint").hidden = config.mode === "server";
+    $("starting-actions").hidden = !mobile;
     show("starting");
     try {
       const url = await invoke("start");
-      location.replace(url);
+      // Phones have no menu bar: give a moment to change the server before the desk opens.
+      if (mobile) pendingOpen = setTimeout(() => location.replace(url), 1500);
+      else location.replace(url);
     } catch (err) {
       const text = String(err);
       const cut = text.indexOf("\n\n");
@@ -96,6 +105,7 @@
 
   $("retry").onclick = launch;
   $("to-settings").onclick = openSettings;
+  $("change-server").onclick = openSettings;
   $("show-log").onclick = () => invoke("open_log").catch(() => {});
   $("server-url").addEventListener("focus", () => (document.querySelector("input[value=server]").checked = true));
   $("settings").onsubmit = async (event) => {
@@ -110,7 +120,16 @@
     }
   };
 
-  if (location.hash === "#settings") openSettings(); else launch();
+  invoke("platform").then((p) => {
+    mobile = p === "mobile";
+    if (mobile) {
+      $("local-option").hidden = true;
+      $("show-log").hidden = true;
+      $("settings-question").textContent = "Enter the address of your TradeSetu server (Dokploy, VPS). The desk runs there; this app shows it.";
+      $("server-url").placeholder = "https://desk.example.com";
+    }
+    if (location.hash === "#settings") openSettings(); else launch();
+  });
 </script>
 </body>
 </html>

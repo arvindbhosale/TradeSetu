@@ -1,4 +1,4 @@
-# Desktop app
+# Desktop and Android app
 
 A native window (Tauri) with the desk backend frozen by PyInstaller inside it. Installers for macOS (Apple Silicon and Intel), Windows and Linux are built by [`.github/workflows/desktop.yml`](../.github/workflows/desktop.yml) and published as GitHub releases tagged `desktop-v<version>`.
 
@@ -8,6 +8,17 @@ A native window (Tauri) with the desk backend frozen by PyInstaller inside it. I
 - **My server**: Desk menu > Connection settings stores a URL in the app's config folder (`desktop.json`); the window then opens that hosted desk.
 - Links to other sites and the Kite sign-in open in the system browser. Downloads (Excel exports) go to the Downloads folder.
 - Backend log: Desk menu > Show backend log.
+
+## Android
+
+The same Tauri app builds an APK (job `android` in the workflow). A phone cannot run the Python desk, so the Android app has server mode only: on first start it asks for the https address of your hosted desk and opens it full screen. Links to other sites and the Kite login go to the phone's browser. The website and its PWA are unchanged.
+
+The APK is signed with the key in repository secrets `ANDROID_KEYSTORE_BASE64` (base64 of a .jks), `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS`. Without them each build is signed with a one-off key, so installing a newer version means uninstalling the old one first (only the server address is lost). Create a key once with:
+
+```bash
+keytool -genkeypair -keystore release.jks -alias upload -keyalg RSA -keysize 3072 -validity 10000
+base64 -w0 release.jks      # paste into ANDROID_KEYSTORE_BASE64; keep release.jks safe, it cannot be replaced
+```
 
 ## Build locally
 
