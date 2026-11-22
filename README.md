@@ -82,7 +82,9 @@ Differences to know:
 
 ## Setup guide
 
-You need **Python 3.11 or later** and **Git**. For live orders you also need an account and API app with one of the [supported brokers](#supported-brokers), for example a **Zerodha account** with a [Kite Connect](https://developers.kite.trade) app (paid). Paper trading, charts and backtests work without a broker.
+**Easiest: the desktop app.** Download the installer for macOS, Windows or Linux from [Releases](https://github.com/arvindbhosale/TradeSetu/releases) (tags `desktop-v…`). No Python needed; see [desktop/README.md](desktop/README.md).
+
+To run from source you need **Python 3.11 or later** and **Git**. For live orders you also need an account and API app with one of the [supported brokers](#supported-brokers), for example a **Zerodha account** with a [Kite Connect](https://developers.kite.trade) app (paid). Paper trading, charts and backtests work without a broker.
 
 ### Option A: on your own computer
 

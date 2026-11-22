@@ -31,6 +31,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--serve", action="store_true",
                         help="hosted mode for a server: sign-in required, listens on all interfaces")
     parser.add_argument("--host", default=None, help="address to listen on in hosted mode (default 0.0.0.0)")
+    parser.add_argument("--desktop", action="store_true",
+                        help="backend for the desktop app: serve only, quit when the app closes our stdin")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -46,9 +48,12 @@ def main(argv: list[str] | None = None) -> None:
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     url = f"http://127.0.0.1:{port}/"
 
-    if args.no_window:
-        print(f"{APP_NAME} is serving at {url}")
+    if args.desktop:
+        _quit_when_stdin_closes(server)
+    if args.no_window or args.desktop:
+        print(f"{APP_NAME} is serving at {url}", flush=True)
         server.run()
+        app.state.kite.disconnect()
         return
 
     thread = threading.Thread(target=server.run, name="desk-server", daemon=True)
@@ -77,6 +82,25 @@ def main(argv: list[str] | None = None) -> None:
     app.state.kite.disconnect()
     server.should_exit = True
     thread.join(timeout=5)
+
+
+def _quit_when_stdin_closes(server: uvicorn.Server) -> None:
+    """The desktop app holds our stdin open; when it exits or crashes the pipe closes and we stop."""
+    import sys
+
+    stream = sys.stdin
+    if stream is None:
+        return
+
+    def watch():
+        try:
+            while stream.buffer.read(4096):
+                pass
+        except (OSError, ValueError):
+            pass
+        server.should_exit = True
+
+    threading.Thread(target=watch, name="desk-parent-watch", daemon=True).start()
 
 
 def _start_indices(app) -> None:

@@ -1,0 +1,199 @@
+name: Desktop app
+
+# Builds the native desktop app (Tauri window + the desk backend frozen with
+# PyInstaller) for macOS (Apple Silicon and Intel), Windows and Linux, and
+# publishes the installers as a GitHub release with download links.
+#
+# Release:  bump "version" in desktop/app/src-tauri/tauri.conf.json, then
+#           git tag desktop-v<version> && git push origin desktop-v<version>
+# Test build without a release: run this workflow by hand with publish off.
+
+on:
+  push:
+    tags: ["desktop-v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a release (needs a desktop-v* tag as the ref)"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  PYINSTALLER_VERSION: "6.22.3"
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            os: macos-15
+            bundles: dmg
+            slug: macOS-AppleSilicon
+          - name: macOS Intel
+            os: macos-15-intel
+            bundles: dmg
+            slug: macOS-Intel
+          - name: Windows
+            os: windows-latest
+            bundles: nsis,msi
+            slug: Windows-x64
+          - name: Linux
+            # The oldest supported runner, so the AppImage and .deb run on older distributions too.
+            os: ubuntu-22.04
+            bundles: appimage,deb
+            slug: Linux-x86_64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('desktop/app/src-tauri/tauri.conf.json'))['version'])")
+          if [ "desktop-v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tauri.conf.json says $version, but the tag is $GITHUB_REF_NAME"; exit 1
+          fi
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/app/src-tauri -> target
+
+      - name: Linux build libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+
+      - name: Freeze the desk backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[desk]" "pyinstaller==$PYINSTALLER_VERSION"
+          pyinstaller desktop/backend/tradesetu-backend.spec --noconfirm --distpath dist --workpath build/pyinstaller
+
+      - name: Smoke-test the backend
+        run: |
+          exe=dist/tradesetu-backend/tradesetu-backend
+          [ "$RUNNER_OS" = "Windows" ] && exe="$exe.exe"
+          python desktop/backend/smoke.py "$exe"
+
+      - name: Build the app and installers
+        working-directory: desktop/app
+        run: |
+          npm ci
+          npx tauri build --bundles ${{ matrix.bundles }}
+
+      - name: Collect installers
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('desktop/app/src-tauri/tauri.conf.json'))['version'])")
+          name=$(python3 -c "import json; print(json.load(open('desktop/app/src-tauri/tauri.conf.json'))['productName'].replace(' ', ''))")
+          bundle=desktop/app/src-tauri/target/release/bundle
+          mkdir -p out
+          shopt -s nullglob
+          for f in $bundle/dmg/*.dmg;           do cp "$f" "out/$name-$version-${{ matrix.slug }}.dmg"; done
+          for f in $bundle/nsis/*.exe;          do cp "$f" "out/$name-$version-${{ matrix.slug }}-Setup.exe"; done
+          for f in $bundle/msi/*.msi;           do cp "$f" "out/$name-$version-${{ matrix.slug }}.msi"; done
+          for f in $bundle/appimage/*.AppImage; do cp "$f" "out/$name-$version-${{ matrix.slug }}.AppImage"; done
+          for f in $bundle/deb/*.deb;           do cp "$f" "out/$name-$version-${{ matrix.slug }}.deb"; done
+          ls -la out
+          [ -n "$(ls out)" ] || { echo "no installers were built"; exit 1; }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: installers-${{ matrix.slug }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/desktop-v') && (github.event_name == 'push' || inputs.publish)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: installers-*
+          path: out
+          merge-multiple: true
+      - name: Write checksums and release notes
+        run: |
+          cd out
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          version="${TAG#desktop-v}"
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          link() { f=$(cd out && ls $1 2>/dev/null | head -1); [ -n "$f" ] && echo "[$f]($base/$f)" || echo "not built"; }
+          cat > notes.md <<EOF
+          Native desktop app for macOS, Windows and Linux. The desk runs on your own computer: no server, no browser tab.
+
+          ## Download
+
+          | Computer | Installer |
+          |---|---|
+          | Mac with Apple chip (M1 to M4) | $(link '*macOS-AppleSilicon.dmg') |
+          | Mac with Intel chip | $(link '*macOS-Intel.dmg') |
+          | Windows 10 / 11 (installer, recommended) | $(link '*Windows-x64-Setup.exe') |
+          | Windows 10 / 11 (MSI, for managed PCs) | $(link '*Windows-x64.msi') |
+          | Linux, any distribution (AppImage) | $(link '*Linux-x86_64.AppImage') |
+          | Ubuntu / Debian (.deb) | $(link '*Linux-x86_64.deb') |
+
+          Checksums: [SHA256SUMS.txt]($base/SHA256SUMS.txt)
+
+          ## First start: security warnings
+
+          These builds are not signed with an Apple or Microsoft certificate yet, so your computer warns before the first start.
+
+          - **Mac**: open the .dmg and drag TradeSetu to Applications. Open it once; when macOS says it cannot verify the developer, go to System Settings > Privacy & Security and press **Open Anyway**. If macOS says the app "is damaged", run this once in Terminal: \`xattr -cr /Applications/TradeSetu.app\`
+          - **Windows**: if SmartScreen shows "Windows protected your PC", press **More info** then **Run anyway**.
+          - **Linux AppImage**: \`chmod +x TradeSetu-*.AppImage\` then run it. Needs WebKitGTK 4.1 (present on Ubuntu 22.04+, Fedora 36+, Debian 12+).
+
+          ## How it runs
+
+          - **On this computer (default)**: the desk starts in the background and closes with the window. Settings, API keys, paper book and algos are kept in \`~/.tradingagents/desk\` (the same place as a pip install). NSE and BSE requests come from your own internet connection, not a cloud server.
+          - **My server**: Desk menu > Connection settings, then enter the address of a desk you host (Dokploy, VPS).
+          - **Kite**: Zerodha's hosted Kite server needs Node.js installed on this computer for its sign-in. To place live orders, point the MCP setting at your own kite-mcp-server; orders then leave from that server's IP, which is the one to whitelist with Zerodha.
+          - Algos run only while the app is open.
+          EOF
+          sed -i 's/^          //' notes.md
+          cat notes.md
+      - name: Publish
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/* --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" out/* --title "TradeSetu Desktop ${TAG#desktop-v}" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
+          fi

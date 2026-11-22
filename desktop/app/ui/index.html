@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TradeSetu</title>
+<style>
+  :root { --bg: #0f1729; --card: #17213a; --text: #e6ebf5; --muted: #9aa6bf; --accent: #3b82f6; --bad: #f87171; --line: #26324f; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f6fb; --card: #ffffff; --text: #14203a; --muted: #5b6782; --accent: #2563eb; --bad: #b91c1c; --line: #dbe1ee; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .card { width: 100%; max-width: 520px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 28px; }
+  h1 { font-size: 22px; margin: 0 0 4px; display: flex; gap: 10px; align-items: center; }
+  h1 img { width: 32px; height: 32px; border-radius: 8px; }
+  p { margin: 8px 0; color: var(--muted); }
+  .spinner { width: 18px; height: 18px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%;
+             animation: spin 0.9s linear infinite; display: inline-block; vertical-align: middle; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  label { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin: 10px 0; cursor: pointer; }
+  label b { display: block; color: var(--text); }
+  label span { color: var(--muted); font-size: 13px; }
+  input[type=url] { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; margin-top: 6px; }
+  button { font: inherit; padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .row { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  .error { color: var(--bad); }
+  pre { max-height: 220px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 12px; white-space: pre-wrap; color: var(--muted); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main class="card">
+  <h1><img src="icon.png" alt="">TradeSetu</h1>
+
+  <section id="starting">
+    <p><span class="spinner"></span><span id="starting-text">Starting the desk…</span></p>
+    <p style="font-size:13px">The first start after installing can take up to a minute.</p>
+  </section>
+
+  <section id="failed" hidden>
+    <p class="error" id="failed-text"></p>
+    <pre id="failed-log"></pre>
+    <div class="row">
+      <button class="primary" id="retry">Try again</button>
+      <button id="show-log">Show log file</button>
+      <button id="to-settings">Connection settings</button>
+    </div>
+  </section>
+
+  <form id="settings" hidden>
+    <p>Where should TradeSetu run?</p>
+    <label><input type="radio" name="mode" value="local">
+      <div><b>On this computer</b><span>Recommended. The desk runs here, so NSE and BSE requests come from your own internet connection. Your settings and keys stay on this computer.</span></div>
+    </label>
+    <label><input type="radio" name="mode" value="server">
+      <div><b>My server</b><span>Open a desk you already host (Dokploy, VPS). Sign in as you do in the browser.</span>
+        <input type="url" id="server-url" placeholder="https://desk.example.com" autocomplete="url"></div>
+    </label>
+    <p class="error" id="settings-error"></p>
+    <div class="row"><button class="primary" type="submit">Save and open</button></div>
+  </form>
+</main>
+<script>
+  const { invoke } = window.__TAURI__.core;
+  const $ = (id) => document.getElementById(id);
+  const show = (id) => ["starting", "failed", "settings"].forEach((s) => ($(s).hidden = s !== id));
+
+  async function openSettings() {
+    const config = await invoke("get_config");
+    document.querySelector(`input[name=mode][value=${config.mode === "server" ? "server" : "local"}]`).checked = true;
+    $("server-url").value = config.server_url || "";
+    $("settings-error").textContent = "";
+    show("settings");
+  }
+
+  async function launch() {
+    const config = await invoke("get_config");
+    $("starting-text").textContent = config.mode === "server" ? `Opening ${config.server_url}…` : "Starting the desk…";
+    show("starting");
+    try {
+      const url = await invoke("start");
+      location.replace(url);
+    } catch (err) {
+      const text = String(err);
+      const cut = text.indexOf("\n\n");
+      $("failed-text").textContent = cut > 0 ? text.slice(0, cut) : text;
+      $("failed-log").textContent = cut > 0 ? text.slice(cut + 2) : "";
+      $("failed-log").hidden = cut <= 0;
+      show("failed");
+    }
+  }
+
+  $("retry").onclick = launch;
+  $("to-settings").onclick = openSettings;
+  $("show-log").onclick = () => invoke("open_log").catch(() => {});
+  $("server-url").addEventListener("focus", () => (document.querySelector("input[value=server]").checked = true));
+  $("settings").onsubmit = async (event) => {
+    event.preventDefault();
+    const mode = document.querySelector("input[name=mode]:checked")?.value || "local";
+    try {
+      await invoke("save_config", { mode, serverUrl: $("server-url").value });
+      history.replaceState(null, "", location.pathname);
+      launch();
+    } catch (err) {
+      $("settings-error").textContent = String(err);
+    }
+  };
+
+  if (location.hash === "#settings") openSettings(); else launch();
+</script>
+</body>
+</html>
