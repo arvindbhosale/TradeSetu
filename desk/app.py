@@ -44,6 +44,7 @@ def main(argv: list[str] | None = None) -> None:
     app = create_app()
     app.state.algos.start()
     app.state.sectors.start()
+    app.state.price_alerts.start()
     _start_indices(app)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     url = f"http://127.0.0.1:{port}/"
@@ -155,6 +156,7 @@ def serve_hosted(host: str, port: int) -> None:
                      kite_proxy=kite_url.rsplit("/", 1)[0] if kite_url else None)
     app.state.algos.start()
     app.state.sectors.start()
+    app.state.price_alerts.start()
     _start_indices(app)
     if kite_url:
         # Reconnect to the Kite server after a redeploy without waiting for a click.

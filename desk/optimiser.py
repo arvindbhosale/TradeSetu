@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from .backtest import BacktestParams, run_strategy
+from .luck import heatmap, overfitting_score
 
 MAX_COMBOS = 400
 OBJECTIVES = {
@@ -58,7 +59,8 @@ def score(metrics: dict, objective: str) -> float:
     return -math.inf if value is None else float(value)
 
 
-def _evaluate(bars, strategy, combos, params, objective, min_trades):
+def _evaluate(bars, strategy, combos, params, objective, min_trades, returns=None):
+    """Every setting, best first. When ``returns`` is a dict, each setting's bar-by-bar returns go in it."""
     rows = []
     for combo in combos:
         try:
@@ -67,6 +69,9 @@ def _evaluate(bars, strategy, combos, params, objective, min_trades):
             continue                      # e.g. fast >= slow: not a valid setting
         metrics = result["metrics"]
         ok = metrics["trades"] + metrics["open_trades"] >= min_trades
+        if returns is not None and ok and result.get("equity"):
+            curve = pd.Series({pd.Timestamp(d): float(v) for d, v in result["equity"]})
+            returns[tuple(sorted(combo.items()))] = curve.pct_change().dropna()
         rows.append({"params": combo, "score": score(metrics, objective) if ok else -math.inf,
                      "metrics": {k: metrics.get(k) for k in ("total_return_pct", "cagr_pct", "sharpe", "max_drawdown_pct",
                                                              "trades", "win_rate_pct", "profit_factor")}})
@@ -90,7 +95,8 @@ def optimise(bars: pd.DataFrame, strategy, ranges: dict, params: BacktestParams,
     # 1. The whole history, for the table of every setting (in-sample only: it is not a forecast).
     if progress:
         progress("Testing every setting on the whole period")
-    full = _evaluate(bars, strategy, combos, params, objective, min_trades)
+    daily: dict = {}
+    full = _evaluate(bars, strategy, combos, params, objective, min_trades, returns=daily)
 
     # 2. Walk forward: consecutive windows, each split into a training and a testing part.
     window = n // folds
@@ -130,7 +136,9 @@ def optimise(bars: pd.DataFrame, strategy, ranges: dict, params: BacktestParams,
 
     result = {"objective": objective, "objective_name": OBJECTIVES[objective], "combos": len(combos),
               "grid": [{**r, "score": None if r["score"] == -math.inf else round(r["score"], 3)} for r in full[:50]],
-              "params_names": [p.name for p in strategy.params], "windows": windows}
+              "params_names": [p.name for p in strategy.params], "windows": windows,
+              "heatmap": heatmap(full, [p.name for p in strategy.params]),
+              "luck": overfitting_score(pd.DataFrame({str(k): v for k, v in daily.items()})) if len(daily) >= 2 else None}
     if oos_curves:
         stitched = pd.concat(oos_curves)
         stitched = stitched[~stitched.index.duplicated(keep="last")]
