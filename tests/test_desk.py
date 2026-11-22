@@ -377,7 +377,7 @@ def test_settings_validate_mask_and_persist(tmp_path):
     assert settings.get("live_enabled") is False and settings.get("mcp")["mcpServers"]["kite"]["command"] == "npx"
     settings.update({"api_keys": {"OPENAI_API_KEY": "sk-secret-1234"}, "max_order_value": 25000})
     assert settings.public()["api_keys"]["OPENAI_API_KEY"].endswith("1234")
-    assert "secret" not in str(settings.public())
+    assert "sk-secret" not in str(settings.public())
     settings.update({"api_keys": {"OPENAI_API_KEY": settings.public()["api_keys"]["OPENAI_API_KEY"]}})
     assert Settings(path).get("api_keys")["OPENAI_API_KEY"] == "sk-secret-1234"       # masked echo keeps the key
     assert Settings(path).get("max_order_value") == 25000.0

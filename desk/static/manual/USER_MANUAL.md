@@ -607,7 +607,7 @@ Pick the broker, fill in its fields and press **Save settings**. Secret fields s
 
 | Broker | What to enter | Signing in |
 |---|---|---|
-| Zerodha Kite | Nothing here: the MCP server below | Through the Kite MCP server, as before |
+| Zerodha Kite | Your Kite Connect API key and secret (see **Zerodha Kite Connect** below), or nothing to keep using the MCP server | One login a day on Zerodha's page; it lasts until 6 AM the next morning |
 | Upstox | API key and secret from your Upstox developer app | **Log in to Upstox** gives a link to Upstox's login page; after signing in you come back to the desk. Register the redirect URL shown under the broker list on the Upstox app. |
 | Dhan | Client id and the access token from web.dhan.co → My Profile → DhanHQ Trading APIs | **Log in to Dhan** checks the token. Paste a new token when it expires. |
 | Angel One | SmartAPI key, client code, account PIN and TOTP secret (the text under the QR code at smartapi.angelone.in/enable-totp) | **Log in to Angel One** signs in at once with a fresh one-time code. |
@@ -616,9 +616,26 @@ Pick the broker, fill in its fields and press **Save settings**. Secret fields s
 
 Every broker's session ends overnight; log in again each trading day. Instruments keep Kite's names whichever broker you use (`NFO:NIFTY25NOV24000CE`), so algos and watchlists carry over when you change broker. GTT orders are Kite only, and charges are estimated with Zerodha's schedule.
 
+### Zerodha Kite Connect (your own API key)
+
+The simplest way to use Kite, and the one to use on the desktop app. TradeSetu talks to Kite directly with your own Kite Connect app: no Node.js and no separate Kite server. Orders, GTTs and Zerodha's margin calculator work.
+
+1. Open developers.kite.trade, sign in and create an app (or open yours).
+2. Set the app's **Redirect URL** to the address shown in the panel. On the desktop app it is `http://127.0.0.1:47800/broker/callback`; on a server it is your desk's address followed by `/broker/callback`.
+3. Copy the app's **API key** and **API secret** into the panel and press **Save settings**. The secret then shows only its last four characters, and stays in the settings file on this computer.
+4. On **Trade** press **Connect**, then **Log in to Kite**.
+
+**One login a day.** Kite's login lasts until 6 AM the next morning. TradeSetu saves it the moment you log in (`kite-session.json` in its folder, readable only by you), so closing and reopening the app, or restarting the server, does not ask again. Orders, algos, charts, F&O and the margin calculator all use that one login. You are asked again only after 6 AM, after **Log out of Kite**, or if Zerodha ends the session (for example after you change your password or log out of all apps).
+
+If the page Kite sends you to after login does not load (the app was on another port, say), copy that page's address from the browser and paste it under **Finish Kite login** on the Trade tab.
+
+TradeSetu does not log in for you with a stored password and TOTP: Kite Connect's terms require you to log in yourself.
+
+**Your IP address.** Reading your account, prices and charts works from any connection. Placing, changing or cancelling orders and GTTs through the API works only from the static IP registered under **IP Whitelist** on your Kite Connect app (SEBI rule, since 1 April 2026). Most home connections change their IP, so a desktop at home can read but not send live orders until you get a static IP from your internet provider and register it. Paper trading needs no IP.
+
 ### Broker connection (MCP)
 
-Kite only. Set up during installation. Leave it unless you move the Kite server.
+Kite only, and used only when no Kite Connect key and secret are saved above. Leave it unless you move the Kite server.
 
 ---
 
@@ -1535,7 +1552,7 @@ Strikes are counted from the at-the-money strike when the algo enters: **k** for
 
 A green line at the top of the panel, "Kite market data is working", confirms your API key is on the paid Kite Connect plan. A yellow line means Kite refused to serve candles: charts will not load and the desk falls back to delayed data elsewhere. The plan belongs to the API key the desk was installed with (`KITE_API_KEY` in the server settings), so make sure that key is the paid one.
 
-Zerodha ends the session every morning, so repeat steps 2 and 3 each trading day.
+Zerodha ends the session at 6 AM every morning, so log in once each trading day. With your own Kite Connect key saved (Settings → Broker), that one login carries over app and server restarts; the Trade tab says until when you are logged in.
 
 ### Place an order
 

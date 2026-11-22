@@ -686,11 +686,20 @@
   function renderKiteInfo() {
     const kite = state.app.kite;
     $("#kite-connect").textContent = kite.connected ? "Disconnect" : "Connect";
-    $("#kite-login").hidden = !kite.connected; $("#kite-refresh").hidden = !kite.connected;
+    $("#kite-login").hidden = !kite.connected || (kite.direct && kite.signed_in); $("#kite-refresh").hidden = !kite.connected;
+    $("#kite-logout").hidden = !(kite.connected && kite.direct && kite.signed_in);
+    $("#kite-finish").hidden = !(kite.connected && kite.direct && !kite.signed_in);
     const info = $("#kite-info"), label = kite.broker_label || "Kite", rest = kite.broker && kite.broker !== "kite";
     $("#broker-title").textContent = rest ? label + (kite.broker_status === "experimental" ? " (experimental)" : "") : "Kite (Zerodha)";
     $("#kite-login").textContent = "Log in to " + (rest ? label : "Kite");
     if (!kite.connected) { info.textContent = kite.error || (rest ? `Not connected. Connect to read your ${label} account with the keys in Settings → Broker.` : "Not connected. Connect to read your Zerodha account through the MCP server in Settings."); $("#kite-account").replaceChildren(); return; }
+    if (kite.direct) {
+      info.textContent = "Connected to Kite directly with your Kite Connect app. " + (kite.signed_in
+        ? `Logged in${kite.user_name ? " as " + kite.user_name : ""} until ${kite.session_until}. No new login is needed until then, even if you restart TradeSetu.`
+        : "Press “Log in to Kite”: one login lasts until 6 AM tomorrow.")
+        + (kite.redirect_uri ? ` Redirect URL on your Kite app: ${kite.redirect_uri}` : "");
+      return;
+    }
     if (rest) { info.textContent = `Connected to ${label}'s API. ` + (kite.signed_in ? "Signed in for today." : "Press “Log in to " + label + "” to sign in.") + " Experimental: check every live order in your broker's app."; return; }
     info.textContent = `Connected over ${kite.transport} to ${kite.endpoint}. ` + (kite.can_trade
       ? "This server can place orders."
@@ -718,9 +727,35 @@
       box.replaceChildren(h("div", { class: "warnbox" },
         login.url ? h("p", {}, `Open this link, sign in to ${state.app.kite.broker_label || "Kite"}, then press Refresh: `, h("a", { href: login.url, target: "_blank", rel: "noopener noreferrer", style: "overflow-wrap:anywhere", text: login.url })) : h("p", { text: login.message })));
       await loadState(); renderKiteInfo();
+      if (login.url && state.app.kite.direct) waitForKiteLogin();
     } catch (err) { showError("#kite-error", err); }
   });
+  // Direct Kite Connect: Kite sends the browser back to this desk; notice the login and show the account.
+  let kiteWait = null;
+  function waitForKiteLogin() {
+    clearInterval(kiteWait);
+    const until = Date.now() + 5 * 60 * 1000;
+    kiteWait = setInterval(async () => {
+      if (Date.now() > until) { clearInterval(kiteWait); return; }
+      try { await loadState(); } catch { return; }
+      if (state.app.kite.signed_in) { clearInterval(kiteWait); renderKiteInfo(); refreshKiteAccount(); }
+    }, 3000);
+  }
   $("#kite-refresh").addEventListener("click", () => refreshKiteAccount());
+  $("#kite-logout").addEventListener("click", async () => {
+    showError("#kite-error", null);
+    try { await api("/kite/logout", { method: "POST" }); } catch (err) { showError("#kite-error", err); }
+    await loadState(); renderKiteInfo(); $("#kite-account").replaceChildren();
+  });
+  $("#kite-finish").addEventListener("submit", async (event) => {
+    event.preventDefault(); showError("#kite-error", null);
+    const form = event.target;
+    try {
+      await api("/kite/session", { method: "POST", body: { url: form.url.value } });
+      form.url.value = "";
+      await loadState(); renderKiteInfo(); refreshKiteAccount();
+    } catch (err) { showError("#kite-error", err); }
+  });
 
   async function refreshKiteAccount() {
     showError("#kite-error", null);
@@ -728,7 +763,7 @@
     let account;
     try { account = await api("/kite/account"); }
     catch (err) {
-      if (err.payload && err.payload.needs_login) { const label = state.app.kite.broker_label || "Kite"; box.replaceChildren(h("div", { class: "warnbox", text: `${label} needs a login. Press “Log in to ${label}”. Sessions expire every day.` })); }
+      if (err.payload && err.payload.needs_login) { const k = state.app.kite, label = k.broker && k.broker !== "kite" ? (k.broker_label || "Kite") : "Kite"; box.replaceChildren(h("div", { class: "warnbox", text: `${label} needs a login. Press “Log in to ${label}”. One login lasts until 6 AM the next morning.` })); await loadState(); renderKiteInfo(); }
       else showError("#kite-error", err);
       return;
     }
@@ -895,6 +930,9 @@
       });
     }
     form.mcp.value = JSON.stringify(s.mcp, null, 2);
+    form.kc_api_key.value = s.kite_connect.api_key || ""; form.kc_api_secret.value = "";
+    $("#kc-secret-saved").textContent = s.kite_connect.api_secret ? `(saved ${s.kite_connect.api_secret})` : "(not set)";
+    $("#kc-redirect").textContent = location.origin + "/broker/callback";
     form.broker.replaceChildren(...state.app.brokers.map((b) => h("option", { value: b.name, text: b.label + (b.status === "experimental" ? " (experimental)" : "") })));
     form.broker.value = s.broker;
     renderBrokerFields();
@@ -916,7 +954,7 @@
   function renderBrokerFields() {
     const form = $("#form-settings"), broker = state.app.brokers.find((b) => b.name === form.broker.value);
     const saved = (state.app.settings.broker_keys || {})[form.broker.value] || {};
-    $("#mcp-panel").hidden = form.broker.value !== "kite";
+    $("#mcp-panel").hidden = $("#kc-panel").hidden = form.broker.value !== "kite";
     $("#broker-notes").textContent = broker ? broker.notes + (broker.oauth ? ` Register this redirect URL on the app: ${location.origin}/broker/callback` : "") : "";
     $("#broker-fields").replaceChildren(...(broker ? broker.fields : []).map((f) => h("label", {},
       f.label + (f.required ? "" : " (optional)") + (f.secret && saved[f.key] ? ` (saved ${saved[f.key]})` : ""),
@@ -943,6 +981,9 @@
     TEXT.forEach((k) => { changes[k] = form[k].value; });
     TIMES.forEach((k) => { changes[k] = form[k].value; });
     changes.broker = form.broker.value;
+    changes.kite_connect = { api_key: form.kc_api_key.value.trim() };
+    if (form.kc_api_secret.value.trim()) changes.kite_connect.api_secret = form.kc_api_secret.value.trim();
+    else if (!changes.kite_connect.api_key) changes.kite_connect.api_secret = "";
     const brokerInfo = state.app.brokers.find((b) => b.name === form.broker.value);
     if (brokerInfo && brokerInfo.fields.length) {
       const keys = {};
