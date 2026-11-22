@@ -208,3 +208,13 @@ def test_where_the_maximum_profit_and_loss_sit_on_the_index():
     assert back["max_profit_at"] == [{"from": 0, "to": 0}] and back["max_loss_at"] == [{"from": 23800, "to": 23800}]
     bull = given("bull_call_spread", [200, 110], w=4)                  # buy 24000 CE, sell 24200 CE
     assert bull["max_profit_at"] == [{"from": 24200, "to": None}] and bull["max_loss_at"] == [{"from": 0, "to": 24000}]
+
+
+def test_expected_move_is_one_standard_deviation_by_the_near_expiry():
+    r = analyse("NIFTY", "short_straddle", spot=24000, iv=0.16, days=9.125, lot_size=QTY)          # 16% × √(9.125/365) = 2.53%
+    move = r["expected_move"]
+    assert move["pct"] == pytest.approx(16 * math.sqrt(9.125 / 365), abs=0.01)
+    assert move["low"] == pytest.approx(24000 * math.exp(-0.16 * math.sqrt(9.125 / 365)), abs=0.01)
+    assert move["high"] == pytest.approx(24000 * math.exp(0.16 * math.sqrt(9.125 / 365)), abs=0.01)
+    assert move["low"] < 24000 < move["high"]
+    assert analyse("NIFTY", "short_straddle", spot=24000, iv=0.16, days=0, lot_size=QTY)["expected_move"] is None

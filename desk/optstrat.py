@@ -848,6 +848,13 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
                 pop += (1.0 if b == math.inf else below(b)) - below(a)
         pop = round(pop * 100, 1)
 
+    # Expected move: the index range one standard deviation either side of spot by the near expiry at the title IV
+    # (lognormal, about a 68% chance of finishing inside).
+    move = None
+    if t_near > 0 and iv > 0:
+        sd = iv * math.sqrt(t_near)
+        move = {"low": round(spot * math.exp(-sd), 2), "high": round(spot * math.exp(sd), 2), "pct": round(sd * 100, 2)}
+
     net = sum(-g["action"] * g["ratio"] * g["entry"] for g in legs if g["type"] != "FUT")
     greeks = {name: round(sum(g["action"] * g["ratio"] * g["greeks"][name] for g in legs) * qty, 2)
               for name in ("delta", "gamma", "theta", "vega")}
@@ -867,6 +874,7 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
         "max_loss": None if max_loss is None else round(max_loss, 2),
         "unlimited_profit": unlimited_profit, "unlimited_loss": unlimited_loss,
         "max_profit_at": where(max_profit), "max_loss_at": where(max_loss),
+        "expected_move": move,
         "breakevens": [round(b, 2) for b in breakevens], "pop_pct": pop, "greeks": greeks,
         "margin": round(margin, 0),
         "reward_risk": (round(max_profit / -max_loss, 2) if max_profit is not None and max_loss not in (None, 0) and max_loss < 0
