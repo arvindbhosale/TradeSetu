@@ -193,3 +193,18 @@ def test_api_payoff(tmp_path):
         assert "one value per leg" in client.post("/api/options/payoff", json={"structure": "short_straddle", "spot": 24000,
                                                                                "iv_pct": 14, "premiums": [1]}).json()["error"]
     app.state.kite.disconnect()
+
+
+def test_where_the_maximum_profit_and_loss_sit_on_the_index():
+    condor = given("iron_condor", [100, 40, 90, 30], k=2, w=4)      # short 23900/24100, wings 23700/24300
+    assert condor["max_profit_at"] == [{"from": 23900, "to": 24100}]
+    assert condor["max_loss_at"] == [{"from": 0, "to": 23700}, {"from": 24300, "to": None}]
+    fly = given("long_call_butterfly", [330, 200, 110], w=4)          # peak at 24000
+    assert fly["max_profit_at"] == [{"from": 24000, "to": 24000}]
+    straddle = given("short_straddle", [200, 180])
+    assert straddle["unlimited_loss"] and straddle["max_loss_at"] == []
+    assert straddle["max_profit_at"] == [{"from": 24000, "to": 24000}]
+    back = given("put_ratio_backspread", [180, 80], w=4)               # profit grows all the way down to a crash
+    assert back["max_profit_at"] == [{"from": 0, "to": 0}] and back["max_loss_at"] == [{"from": 23800, "to": 23800}]
+    bull = given("bull_call_spread", [200, 110], w=4)                  # buy 24000 CE, sell 24200 CE
+    assert bull["max_profit_at"] == [{"from": 24200, "to": None}] and bull["max_loss_at"] == [{"from": 0, "to": 24000}]
