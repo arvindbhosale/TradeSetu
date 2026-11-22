@@ -63,6 +63,7 @@ from .fnoalgo import FnoAlgoEngine, arm_phrase as fno_arm_phrase
 from .fundamentals import LABELS as FUNDAMENTAL_LABELS, Fundamentals
 from .indices import Indices
 from .kite import KiteError, KiteMCP
+from .kiteconnect import kite_entry, request_token_from
 from .marketdata import TIMEFRAMES as CHART_TIMEFRAMES, MarketDataError, broker as md_broker
 from .marketdata.crypto import PAIRS as CRYPTO_PAIRS, CryptoFeed, tickers as crypto_tickers
 from .marketdata.csvfeed import Imports as ChartImports
@@ -1482,11 +1483,20 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                 if not entry.get("redirect_uri"):
                     entry["redirect_uri"] = str(request.base_url).rstrip("/") + "/broker/callback"
                 return kite.connect(entry)
-        servers = settings.get("mcp")["mcpServers"]
-        name = settings.get("mcp_server")
-        if name not in servers:
-            raise ValueError(f'No MCP server named "{name}" in Settings. Found: {", ".join(servers) or "none"}')
-        return kite.connect(servers[name])
+        return kite.connect(kite_entry(settings, str(request.base_url).rstrip("/") + "/broker/callback"))
+
+    @app.post("/api/kite/session")
+    def kite_session(payload: dict):
+        """Finish a Kite login by hand: the address Kite redirected to, pasted (when that page did not load)."""
+        if not getattr(kite, "is_direct", False):
+            raise KiteError("Save your Kite Connect API key and secret in Settings → Broker, then Connect.")
+        return kite.direct.exchange(request_token_from(str(body_of(payload).get("url") or "")))
+
+    @app.post("/api/kite/logout")
+    def kite_logout():
+        if getattr(kite, "is_direct", False):
+            kite.direct.logout()
+        return kite.status()
 
     @app.get("/broker/callback")
     def broker_callback(request: Request):

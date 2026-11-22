@@ -6,6 +6,7 @@ A native window (Tauri) with the desk backend frozen by PyInstaller inside it. I
 
 - **On this computer (default)**: the app starts `desk-backend --port <free port>` (the desk run with `--desktop`) on 127.0.0.1 and shows it. The backend quits when the app closes its stdin, so it never outlives the window, even after a crash. Data lives in `~/.tradingagents/desk`, shared with a pip install.
 - **My server**: Desk menu > Connection settings stores a URL in the app's config folder (`desktop.json`); the window then opens that hosted desk.
+- Kite: save your own Kite Connect API key and secret in Settings → Broker and set the app's redirect URL to `http://127.0.0.1:47800/broker/callback` (the local desk uses port 47800 when it is free). No Node.js or Kite MCP server is needed, and one login lasts until 6 AM. API orders still need the static IP registered on your Kite app.
 - Links to other sites and the Kite sign-in open in the system browser. Downloads (Excel exports) go to the Downloads folder.
 - Backend log: Desk menu > Show backend log.
 

@@ -41,6 +41,9 @@ DEFAULTS: dict = {
     "broker": "kite",
     # Credentials for the other brokers, by broker then field. Secret fields are masked to the UI.
     "broker_keys": {},
+    # Your own Kite Connect app (developers.kite.trade). With both saved the desk talks to Kite directly:
+    # no Node.js or MCP server, orders and margin included, one login a day. The secret is masked to the UI.
+    "kite_connect": {"api_key": "", "api_secret": ""},
     "mcp": DEFAULT_MCP_CONFIG,
     "mcp_server": "kite",
     # Trading
@@ -171,6 +174,8 @@ class Settings:
         """Settings as the UI may see them: keys masked."""
         data = self.all()
         data["api_keys"] = {name: mask(value) for name, value in data["api_keys"].items()}
+        kc = data["kite_connect"]
+        data["kite_connect"] = {"api_key": kc.get("api_key", ""), "api_secret": mask(kc.get("api_secret", ""))}
         from .brokers import secret_fields
 
         data["broker_keys"] = {broker: {key: mask(value) if key in secret_fields(broker) else value
@@ -273,6 +278,21 @@ def _validated(key: str, value, current):
                 else:
                     entry.pop(name, None)
             merged[broker] = entry
+        return merged
+    if key == "kite_connect":
+        if not isinstance(value, dict) or set(value) - {"api_key", "api_secret"}:
+            raise ValueError("kite_connect takes api_key and api_secret")
+        merged = dict(current)
+        for name, text in value.items():
+            if not isinstance(text, str):
+                raise ValueError(f"kite_connect.{name} must be text")
+            if text.startswith("•"):          # the masked secret sent back unchanged
+                continue
+            text = text.strip()
+            if text and not re.fullmatch(r"[A-Za-z0-9]{6,64}", text):
+                raise ValueError(f"The Kite {name.replace('_', ' ')} has letters and digits only. Copy it again "
+                                 "from developers.kite.trade.")
+            merged[name] = text
         return merged
     if key == "mcp":
         if not isinstance(value, dict) or not isinstance(value.get("mcpServers"), dict):

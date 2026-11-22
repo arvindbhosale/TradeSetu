@@ -131,9 +131,16 @@ fn backend_executable(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(exe)
 }
 
+/// The local backend's usual port. A fixed one keeps the Kite Connect redirect URL
+/// (http://127.0.0.1:47800/broker/callback) the same at every start; any free port when it is taken.
+#[cfg(desktop)]
+const LOCAL_PORT: u16 = 47800;
+
 #[cfg(desktop)]
 fn free_port() -> Result<u16, String> {
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let listener = TcpListener::bind(("127.0.0.1", LOCAL_PORT))
+        .or_else(|_| TcpListener::bind("127.0.0.1:0"))
+        .map_err(|e| e.to_string())?;
     Ok(listener.local_addr().map_err(|e| e.to_string())?.port())
 }
 
