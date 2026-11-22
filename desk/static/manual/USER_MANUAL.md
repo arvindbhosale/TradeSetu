@@ -792,9 +792,20 @@ Saved strategies appear under **My strategies** in the Backtest and Algos strate
 | ADX trend | ADX strong and +DI above −DI | −DI above +DI |
 | VWAP trend (intraday) | Price above VWAP and fast EMA above slow | Either fails |
 | Opening range breakout (intraday) | Close above the high of the first 15 minutes | Close below its low |
+| ML: return forecast (Qlib-style) | A model forecasts a rise above the threshold over the next days | The forecast drops below it |
 | Buy and hold | First candle | Never (the baseline to beat) |
 
 Heikin-Ashi, Parabolic SAR, Awesome Oscillator and Dual Thrust follow the strategies in the `je-suis-tm/quant-trading` project; Bollinger + RSI and ADX trend follow `freqtrade/freqtrade-strategies`; the price-volume breakout follows Zerodha's algo video. All are written from the indicators' standard definitions.
+
+### Machine learning: return forecast
+
+**ML: return forecast (Qlib-style)** learns from the stock's own past which price and volume patterns came before a rise, and buys while its forecast for the next few days is above your threshold.
+
+- **What it looks at**: returns over 1 to 60 days, the price against its 5 to 60-day averages, volatility, where the close sits in its 10 to 60-day range, volume against its average, and the shape of each day's candle. These follow the Alpha158 features of Microsoft's Qlib project (MIT licence). The model is a ridge regression, Qlib's linear baseline.
+- **No peeking**: it trains walk-forward. On each day it learns only from days whose outcome was already known, retrains every 21 bars on the last **Training bars**, and never uses a later price.
+- **Settings**: *Forecast days ahead* (5), *Buy when forecast rise above %* (0.5), *Training bars* (250, about a year).
+- **It starts flat**: it buys nothing until it has the training bars, so the first year of a backtest shows no trades. Give it a longer period.
+- **What to expect**: on a test series with a pattern planted in it, it finds the pattern; on a random walk it finds nothing, as it should. Real stocks are close to random from day to day, and a simple forecast has little edge once charges are paid. Run it through the **AI scan**, which judges it on prices its settings never saw and against buy and hold, before you trust it with an algo.
 
 ### Strategies of market legends
 

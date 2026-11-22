@@ -437,5 +437,21 @@ def _register_more() -> None:
         if key in STRATEGIES:
             STRATEGIES[key] = replace(STRATEGIES[key], style=style, markets=markets, legend=legend, note=note)
 
+    from .mlsignals import ml_forecast
+
+    STRATEGIES["ml_forecast"] = Strategy(
+        "ml_forecast", "ML: return forecast (Qlib-style)",
+        "A model learns, from this stock's own past, which price and volume patterns came before a rise over the next "
+        "few days, and buys while it forecasts a rise above the threshold. It retrains every month on recent bars "
+        "only and never sees a bar ahead of its forecast. It holds nothing until it has the training bars, so the "
+        "first part of a backtest stays flat. Day candles.",
+        (Param("horizon", "Forecast days ahead", 5, 1, 20),
+         Param("threshold_pct", "Buy when forecast rise above %", 0.5, 0.0, 5.0, integer=False),
+         Param("train", "Training bars", 250, 120, 1000)),
+        ml_forecast, source="microsoft/qlib (MIT): Alpha158 features, linear model", style="Machine learning",
+        markets=("bull", "sideways"),
+        note="Learns whatever the recent past rewarded; it changes when the market changes. A simple forecast has "
+             "little edge after costs: judge it on unseen prices (AI scan) against buy and hold.")
+
 
 _register_more()
