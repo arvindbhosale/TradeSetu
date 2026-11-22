@@ -8,6 +8,7 @@ desk is unchanged whichever broker is chosen.
 from __future__ import annotations
 
 from ..kite import KiteError, KiteMCP
+from ..kiteconnect import KiteLink
 from .angelone import AngelOne
 from .base import RestBroker
 from .dhan import Dhan
@@ -19,7 +20,8 @@ from .upstox import Upstox
 # published API and SDK and covered by offline tests, not yet run against a live account.
 BROKERS: dict[str, dict] = {
     "kite": {"label": "Zerodha Kite", "status": "supported", "cls": None,
-             "notes": "Through Zerodha's Kite MCP server. Orders need a self-hosted kite-mcp-server with a Kite Connect key."},
+             "notes": "With your own Kite Connect API key and secret (below) TradeSetu talks to Kite directly: orders, "
+                      "margin and one login a day. Without them it uses the Kite MCP server set further down."},
     "upstox": {"label": "Upstox", "status": "experimental", "cls": Upstox,
                "notes": "Upstox API app (free). Signs in through Upstox's login page."},
     "dhan": {"label": "Dhan", "status": "experimental", "cls": Dhan,
@@ -61,8 +63,8 @@ class Switch:
     at the next connect, with nothing else rebuilt.
     """
 
-    def __init__(self, kite: KiteMCP | None = None):
-        self.kite = kite or KiteMCP()
+    def __init__(self, kite: KiteMCP | KiteLink | None = None):
+        self.kite = kite or KiteLink()
         self.active = self.kite
         self.name = "kite"
         self._adapters: dict[str, RestBroker] = {}
@@ -93,8 +95,9 @@ class Switch:
         return out
 
     def complete_login(self, params: dict) -> dict:
-        if not isinstance(self.active, RestBroker):
-            raise KiteError("Zerodha Kite signs in through its MCP server, not here.")
+        if not hasattr(self.active, "complete_login"):
+            raise KiteError("Zerodha Kite through an MCP server signs in on the server's own page, not here. "
+                            "Save your Kite Connect API key and secret in Settings to sign in here.")
         return self.active.complete_login(params)
 
     def __getattr__(self, attr):

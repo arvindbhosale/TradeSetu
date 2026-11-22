@@ -957,8 +957,9 @@
     <div>
       <div class="panel">
         <div class="jobhead"><h2 id="broker-title">Kite (Zerodha)</h2>
-          <span><button id="kite-connect">Connect</button> <button id="kite-login" hidden>Log in to Kite</button> <button id="kite-refresh" hidden>Refresh</button></span></div>
+          <span><button id="kite-connect">Connect</button> <button id="kite-login" hidden>Log in to Kite</button> <button id="kite-refresh" hidden>Refresh</button> <button id="kite-logout" hidden>Log out of Kite</button></span></div>
         <div id="kite-info" class="hint"></div>
+        <form id="kite-finish" class="row" hidden><label>Finish Kite login: paste the address the Kite login sent you to <input name="url" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:47800/broker/callback?request_token=..."></label><button type="submit">Finish login</button></form>
         <div id="kite-error" class="error" hidden></div>
         <div id="kite-account"></div>
       </div>
@@ -1389,9 +1390,22 @@
       <p id="broker-notes" class="hint"></p>
       <div id="broker-fields"></div>
     </div>
+    <div class="panel" id="kc-panel">
+      <h2>Zerodha Kite Connect (your own API key)</h2>
+      <p class="hint">The simplest way to use Kite: TradeSetu talks to Kite directly with your own Kite Connect app. No Node.js, no extra server. Orders, GTTs and Zerodha's margin calculator work, and one Kite login lasts the whole day (until 6 AM the next morning), even if you close and reopen the app. The key and secret stay in TradeSetu's settings file on this computer and are never shown again in full.</p>
+      <ol class="hint">
+        <li>Open <a href="https://developers.kite.trade" target="_blank" rel="noopener noreferrer">developers.kite.trade</a>, sign in and create an app (or open yours).</li>
+        <li>Set its <strong>Redirect URL</strong> to <code id="kc-redirect"></code> and save.</li>
+        <li>Copy the app's <strong>API key</strong> and <strong>API secret</strong> into the boxes below and press Save settings.</li>
+        <li>On the Trade tab press Connect, then Log in to Kite. That is the one login for the day.</li>
+      </ol>
+      <p class="hint"><strong>Your IP address.</strong> Reading your account, prices and charts works from any internet connection. Placing, changing or cancelling orders (and GTTs) through the API works only from the static IP address registered on your Kite Connect app (SEBI rule, since 1 April 2026). A home connection usually changes its IP; ask your internet provider for a static IP and add it under IP Whitelist on the app, or place orders from a server that has one. Paper trading needs no IP.</p>
+      <label>API key <input name="kc_api_key" autocomplete="off" spellcheck="false"></label>
+      <label>API secret <span id="kc-secret-saved" class="hint"></span><input name="kc_api_secret" type="password" autocomplete="off" spellcheck="false"></label>
+    </div>
     <div class="panel" id="mcp-panel">
       <h2>Broker connection (MCP)</h2>
-      <p class="hint">Standard <code>mcpServers</code> JSON. Zerodha's hosted server <code>mcp.kite.trade</code> gives portfolio and market data but does not place orders. To trade live, run <code>kite-mcp-server</code> with your own Kite Connect API key and point this at it.</p>
+      <p class="hint">Used only when no Kite Connect key and secret are saved above. Standard <code>mcpServers</code> JSON. Zerodha's hosted server <code>mcp.kite.trade</code> gives portfolio and market data but does not place orders. To trade live, run <code>kite-mcp-server</code> with your own Kite Connect API key and point this at it.</p>
       <label>Server name <input name="mcp_server" autocomplete="off"></label>
       <textarea name="mcp" rows="9" spellcheck="false"></textarea>
     </div>
