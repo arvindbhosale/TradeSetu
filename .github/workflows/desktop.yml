@@ -93,11 +93,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install ".[desk]" "pyinstaller==$PYINSTALLER_VERSION"
-          pyinstaller desktop/backend/tradesetu-backend.spec --noconfirm --distpath dist --workpath build/pyinstaller
+          pyinstaller desktop/backend/desk-backend.spec --noconfirm --distpath dist --workpath build/pyinstaller
 
       - name: Smoke-test the backend
         run: |
-          exe=dist/tradesetu-backend/tradesetu-backend
+          exe=dist/desk-backend/desk-backend
           [ "$RUNNER_OS" = "Windows" ] && exe="$exe.exe"
           python desktop/backend/smoke.py "$exe"
 

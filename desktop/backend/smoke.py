@@ -1,6 +1,6 @@
 """Start the frozen backend, check it serves the desk, then check it quits when its stdin closes.
 
-    python desktop/backend/smoke.py dist/tradesetu-backend/tradesetu-backend[.exe]
+    python desktop/backend/smoke.py dist/desk-backend/desk-backend[.exe]
 """
 
 import socket

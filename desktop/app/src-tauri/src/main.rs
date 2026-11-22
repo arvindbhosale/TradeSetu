@@ -92,7 +92,7 @@ fn normalise_server_url(raw: &str) -> Result<String, String> {
 }
 
 fn backend_executable(app: &AppHandle) -> Result<PathBuf, String> {
-    let name = if cfg!(windows) { "tradesetu-backend.exe" } else { "tradesetu-backend" };
+    let name = if cfg!(windows) { "desk-backend.exe" } else { "desk-backend" };
     let dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     let exe = dir.join("backend").join(name);
     if !exe.is_file() {

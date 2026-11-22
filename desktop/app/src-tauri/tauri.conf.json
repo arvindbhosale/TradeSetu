@@ -28,7 +28,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../../../dist/tradesetu-backend/": "backend/"
+      "../../../dist/desk-backend/": "backend/"
     },
     "macOS": {
       "minimumSystemVersion": "11.0",

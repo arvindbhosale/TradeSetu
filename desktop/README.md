@@ -4,7 +4,7 @@ A native window (Tauri) with the desk backend frozen by PyInstaller inside it. I
 
 ## How it works
 
-- **On this computer (default)**: the app starts `tradesetu-backend --port <free port>` (the desk run with `--desktop`) on 127.0.0.1 and shows it. The backend quits when the app closes its stdin, so it never outlives the window, even after a crash. Data lives in `~/.tradingagents/desk`, shared with a pip install.
+- **On this computer (default)**: the app starts `desk-backend --port <free port>` (the desk run with `--desktop`) on 127.0.0.1 and shows it. The backend quits when the app closes its stdin, so it never outlives the window, even after a crash. Data lives in `~/.tradingagents/desk`, shared with a pip install.
 - **My server**: Desk menu > Connection settings stores a URL in the app's config folder (`desktop.json`); the window then opens that hosted desk.
 - Links to other sites and the Kite sign-in open in the system browser. Downloads (Excel exports) go to the Downloads folder.
 - Backend log: Desk menu > Show backend log.
@@ -13,8 +13,8 @@ A native window (Tauri) with the desk backend frozen by PyInstaller inside it. I
 
 ```bash
 pip install ".[desk]" pyinstaller
-pyinstaller desktop/backend/tradesetu-backend.spec --noconfirm --distpath dist
-python desktop/backend/smoke.py dist/tradesetu-backend/tradesetu-backend
+pyinstaller desktop/backend/desk-backend.spec --noconfirm --distpath dist
+python desktop/backend/smoke.py dist/desk-backend/desk-backend
 cd desktop/app && npm ci && npx tauri build
 ```
 
