@@ -325,6 +325,7 @@
           <label class="fno-futures">Trade <select name="direction"><option value="long">Buy only</option><option value="short">Sell only</option><option value="both">Buy and sell</option></select></label>
           <label>Index or MCX metal <select name="underlying"><optgroup label="Indices (NSE, BSE)"><option>NIFTY</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option><option>NIFTYNXT50</option><option>SENSEX</option><option>BANKEX</option><option>SENSEX50</option></optgroup><optgroup label="MCX gold and silver (₹)"><option value="GOLD">GOLD · 1 kg</option><option value="GOLDM">GOLDM · 100 g</option><option value="GOLDTEN">GOLDTEN · 10 g</option><option value="GOLDGUINEA">GOLDGUINEA · 8 g</option><option value="GOLDPETAL">GOLDPETAL · 1 g</option><option value="SILVER">SILVER · 30 kg</option><option value="SILVERM">SILVERM · 5 kg</option><option value="SILVERMIC">SILVERMIC · 1 kg</option></optgroup></select></label>
           <label class="fno-structure">Expiry <select name="expiry_kind"><option value="weekly">Weekly (NIFTY, SENSEX)</option><option value="monthly">Monthly</option></select></label>
+          <label class="fno-structure">Which expiry <select name="expiry_pick"></select></label>
         </div>
         <p class="hint" id="fno-desc"></p>
         <div class="row">
@@ -895,7 +896,9 @@
         <div class="row">
           <label>Algo name <input id="bt-deploy-name" maxlength="40" autocomplete="off"></label>
           <label id="bt-deploy-budget-label">Budget (₹) <input id="bt-deploy-budget" type="number" min="1000" step="1000"></label>
+          <label id="bt-deploy-symbol-label" hidden>Stock <select id="bt-deploy-symbol"></select></label>
           <label id="bt-deploy-loss-label" hidden>Maximum loss a day (₹) <input id="bt-deploy-loss" type="number" min="0" step="500" value="5000"></label>
+          <label id="bt-deploy-expiry-label" hidden>Expiry <select id="bt-deploy-expiry"></select></label>
           <label>Mode <select id="bt-deploy-mode"><option value="paper">Paper</option><option value="live">Live · real money</option></select></label>
           <button class="primary" type="button" id="bt-deploy-go">Create algo</button>
         </div>
