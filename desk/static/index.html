@@ -291,6 +291,7 @@
       <div class="row" id="algo-params"></div>
       <h3>Exit rules</h3>
       <div id="algo-exits"></div>
+      <div id="algo-steps"></div>
       <details class="advanced tt-positional"><summary>Advanced</summary>
         <div class="row"><label>Sell after holding this many trading days (0 = no limit) <input name="max_hold_days" type="number" min="0" max="2000" step="1" value="0"></label></div>
       </details>
@@ -356,6 +357,7 @@
           <label>Target profit (₹, 0 for none) <input name="target" type="number" min="0" step="500" value="0"></label>
           <label>Mode <select name="mode"><option value="paper">Paper</option><option value="live">Live · real money</option></select></label>
         </div>
+        <div id="fno-steps"></div>
         <details class="advanced"><summary>Advanced settings</summary>
         <div class="row">
           <label>Limit price buffer % <input name="limit_buffer_pct" type="number" min="0.1" max="10" step="0.1" value="2"></label>
@@ -730,6 +732,7 @@
           <label>Stoploss, % of premium received or paid <input name="stop_pct" type="number" min="0" max="1000" step="5" value="0"></label>
           <label>Target, % of premium received or paid <input name="target_pct" type="number" min="0" max="100" step="5" value="0"></label>
         </div>
+        <div id="sbt-steps"></div>
         <details class="advanced"><summary>Advanced settings</summary>
         <div class="row">
           <label>Margin % (sold options without a hedge, futures) <input name="margin_pct" type="number" min="2" max="100" step="0.5" value="12"></label>
@@ -813,6 +816,7 @@
           <label>Stoploss, % of price <input name="stop_pct" type="number" min="0" max="50" step="0.1" value="0"></label>
           <label>Target, % of price <input name="target_pct" type="number" min="0" max="100" step="0.1" value="0"></label>
         </div>
+        <div id="fbt-steps"></div>
         <div class="row">
           <label>Slippage % <input name="slippage_pct" type="number" min="0" max="2" step="0.01" value="0.02"></label>
           <label>Cost of carry % a year <input name="carry_pct" type="number" min="0" max="20" step="0.5" value="7"></label>
@@ -850,8 +854,9 @@
           <label>Volatility: India VIX × <input name="iv_scale" type="number" min="0.3" max="3" step="0.05" value="1"></label>
           <label>Slippage % <input name="slippage_pct" type="number" min="0" max="10" step="0.25" value="1"></label>
           <label class="bt-own" hidden>Capital (₹) <input name="capital" type="number" min="10000" step="10000" value="200000" required></label>
-          <button class="primary" type="submit">Run options backtest</button>
         </div>
+        <div id="obt-steps"></div>
+        <div class="row"><button class="primary" type="submit">Run options backtest</button></div>
       </form>
       <div id="obt-error" class="error" hidden></div>
     </div>
@@ -882,6 +887,7 @@
         <p class="hint tt-positional">Positional: held overnight until the exit rule, the stoploss or the target closes it, with delivery (CNC) charges. When the price opens past the stoploss or the target, it sells at that open price. A trade bought and sold the same day pays intraday charges.</p>
         <h3>Exit rules</h3>
         <div id="bt-exits"></div>
+        <div id="bt-steps"></div>
         <details class="advanced tt-positional"><summary>Advanced</summary>
           <div class="row"><label>Sell after holding this many trading days (0 = no limit) <input name="max_hold_days" type="number" min="0" max="2000" step="1" value="0"></label></div>
         </details>
@@ -906,6 +912,7 @@
         <div id="bt-deploy-error" class="error" hidden></div>
       </div>
       <div class="tiles" id="bt-tiles"></div>
+      <div class="panel" id="bt-steps-compare" hidden></div>
       <div class="panel" id="bt-checks"></div>
       <div class="panel">
         <h3 id="bt-chart-title">Portfolio value</h3>

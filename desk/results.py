@@ -47,7 +47,7 @@ def positions(closed: list[dict], open_rows: list[dict], notes: dict[str, dict])
                  "opened_at": first["opened_at"], "closed_at": last["time_ist"],
                  "days": (closed_at.date() - opened.date()).days if opened and closed_at else None,
                  "status": "Part closed" if key in still_open else "Closed", "note": note,
-                 "r": None}
+                 "r": None, "exits": _exits(rows, long)}
         if note and note.get("stop") and entry and quantity:
             risk = abs(entry - note["stop"]) * quantity * first.get("multiplier", 1)
             trade["r"] = round(pnl / risk, 2) if risk else None
@@ -62,6 +62,24 @@ def positions(closed: list[dict], open_rows: list[dict], notes: dict[str, dict])
                     "days": None, "status": "Open", "note": notes.get(key), "r": None})
     out.sort(key=lambda t: t["closed_at"] or "9999", reverse=True)
     out.sort(key=lambda t: t["status"] != "Open")
+    return out
+
+
+def _exits(rows: list[dict], long: bool) -> list[dict]:
+    """Each close of a position, oldest first: one entry per time (an order filled in slices counts once). A
+    position booked in steps lists every partial close; one closed at once lists one."""
+    out: list[dict] = []
+    for row in rows:
+        price = row["sell_price"] if long else row["buy_price"]
+        if out and out[-1]["time"] == row["time_ist"]:
+            last = out[-1]
+            value = last["price"] * last["quantity"] + price * row["quantity"]
+            last["quantity"] += row["quantity"]
+            last["price"] = round(value / last["quantity"], 2)
+            last["pnl"] = round(last["pnl"] + row["pnl"], 2)
+        else:
+            out.append({"time": row["time_ist"], "quantity": row["quantity"], "price": round(price, 2),
+                        "pnl": round(row["pnl"], 2)})
     return out
 
 
