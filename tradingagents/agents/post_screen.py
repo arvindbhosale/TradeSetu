@@ -16,7 +16,7 @@ import logging
 import os
 import random
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 
 import requests
 
@@ -168,13 +168,23 @@ def _ask_each(instrument: str, posts: list[str]) -> list[dict]:
     """One request per post. The first failure raises at once: requests not yet
     sent are cancelled, and those in flight finish in the background unread."""
     answers: list = [None] * len(posts)
+    failure: list[BaseException] = []  # the first failure, kept by the failing worker so no worker sends after it
+
+    def ask(post: str) -> dict:
+        if failure:
+            raise CancelledError
+        try:
+            return system_one({"instrument": instrument, "post": post}, QUESTIONS)
+        except BaseException as exc:
+            failure.append(exc)
+            raise
+
     pool = ThreadPoolExecutor(max_workers=_WORKERS)
     try:
-        futures = {
-            pool.submit(system_one, {"instrument": instrument, "post": post}, QUESTIONS): i
-            for i, post in enumerate(posts)
-        }
+        futures = {pool.submit(ask, post): i for i, post in enumerate(posts)}
         for future in as_completed(futures):
+            if future.exception() is not None:
+                raise failure[0] if failure else future.exception()
             answers[futures[future]] = future.result()
     finally:
         pool.shutdown(wait=False, cancel_futures=True)

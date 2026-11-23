@@ -255,7 +255,7 @@ def test_the_first_failure_cancels_the_requests_not_yet_sent(jev, post, monkeypa
 
     typesafe.jev_screen("NVDA")(list(jev))
 
-    assert len(post) < 21
+    assert len(post) == 1                      # no worker sends after the failure, however the threads run
 
 
 @pytest.mark.unit
