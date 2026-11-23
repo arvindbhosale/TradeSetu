@@ -262,31 +262,7 @@
     <button type="button" data-view="classic" aria-pressed="false">Classic chart</button>
   </div>
   <div id="chartdesk"><p class="hint">Loading the chart…</p></div>
-  <div id="chart-classic" hidden>
-  <div class="panel">
-    <form id="form-chart">
-      <div class="row">
-        <label>Symbol <input name="symbol" required placeholder="RELIANCE, NIFTY" autocomplete="off"></label>
-        <div><div class="lbl">Candle</div><div class="seg" id="chart-interval" role="group" aria-label="Candle size"></div></div>
-        <button class="primary" type="submit">Show chart</button>
-        <label class="check"><input type="checkbox" name="live" checked> Live: refresh while the market is open</label>
-      </div>
-      <fieldset><legend>On the price chart</legend><div class="checks" id="chart-overlays"></div></fieldset>
-      <fieldset><legend>Panels below</legend><div class="checks" id="chart-panels"></div></fieldset>
-    </form>
-    <div id="chart-error" class="error" hidden></div>
-  </div>
-  <div class="panel" id="chart-result" hidden>
-    <div class="jobhead"><h3 id="chart-title"></h3><span class="pill" id="chart-live"></span></div>
-    <p class="hint" id="chart-note" hidden></p>
-    <div class="ohlc" id="chart-ohlc"></div>
-    <div class="legend" id="chart-legend"></div>
-    <div class="tvchart" id="chart-main"></div>
-    <div id="chart-panels-out"></div>
-    <div id="chart-pivots" hidden></div>
-    <p class="hint">Scroll to zoom, drag to pan. Candles come from Kite's historical data (log in to Kite on the Trade tab). Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts</a>.</p>
-  </div>
-  </div>
+  <div id="chart-classic" hidden><p class="hint">Loading the chart…</p></div>
 </section>
 
 <section id="tab-algos" class="tab" hidden>

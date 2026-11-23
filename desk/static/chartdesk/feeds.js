@@ -76,6 +76,31 @@ export function startFeed(info, hooks) {
     return stop;
   }
 
+  if (live.kind === "refetch") {       // the classic chart: fresh candles from the desk every few seconds
+    const every = live.every || 15;
+    const status = (/** @type {any} */ fresh) => {
+      const s = fresh.session || {};
+      if (!s.open) hooks.onStatus({ state: "closed", text: `Market closed · ${fresh.source} data` });
+      else hooks.onStatus({ state: /yahoo/i.test(fresh.source || "") ? "poll" : "live", text: `Live · ${fresh.source} · every ${every} s${s.time_ist ? ` · ${s.time_ist.slice(11, 19)} IST` : ""}` });
+    };
+    status(info);
+    let open = !!(info.session && info.session.open), ticks = 0;
+    const tick = async () => {
+      if (stopped) return;
+      if (!open && ++ticks % 4) return;          // market closed: look once a minute for the open
+      try {
+        const fresh = await hooks.refetch();
+        if (stopped) return;
+        open = !!(fresh.session && fresh.session.open);
+        hooks.onBars(fresh.candles); status(fresh);
+      } catch (err) {
+        if (!stopped) hooks.onStatus({ state: "error", text: `Live prices stopped: ${err.message}` });
+      }
+    };
+    timer = setInterval(tick, every * 1000);
+    return stop;
+  }
+
   if (live.kind === "poll") {          // NSE/BSE: the broker's last price, plus fresh candles each minute
     let ticks = 0, warned = false;
     const tick = async () => {

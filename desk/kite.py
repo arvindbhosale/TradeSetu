@@ -284,6 +284,18 @@ class KiteMCP:
     def cancel_order(self, order_id: str, variety: str = "regular"):
         return self.call("cancel_order", {"variety": variety, "order_id": str(order_id)}, timeout=30.0)
 
+    def modify_order(self, order_id: str, variety: str = "regular", **changes):
+        """Change a working order (price, trigger, type, quantity). Used to move a stoploss or target."""
+        if "modify_order" not in self.tools:
+            raise KiteError("This Kite server cannot change orders. Use the desk's own kite-mcp-server.")
+        return self.call("modify_order", {"variety": variety, "order_id": str(order_id), **changes}, timeout=30.0)
+
+    def modify_gtt(self, trigger_id, args: dict):
+        """Change an active GTT in place: ``args`` as for ``place_gtt``."""
+        if "modify_gtt_order" not in self.tools:
+            raise KiteError("This Kite server cannot change GTTs. Use the desk's own kite-mcp-server.")
+        return self.call("modify_gtt_order", {"trigger_id": int(trigger_id), **args}, timeout=30.0)
+
     def candles(self, instrument: str, interval: str, start, end, continuous: bool = False, oi: bool = False) -> list:
         """Kite's own candles for ``EXCHANGE:SYMBOL``. Needs the historical-data add-on on the API key."""
         if "get_historical_data" not in self.tools:

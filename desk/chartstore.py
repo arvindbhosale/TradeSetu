@@ -1,4 +1,5 @@
-"""What the Charts tab keeps for the user on the server: the watchlist and the drawings on each chart.
+"""What the Charts tab keeps for the user on the server: the watchlist, the drawings on each chart and each
+chart view's settings (symbol, candle size, indicators with their settings and colours).
 
 Kept on the server (not in the browser) so the desktop app, a phone and a browser all see the same.
 """
@@ -6,11 +7,18 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import threading
 from pathlib import Path
 
 VENUES = ("crypto", "india", "imported")
-KINDS = {"trend": 2, "hline": 1, "fib": 2}
+# How many points each drawing keeps. A long or short position keeps entry, target and stoploss.
+KINDS = {"trend": 2, "ray": 2, "extended": 2, "hline": 1, "hray": 1, "vline": 1, "rect": 2, "channel": 3,
+         "fib": 2, "measure": 2, "long": 3, "short": 3}
+VIEWS = ("live", "classic")
+MAX_INDICATORS = 30
+_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")
+_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}")
 MAX_WATCH = 50
 MAX_DRAWINGS = 100          # per chart
 MAX_CHARTS = 500
@@ -38,11 +46,12 @@ class ChartStore:
         try:
             state = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(state, dict):
-                return {"watchlist": state.get("watchlist") or [], "drawings": state.get("drawings") or {}}
+                return {"watchlist": state.get("watchlist") or [], "drawings": state.get("drawings") or {},
+                        "layouts": state.get("layouts") or {}}
         except (OSError, ValueError):
             pass
         return {"watchlist": [{"venue": "crypto", "symbol": s} for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT")],
-                "drawings": {}}
+                "drawings": {}, "layouts": {}}
 
     def _save(self, state: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +95,7 @@ class ChartStore:
         for item in items:
             kind = item.get("kind") if isinstance(item, dict) else None
             if kind not in KINDS:
-                raise ValueError("a drawing is a trend line, a horizontal line or a Fibonacci retracement")
+                raise ValueError(f"unknown drawing {str(kind)[:20]!r}; one of {', '.join(KINDS)}")
             points = item.get("points")
             if not isinstance(points, list) or len(points) != KINDS[kind]:
                 raise ValueError(f"a {kind} drawing needs {KINDS[kind]} point(s)")
@@ -99,7 +108,15 @@ class ChartStore:
                 if not math.isfinite(price) or price <= 0:
                     raise ValueError("a drawing's price must be above zero")
                 pts.append({"time": t, "price": price})
-            clean.append({"id": str(item.get("id", ""))[:20] or f"d{len(clean)}", "kind": kind, "points": pts})
+            drawing = {"id": str(item.get("id", ""))[:20] or f"d{len(clean)}", "kind": kind, "points": pts}
+            colour = item.get("color")
+            if colour is not None:
+                if not isinstance(colour, str) or not _COLOUR.fullmatch(colour):
+                    raise ValueError("a drawing's colour is #rrggbb")
+                drawing["color"] = colour
+            if kind in ("long", "short"):
+                drawing["qty"] = _quantity(item.get("qty", 1))
+            clean.append(drawing)
         with self._lock:
             state = self._load()
             if clean:
@@ -110,3 +127,84 @@ class ChartStore:
                 state["drawings"].pop(key, None)
             self._save(state)
         return clean
+
+    def layout(self, view: str) -> dict | None:
+        if view not in VIEWS:
+            raise ValueError(f"view must be one of {', '.join(VIEWS)}")
+        with self._lock:
+            return self._load()["layouts"].get(view)
+
+    def set_layout(self, view: str, layout) -> dict:
+        if view not in VIEWS:
+            raise ValueError(f"view must be one of {', '.join(VIEWS)}")
+        clean = clean_layout(layout)
+        with self._lock:
+            state = self._load()
+            state["layouts"][view] = clean
+            self._save(state)
+        return clean
+
+
+def _quantity(raw) -> float:
+    try:
+        qty = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("a position's quantity is a number") from None
+    if not math.isfinite(qty) or qty <= 0 or qty > 1e9:
+        raise ValueError("a position's quantity is above zero")
+    return qty
+
+
+def _text(raw, name: str, limit: int = 40) -> str:
+    if not isinstance(raw, str) or len(raw) > limit:
+        raise ValueError(f"{name} must be text of at most {limit} characters")
+    return raw
+
+
+def clean_layout(layout) -> dict:
+    """A chart view's settings, checked for shape and size. Which indicators exist and their settings' ranges
+    are the browser's (it drops ones it does not know), so the server only keeps the data well formed."""
+    if not isinstance(layout, dict):
+        raise ValueError("layout must be an object")
+    out: dict = {}
+    for key in ("venue", "symbol", "tf", "type"):
+        if layout.get(key) is not None:
+            out[key] = _text(layout[key], key)
+    if out.get("venue") is not None and out["venue"] not in VENUES:
+        raise ValueError(f"venue must be one of {', '.join(VENUES)}")
+    out["volume"] = layout.get("volume") is not False
+    items = layout.get("indicators", [])
+    if not isinstance(items, list) or len(items) > MAX_INDICATORS:
+        raise ValueError(f"a chart holds {MAX_INDICATORS} indicators at most")
+    indicators = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("kind"), str) or not _KEY.fullmatch(item["kind"]):
+            raise ValueError("each indicator needs a kind")
+        params = item.get("params") or {}
+        if not isinstance(params, dict) or len(params) > 20:
+            raise ValueError("an indicator's settings must be an object")
+        clean_params = {}
+        for k, v in params.items():
+            if not isinstance(k, str) or not _KEY.fullmatch(k):
+                raise ValueError("an indicator setting's name is a short word")
+            if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+                raise ValueError(f"setting {k} must be a number or a word")
+            if isinstance(v, str):
+                clean_params[k] = _text(v, k)
+            elif math.isfinite(v):
+                clean_params[k] = v
+            else:
+                raise ValueError(f"setting {k} must be a finite number")
+        colours = item.get("colors") or {}
+        if not isinstance(colours, dict) or len(colours) > 20:
+            raise ValueError("an indicator's colours must be an object")
+        for k, v in colours.items():
+            if not isinstance(k, str) or not _KEY.fullmatch(k) or not isinstance(v, str) or not _COLOUR.fullmatch(v):
+                raise ValueError("colours are #rrggbb")
+        width = item.get("width")
+        if width is not None and (isinstance(width, bool) or not isinstance(width, int) or not 1 <= width <= 4):
+            raise ValueError("line thickness is 1 to 4")
+        indicators.append({"kind": item["kind"], "params": clean_params, "colors": dict(colours), "width": width,
+                           "hidden": bool(item.get("hidden", False))})
+    out["indicators"] = indicators
+    return out
