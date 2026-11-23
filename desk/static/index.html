@@ -682,6 +682,7 @@
         <p class="hint" id="sbt-desc"></p>
         <div class="row">
           <label>Expiry <select name="expiry_kind"><option value="weekly">Weekly (NIFTY, SENSEX)</option><option value="monthly">Monthly</option></select></label>
+          <label>Which expiry <select name="expiry_ahead"><option value="0">This week</option><option value="1">Next week</option><option value="2">2 weeks ahead</option><option value="3">3 weeks ahead</option></select></label>
           <label class="sbt-intraday">Candle <select name="interval"><option value="5m">5 minutes</option><option value="1m">1 minute</option><option value="2m">2 minutes</option><option value="3m">3 minutes</option><option value="4m">4 minutes</option><option value="15m">15 minutes</option><option value="30m">30 minutes</option></select></label>
           <label class="sbt-intraday">Entry time <input name="entry_time" value="09:20" pattern="\d{1,2}:\d{2}" required></label>
           <label class="sbt-intraday">Exit time <input name="exit_time" value="15:15" pattern="\d{1,2}:\d{2}" required></label>
@@ -731,11 +732,11 @@
           <button type="button" id="sbt-payoff">Payoff now</button>
         </div>
         <details class="advanced"><summary>Advanced: Payoff now on your own market levels</summary>
-        <p class="hint">Payoff now works out the legs above on today's market: strikes, premiums, profit and loss at expiry, breakevens, Greeks and margin. Leave a box empty to use the latest index price, India VIX × the volatility factor, and the next expiry.</p>
+        <p class="hint">Payoff now works out the legs above on today's market: strikes, premiums, profit and loss at expiry, breakevens, Greeks and margin. Leave a box empty to use the latest index price, India VIX × the volatility factor, and the expiry chosen above.</p>
         <div class="row">
           <label>Spot <input name="spot" type="number" min="0" step="0.05" placeholder="latest"></label>
           <label>IV % <input name="iv_pct" type="number" min="1" max="300" step="0.1" placeholder="India VIX"></label>
-          <label>Days to expiry <input name="days" type="number" min="0" max="400" step="0.25" placeholder="next expiry"></label>
+          <label>Days to expiry <input name="days" type="number" min="0" max="400" step="0.25" placeholder="chosen expiry"></label>
           <label class="sbt-far">Days to far expiry <input name="far_days" type="number" min="0" max="400" step="0.25" placeholder="the expiry after"></label>
         </div>
         </details>

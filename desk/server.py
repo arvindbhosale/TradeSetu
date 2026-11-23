@@ -2329,7 +2329,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             leg_exits=risk.from_payload(payload.get("leg_exits"), "Each leg",
                                         legacy={"stop_loss": _number(payload, "leg_sl_pct", 0)}),
             leg_scope=str(payload.get("leg_scope") or "sold"), legs=payload.get("legs") or None,
-            stop_rs=_number(payload, "stop_rs", 0), target_rs=_number(payload, "target_rs", 0))
+            stop_rs=_number(payload, "stop_rs", 0), target_rs=_number(payload, "target_rs", 0),
+            expiry_ahead=_number(payload, "expiry_ahead", 0))
         m = result["metrics"]
         notes = [f"Index candles from {source}.", _premium_note(result.get("pricing"), premiums, mode, underlying,
                                                               _number(payload, "iv_scale", 1.0))]
@@ -2435,7 +2436,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if underlying not in opt.SPOT:
             raise ValueError(f"underlying must be one of {', '.join(opt.SPOT)}")
         structure = str(payload.get("structure", ""))
-        own = payload.get("legs") or None
+        own, ahead = optstrat.expiry_shift(payload.get("legs") or None, _number(payload, "expiry_ahead", 0))
         specs = optstrat.legs_for(structure, int(_number(payload, "k", 2)), int(_number(payload, "w", 4)), own)
         sources = []
         spot = _number(payload, "spot", 0)
@@ -2461,10 +2462,10 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         far_days = payload.get("far_days")
         moment = pd.Timestamp(market.now_ist().replace(tzinfo=None))
         holidays = frozenset(market.HOLIDAYS)
-        near = optstrat.expiry_after(underlying, moment, expiry_kind, 0.0, holidays)
+        near = optstrat.expiry_ahead_of(underlying, moment, expiry_kind, 0.0, ahead, holidays)
         if days in (None, ""):
             days = max((near - moment).total_seconds() / 86400, 0.0)
-            sources.append(f"near expiry {near:%a %d %b}")
+            sources.append(f"{'near ' if any(x['series'] == 'far' for x in specs) else ''}expiry {near:%a %d %b}")
         if far_days in (None, "") and any(x["series"] == "far" for x in specs):
             base = moment + pd.Timedelta(days=float(_number(payload, "days", days)))
             far = optstrat.expiry_after(underlying, max(base, near) + pd.Timedelta(minutes=1), expiry_kind, 0.0, holidays)
