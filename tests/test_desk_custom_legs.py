@@ -144,5 +144,26 @@ def test_an_algo_trades_your_own_legs_and_keeps_them_on_edit(tmp_path):
     naked = engine.create({**CONDOR, "name": "Naked", "structure": "custom", "legs": legs[:1]})
     assert naked["naked"]
     from desk.fnoalgo import AlgoError
-    with pytest.raises(AlgoError, match="made from a backtest"):
+    with pytest.raises(AlgoError, match="needs its legs"):
         engine.create({**CONDOR, "name": "Nolegs", "structure": "custom"})
+
+
+def test_the_algo_form_builds_legs_and_sends_them_back_on_every_edit(tmp_path):
+    """The Algos tab's leg editor sends the legs on screen with every save: your own legs, a preset's changed strikes,
+    or null after Reset (back to the strategy's own legs). Sending the saved legs back unchanged is no change."""
+    engine, _, _ = setup(tmp_path, Clock("2026-11-17 09:30"))
+    legs = [{"side": "BUY", "type": "CE", "strikes": 0, "lots": 2, "expiry": "near"},
+            {"side": "SELL", "type": "CE", "strikes": 4, "lots": 2, "expiry": "near"}]
+    mine = engine.create({**CONDOR, "name": "Call spread", "structure": "custom", "legs": legs, "bias": "bull", "schedule": "signal", "strategy": "supertrend"})
+    assert mine["bias"] == "bull" and mine["schedule"] == "signal" and mine["legs"] == legs
+    again = engine.update(mine["id"], {**CONDOR, "structure": "custom", "legs": mine["legs"], "bias": "bull", "schedule": "signal", "strategy": "supertrend",
+                                       "max_loss": 4000})
+    assert again["legs"] == legs and again["bias"] == "bull" and again["max_loss"] == 4000
+    from desk.fnoalgo import AlgoError
+    with pytest.raises(AlgoError, match="Signal mode"):          # your own legs that lean neither way run on a schedule
+        engine.update(mine["id"], {**CONDOR, "structure": "custom", "legs": legs, "bias": None, "schedule": "signal", "strategy": "supertrend"})
+    preset = engine.create({**CONDOR, "name": "Wide condor", "structure": "iron_condor", "legs": CONDOR_LEGS[:2] + [
+        {"side": "SELL", "type": "PE", "strikes": -3, "lots": 1}, {"side": "BUY", "type": "PE", "strikes": -7, "lots": 1}]})
+    assert preset["structure_name"] == "Iron condor (your strikes)"
+    reset = engine.update(preset["id"], {**CONDOR, "structure": "iron_condor", "legs": None})
+    assert reset["legs"] is None and reset["structure_name"] == "Iron condor"
