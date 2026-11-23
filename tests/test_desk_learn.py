@@ -115,7 +115,7 @@ def test_api_preview_refuses_a_manual_buy_whose_stoploss_risks_too_much(client, 
     assert any("below the entry" in e for e in wrong["errors"])
     client.put("/api/settings", json={"require_stoploss": True})
     bare = client.post("/api/order/preview", json={"mode": "paper", "order": {**ticket, "quantity": 1}}).json()
-    assert any("stoploss on every buy" in e for e in bare["errors"])
+    assert any("stoploss on every new trade" in e for e in bare["errors"])
     sell = client.post("/api/order/preview", json={"mode": "paper", "order": {**ticket, "side": "SELL", "quantity": 1}}).json()
     assert not any("stoploss" in e for e in sell["errors"])        # an exit is never held up by the risk rules
 

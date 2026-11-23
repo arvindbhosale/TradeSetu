@@ -1,5 +1,6 @@
 // @ts-check
-// Trading from the chart: Buy and Sell with a stoploss and a target drawn as lines on the price chart.
+// Trading from the chart: Buy, Sell and (NSE/BSE, intraday) Short sell, with a stoploss and a target drawn as lines
+// on the price chart.
 // Drag the Stoploss, Target or Limit price line to set it before the order; drag a placed order's line to move
 // its stoploss or target, which asks for a confirmation first. Every order is reviewed before it is sent:
 // NSE/BSE orders take the desk's own order path (paper or live, the same risk limits, kill switch and trade window
@@ -7,7 +8,7 @@
 
 const POLL_MS = 10000;
 const HIT_PX = 7;
-const DEFAULT_STOP = 0.01;      // "Add on chart" puts the stoploss 1% under the price and the target 2% over it
+const DEFAULT_STOP = 0.01;      // "Add on chart" puts the stoploss 1% from the price and the target 2% (mirrored for a short)
 const DEFAULT_TARGET = 0.02;
 
 /** @param {string} tag @param {Record<string, any>} [attrs] @param {...any} kids @returns {HTMLElement} */
@@ -31,12 +32,19 @@ export function roundPrice(venue, price, decimals) {
   return Math.round(price * f) / f;
 }
 
-/** Profit (above zero) or loss (below) if a buy of ``quantity`` at ``entry`` sells at ``exit``, before charges.
- * @param {number} quantity @param {number} entry @param {number} exit */
-export function outcome(quantity, entry, exit) { return (exit - entry) * quantity; }
+/** Profit (above zero) or loss (below) if a position of ``quantity`` opened at ``entry`` closes at ``exit``, before
+ * charges. A short sale gains when the price falls.
+ * @param {number} quantity @param {number} entry @param {number} exit @param {boolean} [short] */
+export function outcome(quantity, entry, exit, short = false) { return (short ? entry - exit : exit - entry) * quantity; }
 
-/** Starting stoploss and target around a price. @param {number} price */
-export function defaultLevels(price) { return { stop: price * (1 - DEFAULT_STOP), target: price * (1 + DEFAULT_TARGET) }; }
+/** Starting stoploss and target around a price: under and over it for a buy, over and under it for a short sale.
+ * @param {number} price @param {boolean} [short] */
+export function defaultLevels(price, short = false) {
+  const s = short ? -1 : 1;
+  return { stop: price * (1 - s * DEFAULT_STOP), target: price * (1 + s * DEFAULT_TARGET) };
+}
+
+const KIND_TITLE = { long: "Buy", short: "Short sell", sell: "Sell", cover: "Buy back" };
 
 /** The price line nearest a y coordinate, if within reach. @param {{y: number|null}[]} lines @param {number} y */
 export function nearest(lines, y) {
@@ -63,9 +71,9 @@ export function mountTrade(root, deps) {
   const priceIn = /** @type {HTMLInputElement} */ (h("input", { type: "number", min: "0", step: "any", inputmode: "decimal", name: "cd-t-price", "aria-label": "Limit price" }));
   const stopIn = /** @type {HTMLInputElement} */ (h("input", { type: "number", min: "0", step: "any", inputmode: "decimal", name: "cd-t-stop", "aria-label": "Stoploss" }));
   const targetIn = /** @type {HTMLInputElement} */ (h("input", { type: "number", min: "0", step: "any", inputmode: "decimal", name: "cd-t-target", "aria-label": "Target" }));
-  const sideSeg = h("div", { class: "seg cd-side", role: "group", "aria-label": "Buy or sell" });
+  const sideSeg = h("div", { class: "seg cd-side", role: "group", "aria-label": "Buy, sell or short sell" });
   const typeSeg = h("div", { class: "seg", role: "group", "aria-label": "Order type" });
-  const productSeg = h("div", { class: "seg", role: "group", "aria-label": "Intraday or delivery" });
+  const productSeg = h("div", { class: "seg", role: "group", "aria-label": "Intraday or positional" });
   const priceLabel = h("label", {}, "Limit price", priceIn);
   const stopLabel = h("label", {}, "Stoploss", stopIn);
   const targetLabel = h("label", {}, "Target", targetIn);
@@ -82,7 +90,7 @@ export function mountTrade(root, deps) {
   root.replaceChildren(
     h("div", { class: "cd-paper-headline" }, h("strong", { text: "Trade from the chart" }), modePill),
     off, form, summary, msg, list, dialog,
-    h("p", { class: "hint cd-t-help", text: "Drag the Stoploss, Target or Limit price line on the chart to set it. Drag a placed order's line to move its stoploss or target; you are asked to confirm first." }));
+    h("p", { class: "hint cd-t-help", text: "Drag the Stoploss, Target or Limit price line on the chart to set it. Drag a placed order's line to move its stoploss or target; you are asked to confirm first. Short sell is intraday only: it sells first and is bought back the same day." }));
 
   const venue = () => deps.venue();
   const india = () => venue() === "india";
@@ -92,6 +100,8 @@ export function mountTrade(root, deps) {
   const entry = () => (st.type === "LIMIT" && num(priceIn)) || deps.lastPrice();
   const unit = () => (india() ? "" : " USDT");
   const signedMoney = (/** @type {number} */ v) => `${v >= 0 ? "+" : "−"}${fmt(Math.abs(v))}${unit()}`;
+  const shorting = () => india() && st.side === "SHORT";
+  const withLevels = () => st.side === "BUY" || shorting();
 
   function seg(host, options, current, pick) {
     host.replaceChildren(...Object.entries(options).map(([k, label]) => h("button", { type: "button", "aria-pressed": String(k === current), text: label, onclick: () => pick(k) })));
@@ -107,32 +117,46 @@ export function mountTrade(root, deps) {
     const live = india() && deps.mode() === "live";
     modePill.textContent = !canTrade ? "" : india() ? (live ? "LIVE · real money" : "Paper · practice money") : "Paper · practice money (crypto is paper only)";
     modePill.className = "pill " + (live ? "bad" : "");
-    seg(sideSeg, { BUY: "Buy", SELL: "Sell" }, st.side, (k) => { st.side = k; if (k === "SELL") { st.stop = st.target = null; stopIn.value = targetIn.value = ""; } render(); drawLines(); });
+    if (!india() && st.side === "SHORT") st.side = "SELL";
+    seg(sideSeg, india() ? { BUY: "Buy", SELL: "Sell", SHORT: "Short sell" } : { BUY: "Buy", SELL: "Sell" }, st.side, (k) => {
+      const flipped = (k === "SHORT") !== (st.side === "SHORT");
+      st.side = k;
+      if (k === "SELL" || flipped) { st.stop = st.target = null; stopIn.value = targetIn.value = ""; }
+      if (k === "SHORT") st.product = "MIS";
+      render(); drawLines();
+    });
     seg(typeSeg, { MARKET: "Market", LIMIT: "Limit" }, st.type, (k) => {
       st.type = k;
       if (k === "LIMIT" && !priceIn.value && deps.lastPrice()) priceIn.value = String(round(/** @type {number} */ (deps.lastPrice())));
       render(); drawLines();
     });
-    seg(productSeg, { MIS: "Intraday", CNC: "Delivery" }, st.product, (k) => { st.product = k; render(); });
+    seg(productSeg, { MIS: "Intraday", CNC: "Positional" }, st.product, (k) => {
+      if (k === "CNC" && shorting()) { show("Shares can be sold short only intraday: Indian exchanges allow no positional (delivery) short.", true); return; }
+      st.product = k; render();
+    });
+    const positional = /** @type {HTMLButtonElement|null} */ (productSeg.querySelector("button:last-child"));
+    if (positional) { positional.disabled = shorting(); positional.title = shorting() ? "A short sale of shares is intraday only" : "Delivery (CNC): hold for days"; }
     productSeg.hidden = !india();
-    sideSeg.dataset.side = st.side;
+    sideSeg.dataset.side = st.side === "BUY" ? "BUY" : "SELL";
     priceLabel.hidden = st.type !== "LIMIT";
-    const buy = st.side === "BUY";
-    stopLabel.hidden = targetLabel.hidden = levelsBtn.hidden = !buy;
+    const buy = st.side === "BUY", short = shorting();
+    stopLabel.hidden = targetLabel.hidden = levelsBtn.hidden = !withLevels();
     levelsBtn.textContent = st.stop || st.target ? "Remove lines" : "Add stoploss and target on chart";
     const name = india() ? deps.symbol().replace(/^(NSE|BSE):/, "") : deps.symbol().replace(/USDT$/, "");
-    submit.textContent = `Review ${buy ? "buy" : "sell"}`;
+    submit.textContent = `Review ${buy ? "buy" : short ? "short sale" : "sell"}`;
     submit.className = "primary " + (buy ? "cd-buy" : "cd-sell");
     qtyIn.placeholder = india() ? "Shares" : `${name} amount`;
     qtyIn.step = india() ? "1" : "any";
     const q = num(qtyIn), p = entry();
     const parts = [];
-    if (q && p) parts.push(`${buy ? "Buy" : "Sell"} ${q} ${name} ≈ ${fmt(q * p)}${unit()}`);
-    if (q && p && st.stop) parts.push(`Stoploss ${fmt(st.stop)}: ${signedMoney(outcome(q, p, st.stop))}`);
-    if (q && p && st.target) parts.push(`Target ${fmt(st.target)}: ${signedMoney(outcome(q, p, st.target))}`);
-    if (q && p && st.stop && st.target && p > st.stop) parts.push(`Reward to risk ${((st.target - p) / (p - st.stop)).toFixed(2)}`);
-    if (india() && !buy) parts.push("A sell from the chart sells shares you hold.");
-    summary.textContent = parts.join(" · ") + (parts.length && buy && (st.stop || st.target) ? " (before charges)" : "");
+    if (q && p) parts.push(`${buy ? "Buy" : short ? "Short sell" : "Sell"} ${q} ${name} ≈ ${fmt(q * p)}${unit()}`);
+    if (q && p && st.stop) parts.push(`Stoploss ${fmt(st.stop)}: ${signedMoney(outcome(q, p, st.stop, short))}`);
+    if (q && p && st.target) parts.push(`Target ${fmt(st.target)}: ${signedMoney(outcome(q, p, st.target, short))}`);
+    if (q && p && st.stop && st.target && (short ? st.stop > p : p > st.stop)) parts.push(`Reward to risk ${(Math.abs(st.target - p) / Math.abs(p - st.stop)).toFixed(2)}`);
+    if (india() && st.side === "SELL") parts.push("Sell sells shares you hold. To sell first and buy back later today, use Short sell.");
+    if (short) parts.push("Intraday only: buy it back before the close (a Buy, intraday, buys it back).");
+    if (india() && buy && st.product === "MIS") parts.push("If you are short this share intraday, Buy buys it back.");
+    summary.textContent = parts.join(" · ") + (parts.length && withLevels() && (st.stop || st.target) ? " (before charges)" : "");
   }
 
   function toggleLevels() {
@@ -140,7 +164,7 @@ export function mountTrade(root, deps) {
     else {
       const p = entry();
       if (!p) { show("No price yet to place the lines at.", true); return; }
-      const d = defaultLevels(p);
+      const d = defaultLevels(p, shorting());
       st.stop = round(d.stop); st.target = round(d.target);
       stopIn.value = String(st.stop); targetIn.value = String(st.target);
     }
@@ -200,18 +224,21 @@ export function mountTrade(root, deps) {
   }
 
   async function reviewIndia(q) {
-    const body = { mode: deps.mode(), symbol: deps.symbol(), side: st.side, quantity: q, product: st.product, order_type: st.type,
-      price: st.type === "LIMIT" ? num(priceIn) : 0, stop: st.side === "BUY" ? st.stop : null, target: st.side === "BUY" ? st.target : null };
+    const short = shorting();
+    const body = { mode: deps.mode(), symbol: deps.symbol(), side: short ? "SELL" : st.side, short, quantity: q,
+      product: short ? "MIS" : st.product, order_type: st.type, price: st.type === "LIMIT" ? num(priceIn) : 0,
+      stop: withLevels() ? st.stop : null, target: withLevels() ? st.target : null };
     let r;
     submit.disabled = true;
     try { r = await api("/chart-orders/preview", { method: "POST", body }); }
     catch (err) { const reasons = err.payload && err.payload.errors; show(reasons ? reasons.join(" ") : err.message, true); submit.disabled = false; return; }
     submit.disabled = false;
     const o = r.order, live = r.mode === "live", pct = (v) => `${v}%`;
+    const what = KIND_TITLE[r.kind] || (o.side === "BUY" ? "Buy" : "Sell");
     const lines = [h("dl", { class: "kv" },
-      row("Order", `${o.side === "BUY" ? "Buy" : "Sell"} ${o.quantity} ${o.tradingsymbol} (${o.exchange})`),
+      row("Order", `${what} ${o.quantity} ${o.tradingsymbol} (${o.exchange})${r.kind === "cover" ? ": buys back your intraday short" : ""}`),
       row("Price", o.order_type === "MARKET" ? "Market (fills at the price available)" : `Limit ${fmt(o.price)}`),
-      row("Product", o.product === "MIS" ? "Intraday (MIS)" : "Delivery (CNC)"),
+      row("Product", o.product === "MIS" ? "Intraday (MIS)" : "Positional, delivery (CNC)"),
       row("Last price", r.last_price ? `${fmt(r.last_price)} (${r.last_price_source})` : r.last_price_source),
       row("Order value", fmt(r.value)),
       r.margin ? row("Margin needed", `${fmt(r.margin.amount)}${r.margin.source === "Zerodha" ? " (Zerodha)" : " (estimate)"}`) : null,
@@ -221,13 +248,13 @@ export function mountTrade(root, deps) {
     r.protection ? h("p", { class: "hint", text: r.protection }) : null,
     r.margin && r.margin.note ? h("p", { class: "hint", text: r.margin.note }) : null,
     ...notes(r.warnings, r.ok ? [] : r.errors)];
-    ask(`${live ? "LIVE order (real money)" : "Paper order"}: ${o.side === "BUY" ? "Buy" : "Sell"} ${o.quantity} ${o.tradingsymbol}`, lines,
+    ask(`${live ? "LIVE order (real money)" : "Paper order"}: ${what} ${o.quantity} ${o.tradingsymbol}`, lines,
       r.ok ? { label: live ? "Place LIVE order" : "Place paper order", cls: live ? "danger" : "primary", phrase: live ? r.phrase : undefined,
         run: async () => {
           const placed = await api("/chart-orders/place", { method: "POST", body: { token: r.token, phrase: r.phrase } });
           const p = placed.placed;
           show(live ? `Sent to Kite: order ${p.order_id || "(no id)"}. Sent is not filled; ${placed.chart_order ? "the stoploss and target follow the fill." : "check Today's orders."}`
-            : `Paper order filled at ${fmt(p.fill_price)}.${placed.chart_order ? " " + (placed.chart_order.state === "protected" ? "Stoploss and target are placed." : (placed.chart_order.log || []).slice(-1)[0] || "") : ""}`,
+            : `Paper ${what.toLowerCase()} filled at ${fmt(p.fill_price)}.${placed.chart_order ? " " + (placed.chart_order.state === "protected" ? (placed.chart_order.protection && placed.chart_order.protection.kind === "watch" ? "The desk watches the stoploss and target." : "Stoploss and target are placed.") : (placed.chart_order.log || []).slice(-1)[0] || "") : ""}`,
           !!(placed.chart_order && placed.chart_order.state === "unprotected"));
           clearDraft(); refresh();
         } } : null);
@@ -265,14 +292,14 @@ export function mountTrade(root, deps) {
   function placed() {
     if (india()) {
       return st.items.filter((i) => ["waiting", "protected", "unprotected"].includes(i.state)).map((i) => ({
-        id: i.id, quantity: i.quantity, entry: i.entry_price, stop: i.stop, target: i.target, mode: i.mode,
-        label: `${i.mode === "live" ? "LIVE" : "Paper"} ${i.product === "MIS" ? "intraday" : "delivery"} buy of ${i.quantity}`,
-        state: { waiting: "Waiting for the buy to fill", protected: "Stoploss and target placed", unprotected: "NOT protected" }[i.state],
+        id: i.id, quantity: i.quantity, entry: i.entry_price, stop: i.stop, target: i.target, mode: i.mode, short: i.side === "short",
+        label: `${i.mode === "live" ? "LIVE" : "Paper"} ${i.product === "MIS" ? "intraday" : "positional"} ${i.side === "short" ? "short sale" : "buy"} of ${i.quantity}`,
+        state: { waiting: `Waiting for the ${i.side === "short" ? "sale" : "buy"} to fill`, protected: i.protection && i.protection.kind === "watch" ? "Stoploss and target watched by the desk" : "Stoploss and target placed", unprotected: "NOT protected" }[i.state],
         bad: i.state === "unprotected", note: (i.log || []).slice(-1)[0] || "" }));
     }
     const sym = deps.symbol();
     return ((st.book && st.book.brackets) || []).filter((b) => b.symbol === sym).map((b) => ({
-      id: b.id, quantity: b.quantity, entry: b.entry, stop: b.stop, target: b.target, mode: "paper",
+      id: b.id, quantity: b.quantity, entry: b.entry, stop: b.stop, target: b.target, mode: "paper", short: false,
       label: `Paper ${b.quantity} ${sym.replace(/USDT$/, "")}`, state: "Stoploss and target set", bad: false, note: "" }));
   }
 
@@ -286,13 +313,14 @@ export function mountTrade(root, deps) {
           h("span", { class: r.bad ? "down" : "hint", text: r.state })),
         r.note ? h("span", { class: "hint cd-t-note", text: r.note }) : null,
         h("button", { type: "button", class: "cd-cancel", text: "Remove", onclick: () => removePlaced(r) }))),
-      ...done.map((i) => h("div", { class: "cd-t-row done" }, h("span", { class: "hint", text: `${i.mode === "live" ? "LIVE" : "Paper"} buy of ${i.quantity}: ${i.closed || i.state}` }))));
+      ...done.map((i) => h("div", { class: "cd-t-row done" }, h("span", { class: "hint", text: `${i.mode === "live" ? "LIVE" : "Paper"} ${i.side === "short" ? "short sale" : "buy"} of ${i.quantity}: ${i.closed || i.state}` }))));
   }
 
   function removePlaced(r) {
     ask(`Remove the stoploss and target?`, [h("p", { text: india() && r.state.startsWith("Waiting")
-      ? "The buy has not filled: this cancels the buy order too."
-      : `The ${r.quantity} you hold stay; nothing will sell them at the stoploss or target any more.` })],
+      ? `The ${r.short ? "short sale" : "buy"} has not filled: this cancels that order too.`
+      : r.short ? `Your short of ${r.quantity} stays open; nothing will buy it back at the stoploss or target any more.`
+        : `The ${r.quantity} you hold stay; nothing will sell them at the stoploss or target any more.` })],
     { label: r.mode === "live" ? "Remove from Kite" : "Remove", cls: "danger", run: async () => {
       if (india()) await api(`/chart-orders/${r.id}`, { method: "DELETE" });
       else { const book = await api(`/cpaper/bracket/${r.id}`, { method: "DELETE" }); bookChanged(book); deps.onBook(book); }
@@ -311,7 +339,7 @@ export function mountTrade(root, deps) {
     const name = key === "stop" ? "stoploss" : "target";
     const was = r[key];
     const body = [h("dl", { class: "kv" }, row("From", was ? fmt(was) : "none"), row("To", fmt(price), key === "stop" ? "down" : "up"),
-      r.entry ? row("If it hits", signedMoney(outcome(r.quantity, r.entry, price)) + " before charges", key === "stop" ? "down" : "up") : null),
+      r.entry ? row("If it hits", signedMoney(outcome(r.quantity, r.entry, price, r.short)) + " before charges", key === "stop" ? "down" : "up") : null),
     r.mode === "live" ? h("p", { class: "warnbox", text: "This changes your LIVE order at Zerodha." }) : null];
     if (india()) {
       // Ask the desk first so a refused change shows its reasons before anything is confirmed.
@@ -336,9 +364,9 @@ export function mountTrade(root, deps) {
     st.lines = [];
   }
 
-  function title(kind, price, quantity, from, tag) {
+  function title(kind, price, quantity, from, tag, short) {
     const base = { stop: "Stoploss", target: "Target", price: "Limit price" }[kind] + (tag ? ` ${tag}` : "");
-    return kind !== "price" && quantity && from ? `${base} ${signedMoney(outcome(quantity, from, price))}` : base;
+    return kind !== "price" && quantity && from ? `${base} ${signedMoney(outcome(quantity, from, price, short))}` : base;
   }
 
   /** Keep every line inside the price scale: the chart's autoscale looks at the candles only, so a stoploss or
@@ -362,22 +390,22 @@ export function mountTrade(root, deps) {
     const c = deps.chart();
     if (!c || !st.visible) { st.levels = []; return; }
     keepInView(c);
-    const add = (kind, price, owner, tag, quantity, from) => {
+    const add = (kind, price, owner, tag, quantity, from, short) => {
       const color = kind === "stop" ? css("--bad") : kind === "target" ? css("--good") : css("--accent");
       const line = c.price.createPriceLine({ price, color, lineWidth: 2, lineStyle: owner ? 0 : 2,   // solid for a placed order, dashed while still a plan
-        axisLabelVisible: true, title: title(kind, price, quantity, from, tag) });
-      st.lines.push({ line, kind, owner, price, tag, quantity, from });
+        axisLabelVisible: true, title: title(kind, price, quantity, from, tag, short) });
+      st.lines.push({ line, kind, owner, price, tag, quantity, from, short });
     };
-    const q = num(qtyIn) || 0, e = entry() || 0;
-    if (st.side === "BUY") {
-      if (st.stop) add("stop", st.stop, null, "", q, e);
-      if (st.target) add("target", st.target, null, "", q, e);
+    const q = num(qtyIn) || 0, e = entry() || 0, draftShort = shorting();
+    if (withLevels()) {
+      if (st.stop) add("stop", st.stop, null, "", q, e, draftShort);
+      if (st.target) add("target", st.target, null, "", q, e, draftShort);
     }
     if (st.type === "LIMIT" && num(priceIn) && (st.stop || st.target)) add("price", /** @type {number} */ (num(priceIn)), null, "", 0, 0);
     placed().forEach((r) => {
-      const tag = r.mode === "live" ? "(live)" : "(paper)";
-      if (r.stop) add("stop", r.stop, r, tag, r.quantity, r.entry);
-      if (r.target) add("target", r.target, r, tag, r.quantity, r.entry);
+      const tag = (r.short ? "short " : "") + (r.mode === "live" ? "(live)" : "(paper)");
+      if (r.stop) add("stop", r.stop, r, tag, r.quantity, r.entry, r.short);
+      if (r.target) add("target", r.target, r, tag, r.quantity, r.entry, r.short);
     });
     st.levels = st.lines.map((l) => l.price);
   }
@@ -417,7 +445,7 @@ export function mountTrade(root, deps) {
       const p = chart.price.coordinateToPrice(yOf(e));
       if (!l || p == null || !(p > 0)) return;
       l.price = round(p);
-      l.line.applyOptions({ price: l.price, title: title(l.kind, l.price, l.owner ? l.quantity : num(qtyIn) || 0, l.owner ? l.from : entry() || 0, l.tag) });
+      l.line.applyOptions({ price: l.price, title: title(l.kind, l.price, l.owner ? l.quantity : num(qtyIn) || 0, l.owner ? l.from : entry() || 0, l.tag, l.short) });
       if (!l.owner) {
         if (l.kind === "stop") { st.stop = l.price; stopIn.value = String(l.price); }
         else if (l.kind === "target") { st.target = l.price; targetIn.value = String(l.price); }
@@ -468,16 +496,18 @@ export function mountTrade(root, deps) {
     modeChanged() { render(); },
     /** Whether a press at this height on the price chart is on one of the order lines (they take the press). @param {number} y */
     claims(y) { return st.visible && st.lines.length > 0 && hit(y) >= 0; },
-    /** Fill the ticket from a Long position drawing: entry as the limit price, its stoploss, target and quantity.
+    /** Fill the ticket from a Long or Short position drawing: entry as the limit price, its stoploss, target and
+     * quantity. A Short drawing becomes an intraday short sale (NSE/BSE only).
      * @param {{ side: string, entry: number, stoploss: number, target: number, quantity: number }} plan */
     fill(plan) {
-      if (plan.side !== "BUY") { show("A short position cannot be placed from the chart: Sell only sells what you hold.", true); root.scrollIntoView({ block: "nearest" }); return; }
-      st.side = "BUY"; st.type = "LIMIT";
+      if (plan.side !== "BUY" && !india()) { show("Crypto paper trading has no short selling.", true); root.scrollIntoView({ block: "nearest" }); return; }
+      st.side = plan.side === "BUY" ? "BUY" : "SHORT"; st.type = "LIMIT";
+      if (st.side === "SHORT") st.product = "MIS";
       priceIn.value = String(round(plan.entry));
       qtyIn.value = String(india() ? Math.max(1, Math.floor(plan.quantity)) : plan.quantity);
       st.stop = round(plan.stoploss); st.target = round(plan.target);
       stopIn.value = String(st.stop); targetIn.value = String(st.target);
-      show("Filled from the position drawing. Check it, then press Review buy.", false);
+      show(`Filled from the position drawing. Check it, then press Review ${st.side === "BUY" ? "buy" : "short sale"}.`, false);
       render(); drawLines(); root.scrollIntoView({ block: "nearest", behavior: "smooth" });
     },
     bookChanged,

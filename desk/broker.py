@@ -41,6 +41,7 @@ def explain_kite_refusal(message: str) -> str:
     if "429" in low or "too many requests" in low:
         return f"{text}. Kite allows at most 10 API orders a second; the order was not placed. Try again."
     return text
+MIS_MARGIN_PCT = 20.0     # a paper intraday short sale needs about this much of its value in cash, as Zerodha asks
 FUT_MARGIN_PCT = 12.0     # a futures order is held to the per-order limit by about its margin, not its contract value
 DERIVATIVES = ("NFO", "BFO", "MCX")
 
@@ -84,8 +85,9 @@ class Order:
     price: float = 0.0
     trigger_price: float = 0.0
     variety: str = "regular"  # regular / amo
-    # F&O only: "open" starts or adds to a position, "close" reduces one. Empty: a BUY opens and a SELL closes,
-    # as for shares. A SELL that opens (writing an option, shorting a future) is taken only from an F&O algo.
+    # "open" starts or adds to a position, "close" reduces one. Empty: a BUY opens and a SELL closes. For F&O a SELL
+    # that opens (writing an option, shorting a future) is taken only from an F&O algo. For shares only an intraday
+    # (MIS) short sale ("open" SELL) and the buy that covers it ("close" BUY) carry an intent.
     intent: str = ""
 
     @classmethod
@@ -134,8 +136,9 @@ class Order:
         intent = str(raw.get("intent", "") or "").strip().lower()
         if intent not in ("", "open", "close"):
             problems.append("intent must be open or close")
-        elif intent and not derivative:
-            problems.append("intent is for F&O orders only")
+        elif intent and not derivative and not (product == "MIS" and (intent, side) in (("open", "SELL"), ("close", "BUY"))):
+            problems.append("Shares can be sold short only intraday (MIS): a short sale is an opening SELL and its "
+                            "cover a closing BUY, both MIS. Delivery (CNC) shares cannot be sold short.")
         if exchange == mcx.EXCHANGE and symbol and mcx.name_of(symbol) is None:
             problems.append(f"{symbol} is not an MCX gold or silver contract; the desk trades only "
                             f"{', '.join(mcx.METALS)} on MCX")
@@ -149,6 +152,11 @@ class Order:
     def opens(self) -> bool:
         """Whether the order adds risk: a buy of shares, or an F&O order that opens a position."""
         return self.intent == "open" or (not self.intent and self.side == "BUY")
+
+    @property
+    def short_sale(self) -> bool:
+        """An intraday short sale of shares (not F&O)."""
+        return self.intent == "open" and self.side == "SELL" and self.exchange not in DERIVATIVES
 
     @property
     def future(self) -> bool:
@@ -169,7 +177,7 @@ class Order:
     @property
     def phrase(self) -> str:
         """What the user types to confirm exactly this order."""
-        return f"{self.side} {self.quantity} {self.tradingsymbol}"
+        return f"{'SHORT SELL' if self.short_sale else self.side} {self.quantity} {self.tradingsymbol}"
 
     def kite_args(self) -> dict:
         args = {
@@ -390,6 +398,11 @@ class PaperBook:
             fees = order_charges(order.side, order.quantity, price, order.product, order.exchange)
             positions = self._state["positions"]
             held = positions.get(order.instrument, {"quantity": 0, "average_price": 0.0})
+            if order.intent:
+                return self._fill_short(order, price, fees, held)
+            if order.side == "BUY" and held["quantity"] < 0:
+                raise OrderRejected([f"The paper book is short {-held['quantity']} {order.tradingsymbol}: buy to cover "
+                                     f"it intraday (MIS) first."])
             if order.side == "BUY":
                 cost = fees.turnover + fees.total
                 if cost > self._state["cash"] + 1e-6:
@@ -416,6 +429,47 @@ class PaperBook:
             self._state["orders"].append(record)
             self._save()
             return record
+
+    def _fill_short(self, order: Order, price: float, fees, held: dict) -> dict:
+        """An intraday short sale of shares, or the buy that covers it. The position is held below zero; the sale
+        adds its proceeds to cash and the cover pays for the buy back, so cash plus the position at the last price
+        is the account's value either way."""
+        positions = self._state["positions"]
+        before = int(held["quantity"])
+        if order.intent == "open":
+            if before > 0:
+                raise OrderRejected([f"The paper book holds {before} {order.tradingsymbol}; sell those before selling short."])
+            margin = fees.turnover * MIS_MARGIN_PCT / 100
+            if margin + fees.total > self._state["cash"] + 1e-6:
+                raise OrderRejected([f"paper cash ₹{self._state['cash']:,.2f} does not cover the intraday margin of "
+                                     f"about ₹{margin + fees.total:,.2f} for this short sale"])
+            after = before - order.quantity
+            average = (abs(before) * float(held["average_price"]) + order.quantity * price) / abs(after)
+            self._state["cash"] += fees.turnover - fees.total
+            positions[order.instrument] = {"quantity": after, "average_price": average, "short": True,
+                                           "opened": held.get("opened") or market.now_ist().strftime("%Y-%m-%d")}
+        else:
+            if order.quantity > -before:
+                raise OrderRejected([f"The paper book is short {max(-before, 0)} {order.tradingsymbol}; "
+                                     f"it cannot buy back {order.quantity}."])
+            cost = fees.turnover + fees.total
+            self._state["cash"] -= cost
+            if before + order.quantity:
+                positions[order.instrument] = {**held, "quantity": before + order.quantity}
+            else:
+                positions.pop(order.instrument, None)
+        record = {"order_id": f"PAPER{len(self._state['orders']) + 1:06d}",
+                  "time_ist": market.now_ist().strftime("%Y-%m-%d %H:%M:%S"),
+                  **asdict(order), "fill_price": round(price, 2), "charges": fees.as_dict(), "status": "COMPLETE"}
+        self._state["orders"].append(record)
+        self._save()
+        return record
+
+    def short_positions(self) -> dict[str, dict]:
+        """The paper book's intraday short sales of shares, by instrument."""
+        with self._lock:
+            return {k: dict(v) for k, v in self._state["positions"].items()
+                    if int(v.get("quantity", 0)) < 0 and k.split(":", 1)[0] not in DERIVATIVES}
 
     def _fill_derivative(self, order: Order, price: float) -> dict:
         """An F&O fill. Positions are signed (below zero is short). An option's premium moves cash both ways; a
@@ -562,7 +616,9 @@ class Desk:
         errors, warnings = [], []
 
         if cfg["kill_switch"] and order.opens:
-            errors.append("The kill switch is on: no new buys. Turn it off in Settings. Sells are still allowed."
+            errors.append("The kill switch is on: no new short sales. Turn it off in Settings. Buying back a short "
+                          "still goes through." if order.short_sale else
+                          "The kill switch is on: no new buys. Turn it off in Settings. Sells are still allowed."
                           if not order.intent else
                           "The kill switch is on: no new F&O positions. Orders that close a position still go through.")
         commodity = order.commodity
@@ -573,7 +629,7 @@ class Desk:
             errors.append(f"MCX is closed ({session['note']}). Paper MCX orders fill only in the MCX session.")
         elif cfg["enforce_trade_window"]:
             if order.opens and not window["entries"]:
-                errors.append(f"New {'buys' if not order.intent else 'positions'} are taken only between "
+                errors.append(f"New {'short sales' if order.short_sale else 'buys' if not order.intent else 'positions'} are taken only between "
                               f"{window['trade_start']} and {window['trade_end']} IST "
                               f"on {'MCX ' if commodity else ''}trading days (your "
                               f"{'MCX ' if commodity else ''}trade window in Settings). It is {window['time']} IST.")
@@ -658,6 +714,11 @@ class Desk:
                 elif order.side == "BUY" and order.quantity > -held:
                     errors.append(f"You are short {max(-held, 0)} of {order.tradingsymbol}; a closing buy of "
                                   f"{order.quantity} would open a long.")
+        if not derivative and order.intent:
+            self._check_short(order, mode, manual, value, errors)
+        elif not derivative and order.side == "BUY" and mode == "paper" and self.paper.quantity(order.instrument) < 0:
+            errors.append(f"The paper book is short {-self.paper.quantity(order.instrument)} {order.tradingsymbol}. "
+                          f"Buy to cover it intraday (MIS) first.")
         if order.order_type == "LIMIT" and ltp:
             away = (order.price - ltp) / ltp * 100
             if order.side == "BUY" and away > band:
@@ -688,7 +749,8 @@ class Desk:
                               f"would not fill now. The paper book keeps no pending orders.")
             else:
                 fill_price = ltp
-            if order.side == "SELL" and not derivative and order.quantity > self.paper.quantity(order.instrument):
+            if order.side == "SELL" and not derivative and not order.intent \
+                    and order.quantity > self.paper.quantity(order.instrument):
                 errors.append(f"The paper book holds {self.paper.quantity(order.instrument)} "
                               f"{order.tradingsymbol}; it cannot sell {order.quantity}.")
             warnings.append("Paper orders fill at once, in full, at the last price. "
@@ -743,13 +805,43 @@ class Desk:
             result["token"], result["expires_in"] = token, TOKEN_SECONDS
         return result
 
+    def _check_short(self, order: Order, mode: str, manual: bool, value: float, errors: list) -> None:
+        """An intraday short sale of shares, or its cover: only by hand, never against a long, never more back than
+        is short. The kill switch, trade window and size limits count a short sale as a new position (it opens)."""
+        held = self.paper.quantity(order.instrument) if mode == "paper" else self.live_intraday_position(order)
+        if held is None:
+            errors.append("Could not read your intraday positions from Kite to check this order.")
+        elif order.short_sale:
+            if not manual:
+                errors.append("Shares are sold short only by an order you confirm, never by an algo.")
+            if held > 0:
+                errors.append(f"You hold {held} {order.tradingsymbol}{' intraday' if mode == 'live' else ''}. "
+                              f"Sell those first; a short sale starts from no position.")
+            if mode == "paper" and value and value * MIS_MARGIN_PCT / 100 > self.paper.cash:
+                errors.append(f"Paper cash ₹{self.paper.cash:,.0f} does not cover the intraday margin of about "
+                              f"₹{value * MIS_MARGIN_PCT / 100:,.0f} ({MIS_MARGIN_PCT:g}% of the order value).")
+        elif order.quantity > -held:
+            errors.append(f"You are short {max(-held, 0)} {order.tradingsymbol}; buying back {order.quantity} "
+                          f"would {'buy more than you sold' if held < 0 else 'not cover anything'}.")
+
+    def live_intraday_position(self, order: Order) -> int | None:
+        """Net intraday (MIS) quantity of a share at the broker, below zero when short, or None if unknown."""
+        try:
+            return sum(int(row.get("quantity") or 0) for row in self.kite.positions()
+                       if str(row.get("tradingsymbol", "")).upper() == order.tradingsymbol
+                       and str(row.get("exchange", "")).upper() == order.exchange
+                       and str(row.get("product", "")).upper() == "MIS")
+        except (KiteError, ValueError, TypeError):
+            return None
+
     def _risk_check(self, order: Order, entry: float | None, stop, cfg: dict, errors: list) -> dict | None:
         """The loss if a manual order's planned stoploss is hit, against the risk limit per trade."""
         capital = cfg["risk_capital"] or cfg["paper_capital"]
         if stop in (None, "", 0):
             if cfg["require_stoploss"] and order.exchange not in DERIVATIVES:
-                errors.append("Your Settings ask for a stoploss on every buy. Enter the stoploss price on the ticket "
-                              "(Work out quantity sizes the buy from it).")
+                errors.append("Your Settings ask for a stoploss on every new trade. Enter the stoploss price on the "
+                              "ticket" + (" (above the price for a short sale)." if order.short_sale else
+                                          " (Work out quantity sizes the buy from it)."))
             return None
         if isinstance(stop, bool) or not isinstance(stop, (int, float)) or not math.isfinite(stop) or stop <= 0:
             errors.append("The stoploss must be a price above zero.")
@@ -1047,7 +1139,7 @@ class Desk:
                 record = self.paper.fill(order, pending["fill_price"])
                 entry.update(ok=True, order_id=record["order_id"], fill_price=record["fill_price"])
                 self.ledger.add("paper", source, order.exchange, order.tradingsymbol, order.side, order.quantity,
-                                record["fill_price"], order.product, record["charges"]["total"])
+                                record["fill_price"], order.product, record["charges"]["total"], short=order.short_sale)
             else:
                 self._pace()
                 try:
@@ -1105,7 +1197,9 @@ class Desk:
                 continue
             quantity, price = int(trade.get("quantity") or 0), float(trade.get("average_price") or 0)
             if self.ledger.add("live", order.get("source", "manual"), order["exchange"], order["tradingsymbol"],
-                               order["side"], quantity, price, order.get("product", "CNC"), trade_id=str(trade["trade_id"])):
+                               order["side"], quantity, price, order.get("product", "CNC"), trade_id=str(trade["trade_id"]),
+                               short=order.get("intent") == "open" and order["side"] == "SELL"
+                               and order["exchange"] not in DERIVATIVES):
                 added += 1
                 self.notifier.notify(f"LIVE {order['side']} {quantity} {order['tradingsymbol']} filled",
                                      f"at ₹{price:,.2f} · {order.get('source', 'manual')}", "good")

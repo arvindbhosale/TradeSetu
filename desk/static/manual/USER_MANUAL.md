@@ -696,12 +696,12 @@ Tap a drawing to pick it: drag a round handle to move that point, or drag the dr
 
 Each fill pays a 0.1% fee and the smallest order is 1 USDT. **Advanced: fees, reset** has **Reset paper account**: set a starting balance (default 10,000 USDT) and press twice. It deletes all paper orders, positions and history.
 
-### Trade from the chart: Buy, Sell, Stoploss and Target
+### Trade from the chart: Buy, Sell, Short sell, Stoploss and Target
 
 Under the live chart, **Trade from the chart** places orders for the share or coin on screen. NSE/BSE shares follow the **Paper / Live** switch at the top of the desk; crypto is always paper.
 
-1. Pick **Buy** or **Sell**, **Market** or **Limit**, and for shares **Intraday** (MIS) or **Delivery** (CNC). Enter the quantity.
-2. For a buy, press **Add stoploss and target on chart**. A red **Stoploss** line (1% under the price) and a green **Target** line (2% over) appear, each labelled with what you would lose or make. Drag them up or down to where you want them, or type the prices. With a limit order, the blue **Limit price** line drags too.
+1. Pick **Buy**, **Sell** or (shares only) **Short sell**, **Market** or **Limit**, and for shares **Intraday** (MIS) or **Positional** (delivery, CNC). Enter the quantity.
+2. For a buy or a short sale, press **Add stoploss and target on chart**. A red **Stoploss** line (1% under the price) and a green **Target** line (2% over) appear, each labelled with what you would lose or make. Drag them up or down to where you want them, or type the prices. With a limit order, the blue **Limit price** line drags too.
 3. Press **Review buy**. The review shows the order, the price, order value, margin needed (Zerodha's figure when your Kite server has the margin calculator, otherwise an estimate), charges, the loss at the stoploss as a share of your capital, the gain at the target, and how the stoploss and target will be placed. Anything that blocks the order is listed: the kill switch, your trade window, the limit per order, the orders-a-day limit, the risk limit per trade, a stoploss above the price.
 4. Press **Place paper order**. A live order asks you to type the order (for example `BUY 10 RELIANCE`) and press **Place LIVE order**.
 
@@ -720,7 +720,18 @@ A live limit buy that has not filled has no stoploss yet: the desk places it whe
 
 **Remove.** Each order is listed under **Your stoploss and target orders** with its state. **Remove** takes off the stoploss and target and keeps your shares or coins; for a live buy that has not filled, it cancels the buy too. If Zerodha refuses the stoploss and target, the order shows **NOT protected** in red and you get an alert: move a line to place them again, or sell.
 
-**Sell** from the chart sells what you hold. There is no short selling from the chart.
+**Sell** from the chart sells what you hold. It never sells more than you hold.
+
+**Short sell** (NSE/BSE shares, paper and live) sells first and buys back later the same day, so it gains when the price falls. It is intraday only: Indian exchanges allow no positional (delivery) short of shares, so **Positional** is greyed out for it; a short held for days needs a futures contract.
+
+- Its **Stoploss** line starts 1% **above** the price and its **Target** 2% **below**. The review says *Short sell*, and a live order asks you to type `SHORT SELL 10 RELIANCE`.
+- A short sale is a new position: the kill switch, the trade window, the limit per order, the orders-a-day limit and the risk limit per trade all apply. Buying it back is never blocked by them.
+- You cannot short a share you hold (sell it first), and a live intraday **Sell** of more than you hold is refused: choose **Short sell** for that.
+- **Buy back**: while you are short a share intraday, an intraday **Buy** from the chart buys it back (the review says *Buy back*), never more than you sold.
+- Live: once the sale fills, the desk keeps one stoploss buy order at Zerodha and changes it into a limit buy at the target when the price falls there, as for an intraday buy. Zerodha buys back what is left near 15:20. While that order works, a Sell or Buy back of the same share from the chart is refused: **Remove** the stoploss and target first, or the leftover order would open a new position.
+- Paper: the desk watches the stoploss and target and buys back at the last price (every 20 seconds while it runs), and buys back every paper short at the **square-off** time in Settings. A paper short needs about 20% of its value in paper cash, as Zerodha's intraday margin does.
+
+Paper and live P&L count a short sale like any trade: it shows as *Short* in closed trades.
 
 ### Classic chart
 

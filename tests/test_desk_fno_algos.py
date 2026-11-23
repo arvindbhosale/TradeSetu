@@ -352,7 +352,7 @@ def test_a_single_order_never_opens_a_short(tmp_path):
     assert desk.preview(raw, "paper", allow_short=True)["ok"]
     close = {**raw, "side": "BUY", "intent": "close"}
     assert any("would open a long" in e for e in desk.preview(close, "paper")["errors"])
-    with pytest.raises(OrderRejected, match="F&O orders only"):
+    with pytest.raises(OrderRejected, match="Delivery \\(CNC\\) shares cannot be sold short"):
         desk.preview({**raw, "exchange": "NSE", "tradingsymbol": "RELIANCE", "product": "CNC"}, "paper")
 
 
