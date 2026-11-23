@@ -54,6 +54,7 @@ from .chainhistory import (
     ChainHistory,
     Recorder,
 )
+from .chartorders import ChartOrders
 from .chartstore import ChartStore
 from .cryptopaper import CryptoPaper
 from .custom import OPS as RULE_OPS, TIME_OPS as RULE_TIME_OPS, CustomStrategies
@@ -159,6 +160,10 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     algos.extra_live.append(fno_algos.live_names)
     desk.algo_claims = fno_algos.claimed
     algos.extra_ticks.append(desk.close_paper_mcx)
+    chart_orders = ChartOrders(desk, desk.ledger.path.parent / "chart_orders.json")
+    algos.extra_ticks.append(chart_orders.tick)
+    algos.extra_live.append(lambda: [f"chart order {i['tradingsymbol']}" for i in chart_orders.view()["items"]
+                                     if i["mode"] == "live" and i["state"] in ("waiting", "protected")])
 
     def supervisor_ask(prompt: str) -> str:
         from tradingagents.llm_clients import create_tier_client
@@ -1172,6 +1177,74 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     @app.post("/api/cpaper/reset")
     def cpaper_reset(payload: dict):
         return app.state.cpaper.reset(body_of(payload).get("balance", 10_000))
+
+    @app.post("/api/cpaper/protect")
+    def cpaper_protect(payload: dict):
+        bracket = app.state.cpaper.protect(body_of(payload))
+        return {"bracket": bracket, "book": app.state.cpaper.view()}
+
+    @app.put("/api/cpaper/bracket/{bracket_id}")
+    def cpaper_bracket_change(bracket_id: str, payload: dict):
+        bracket = app.state.cpaper.change_bracket(bracket_id, body_of(payload))
+        return {"bracket": bracket, "book": app.state.cpaper.view()}
+
+    @app.delete("/api/cpaper/bracket/{bracket_id}")
+    def cpaper_bracket_cancel(bracket_id: str):
+        app.state.cpaper.cancel_bracket(bracket_id)
+        return app.state.cpaper.view()
+
+    # -- orders from the chart (NSE/BSE): a buy with its stoploss and target, moved by dragging its lines ------
+    app.state.chart_orders = chart_orders
+
+    def chart_order_instrument(symbol: str) -> tuple[str, str]:
+        symbol = (symbol or "").strip().upper()
+        if not symbol:
+            raise ValueError("Enter a symbol.")
+        if symbol.startswith("IDX:"):
+            raise ValueError("An index cannot be bought or sold. Open a share to trade it from the chart.")
+        if ":" in symbol:
+            exchange, name = symbol.split(":", 1)
+            if exchange not in ("NSE", "BSE"):
+                raise ValueError("Chart orders are for NSE and BSE shares.")
+            return exchange, name
+        pair = kite_instrument(symbol_of(symbol))
+        if not pair:
+            raise ValueError(f"{symbol} is not an NSE/BSE share that can be ordered.")
+        return pair[0], pair[1]
+
+    @app.get("/api/chart-orders")
+    def chart_orders_list(symbol: str = ""):
+        if not symbol:
+            return chart_orders.view()
+        exchange, name = chart_order_instrument(symbol)
+        return {**chart_orders.view(exchange, name), "exchange": exchange, "tradingsymbol": name}
+
+    @app.post("/api/chart-orders/preview")
+    def chart_order_preview(payload: dict):
+        payload = body_of(payload)
+        exchange, name = chart_order_instrument(str(payload.get("symbol", "")))
+        order = {"exchange": exchange, "tradingsymbol": name, "side": payload.get("side"),
+                 "quantity": payload.get("quantity"), "product": payload.get("product", "MIS"),
+                 "order_type": payload.get("order_type", "LIMIT"), "price": payload.get("price") or 0}
+        return chart_orders.preview({"mode": str(payload.get("mode", "paper")), "order": order,
+                                     "stop": payload.get("stop"), "target": payload.get("target")})
+
+    @app.post("/api/chart-orders/place")
+    def chart_order_place(payload: dict):
+        payload = body_of(payload)
+        return chart_orders.place(str(payload.get("token", "")), str(payload.get("phrase", "")))
+
+    @app.post("/api/chart-orders/{item_id}/change/preview")
+    def chart_order_change_preview(item_id: str, payload: dict):
+        return chart_orders.change_preview(item_id, body_of(payload))
+
+    @app.post("/api/chart-orders/{item_id}/change")
+    def chart_order_change(item_id: str, payload: dict):
+        return chart_orders.change(str(body_of(payload).get("token", "")))
+
+    @app.delete("/api/chart-orders/{item_id}")
+    def chart_order_remove(item_id: str):
+        return chart_orders.remove(item_id)
 
     @app.get("/api/algos")
     def algo_list():

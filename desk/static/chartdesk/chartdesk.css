@@ -178,3 +178,30 @@
 .cd-dialog label.cd-colour, .cd-edit label.cd-colour { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; }
 .cd-dialog .cd-colour input[type=color], .cd-edit .cd-colour input[type=color] { width: 36px; min-width: 36px; max-width: 36px; height: 28px; flex: 0 0 auto; padding: 0; }
 .cd-head .cd-status { max-width: 100%; white-space: normal; }
+
+/* Trading from the chart: the ticket, its stoploss/target list and the confirmation dialog. */
+.cd-trade { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.cd-t-form label[hidden], .cd-t-form .seg[hidden], .cd-t-form button[hidden] { display: none; }
+.cd-t-lines { border: 1px dashed var(--line-strong); background: var(--surface); color: var(--text); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+.cd-t-sum { margin: 0; font-variant-numeric: tabular-nums; }
+.cd-t-list { display: grid; gap: 6px; }
+.cd-t-row { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; justify-content: space-between; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; }
+.cd-t-row.bad { border-color: var(--bad); background: var(--bad-bg); }
+.cd-t-row.done { border-style: dashed; }
+.cd-t-note { flex-basis: 100%; }
+.cd-t-help { margin: 0; }
+dialog.cd-confirm { width: min(520px, calc(100vw - 32px)); max-height: 90vh; border: 1px solid var(--line); border-radius: 14px; padding: 0; background: var(--bg); color: var(--text); box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+dialog.cd-confirm::backdrop { background: rgba(8, 11, 18, .55); }
+.cd-confirm-body { padding: 16px 18px; display: grid; gap: 10px; }
+.cd-confirm-body h3 { margin: 0; }
+.cd-confirm-body .kv { margin: 0; }
+.cd-confirm-body input { width: 100%; box-sizing: border-box; }
+.cd-confirm-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.cd-confirm-buttons button { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); cursor: pointer; }
+.cd-confirm-buttons button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.cd-confirm-buttons button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+.cd-confirm-buttons button:disabled { opacity: .5; cursor: default; }
+.cd-confirm .error { white-space: pre-line; }
+@media (max-width: 720px) {
+  .cd-t-form input { width: 120px; }
+}

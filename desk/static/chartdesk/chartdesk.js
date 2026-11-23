@@ -13,6 +13,7 @@ import { mergeBar, startFeed } from "./feeds.js";
 import { DrawingLayer, TOOLS, logicalOf, newPosition, normalise, positionPlan, timeOf } from "./drawings.js";
 import { mountWatchlist } from "./watchlist.js";
 import { mountPaper } from "./paper.js";
+import { mountTrade } from "./trade.js";
 
 /** @typedef {import("./indicators.js").Bar} Bar */
 /** @typedef {import("./drawings.js").Drawing} Drawing */
@@ -126,9 +127,10 @@ function loadLocal(key, defaults) {
 
 /**
  * @param {HTMLElement} root
- * @param {{ api: (path: string, opts?: any) => Promise<any>, preset?: "live"|"classic", intervals?: Record<string, string> }} deps
+ * @param {{ api: (path: string, opts?: any) => Promise<any>, preset?: "live"|"classic", intervals?: Record<string, string>,
+ *   mode?: () => string }} deps  ``mode`` is the desk's Paper or Live switch, for NSE/BSE orders from the chart.
  */
-export function mount(root, { api, preset = "live", intervals = {} }) {
+export function mount(root, { api, preset = "live", intervals = {}, mode = () => "paper" }) {
   const classic = preset === "classic";
   const storeKey = classic ? STORE + "-classic" : STORE;
   const defaults = classic ? CLASSIC_DEFAULTS : DEFAULTS;
@@ -209,6 +211,7 @@ export function mount(root, { api, preset = "live", intervals = {} }) {
   const importPanel = h("div", { class: "cd-import", hidden: true });
   const watchRoot = h("aside", { class: "panel cd-watch", "aria-label": "Watchlist" });
   const paperRoot = h("section", { class: "panel cd-paper", hidden: true, "aria-label": "Paper trading" });
+  const tradeRoot = h("section", { class: "panel cd-trade", hidden: true, "aria-label": "Trade from the chart" });
   const dialog = /** @type {HTMLDialogElement} */ (h("dialog", { class: "cd-dialog", "aria-label": "Indicators" }));
 
   const column = h("div", { class: "cd-col" },
@@ -218,13 +221,19 @@ export function mount(root, { api, preset = "live", intervals = {} }) {
         h("div", { class: "cd-symbol" }, symbolInput, symbolList, h("button", { class: "primary", type: "submit", text: "Show" })),
         tfSeg, typeSeg, indicatorBtn),
       importPanel, head, error, note, extra, loading, chartArea),
-    classic ? null : paperRoot);
+    classic ? null : tradeRoot, classic ? null : paperRoot);
   root.replaceChildren(classic ? h("div", { class: "cd-grid cd-solo" }, column, dialog) : h("div", { class: "cd-grid" }, watchRoot, column, dialog));
 
   const watch = classic ? { show() {}, hide() {}, render() {} } : mountWatchlist(watchRoot, { api, open: (venue, symbol) => { st.venue = venue; st.symbol = symbol; renderControls(); open(); },
     current: () => ({ venue: st.venue, symbol: st.symbol }) });
-  const paper = classic ? { show() {}, hide() {}, symbolChanged() {}, priceChanged() {} } : mountPaper(paperRoot, { api, symbol: () => st.symbol,
-    lastPrice: () => (st.bars.length ? st.bars[st.bars.length - 1].close : null), onBook: (book) => { st.book = book; orderLines(); } });
+  const lastPrice = () => (st.bars.length ? st.bars[st.bars.length - 1].close : null);
+  const paper = classic ? { show() {}, hide() {}, symbolChanged() {}, setBook() {} }
+    : mountPaper(paperRoot, { api, onBook: (book) => { st.book = book; orderLines(); trade.bookChanged(book); } });
+  // Trading from the chart is on the live chart; the classic chart only shows.
+  const trade = classic ? { show() {}, hide() {}, symbolChanged() {}, chartDrawn() {}, priceChanged() {}, modeChanged() {}, bookChanged() {}, fill() {}, claims() { return false; } }
+    : mountTrade(tradeRoot, { api, venue: () => st.venue, symbol: () => st.symbol, lastPrice, mode,
+      decimals: () => st.decimals, money: (v) => money(v), onBook: (book) => paper.setBook(book),
+      chart: () => (st.main && st.price ? { main: st.main, price: st.price, box: mainBox } : null) });
 
   /** @param {string} text */
   function showNote(text) { extra.textContent = text; extra.hidden = false; }
@@ -267,6 +276,7 @@ export function mount(root, { api, preset = "live", intervals = {} }) {
     indicatorBtn.textContent = `Indicators${st.active.length ? ` (${st.active.length})` : ""}`;
     renderDrawBar(); renderEditBar(); renderImport(); watch.render();
     if (!classic) { if (st.visible && st.venue === "crypto") paper.show(); else paper.hide(); }
+    if (st.visible && st.info) trade.show(); else trade.hide();
   }
 
   // -- indicators: picker and settings ---------------------------------------------------------------
@@ -440,6 +450,11 @@ export function mount(root, { api, preset = "live", intervals = {} }) {
           h("span", { class: "down", text: `Risk ${money(plan.risk)} (${Math.abs(plan.riskPct).toFixed(2)}%)` }), " · ",
           h("span", { class: "up", text: `Reward ${money(plan.reward)} (${Math.abs(plan.rewardPct).toFixed(2)}%)` }), ` · Risk : Reward 1 : ${rr}`,
           plan.now == null ? "" : ` · At last price ${plan.now >= 0 ? "+" : "−"}${money(Math.abs(plan.now))}`));
+      if (!classic && (st.venue === "india" || st.venue === "crypto")) {
+        parts.push(h("button", { type: "button", class: "primary", text: d.kind === "long" ? "Buy with this plan" : "Order from this plan",
+          title: d.kind === "long" ? "Fill the trade ticket below with this entry, stoploss, target and quantity" : "Short selling is not available from the chart",
+          disabled: d.kind !== "long", onclick: () => trade.fill(plan) }));
+      }
     }
     parts.push(h("button", { type: "button", class: "cd-del", text: "Delete", onclick: () => { st.drawings = st.drawings.filter((x) => x !== d); select(null); saveDrawings(); } }),
       h("button", { type: "button", text: "Done", onclick: () => select(null) }));
@@ -466,7 +481,7 @@ export function mount(root, { api, preset = "live", intervals = {} }) {
     down = { x: e.clientX, y: e.clientY };
     if (st.tool || !st.layer || !st.main) return;
     const p = local(e);
-    if (onScale(p.x, p.w)) return;
+    if (onScale(p.x, p.w) || trade.claims(p.y)) return;       // an order line takes the press (trade.js drags it)
     const hit = st.layer.hit(p.x, p.y, e.pointerType === "touch" ? 14 : 7);
     if (!hit) return;
     const d = st.drawings.find((x) => x.id === hit.id), at = pointAtXY(p.x, p.y);
@@ -516,7 +531,9 @@ export function mount(root, { api, preset = "live", intervals = {} }) {
   /** @param {PointerEvent} e */
   function hover(e) {
     if (!st.layer || st.tool || !mainBox.contains(/** @type {Node} */ (e.target))) return;
-    const p = local(e), hit = st.layer.hit(p.x, p.y);
+    const p = local(e);
+    if (trade.claims(p.y)) return;
+    const hit = st.layer.hit(p.x, p.y);
     mainBox.style.cursor = hit ? (hit.handle >= 0 ? "grab" : "move") : "";
   }
 
@@ -696,7 +713,7 @@ export function mount(root, { api, preset = "live", intervals = {} }) {
       st.drawings = []; st.tool = null; st.clicks = []; st.selected = null;
       draw(true);
       startLive();
-      renderControls(); paper.symbolChanged();
+      renderControls(); paper.symbolChanged(); trade.symbolChanged();
       loadDrawings(request);
     } catch (err) {
       if (request !== st.request) return;
@@ -809,6 +826,7 @@ export function mount(root, { api, preset = "live", intervals = {} }) {
     st.price.attachPrimitive(st.layer);
     setData();
     orderLines();
+    trade.chartDrawn();
     const n = st.bars.length;
     main.timeScale().setVisibleLogicalRange(keep || { from: Math.max(0, n - 150), to: n + 4 });
   }
@@ -912,7 +930,7 @@ export function mount(root, { api, preset = "live", intervals = {} }) {
         shade(a, r);
       });
       st.results = results; index(results);
-      describe(null); renderHead(); paper.priceChanged();
+      describe(null); renderHead(); trade.priceChanged();
       if (st.selected) renderPlanOnly();
     });
   }
@@ -999,7 +1017,9 @@ export function mount(root, { api, preset = "live", intervals = {} }) {
       if (!st.info) { if (error.hidden && !st.busy) open(); return; }
       if (!st.stopFeed) open();          // back on the tab: fresh candles, then live again
     },
-    hide() { st.visible = false; stopLive(); watch.hide(); paper.hide(); if (dialog.open) dialog.close(); },
+    hide() { st.visible = false; stopLive(); watch.hide(); paper.hide(); trade.hide(); if (dialog.open) dialog.close(); },
+    /** The desk's Paper / Live switch changed. */
+    modeChanged() { trade.modeChanged(); },
     /** Opens a symbol (the stock window's Chart button). @param {string} symbol */
     openSymbol(symbol) { st.symbol = String(symbol || "").toUpperCase(); if (!classic) st.venue = "india"; renderControls(); open(); },
   };

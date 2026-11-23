@@ -176,7 +176,7 @@
   async function chartView(view) {
     if (!chartDesk.mods[view]) {
       const m = await chartModule();
-      if (!chartDesk.mods[view]) chartDesk.mods[view] = m.mount(chartHost(view), { api, preset: view, intervals: state.app.intervals });
+      if (!chartDesk.mods[view]) chartDesk.mods[view] = m.mount(chartHost(view), { api, preset: view, intervals: state.app.intervals, mode: () => state.mode });
     }
     return chartDesk.mods[view];
   }
@@ -204,6 +204,7 @@
     pill.className = "pill " + (mode === "live" ? "bad" : "");
     clearReview();
     renderBanner();
+    Object.values(chartDesk.mods).forEach((mod) => { if (mod.modeChanged) mod.modeChanged(); });
   }
   $$("#mode button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
 
