@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sys
+import zlib
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -112,8 +113,13 @@ def _anchor():
     return date.fromisoformat(os.environ.get("FAKE_KITE_ANCHOR") or date.today().isoformat())
 
 
+def _stable(text: str) -> int:
+    # Not hash(): Python salts string hashes per process, so the fake's candles would change on every run.
+    return zlib.crc32(text.encode())
+
+
 def _token(instrument: str) -> int:
-    token = abs(hash(instrument)) % 10_000_000
+    token = _stable(instrument) % 10_000_000
     TOKENS[token] = instrument
     return token
 
@@ -170,7 +176,7 @@ def get_quotes(instruments: list[str]) -> str:
         price = _price(name)
         if price is None:
             continue
-        oi = (abs(hash(name)) % 90 + 10) * 1000 if name.startswith("NFO:") else 0
+        oi = (_stable(name) % 90 + 10) * 1000 if name.startswith("NFO:") else 0
         out[name] = {"instrument_token": _token(name), "last_price": price, "volume": 125000,
                      "average_price": price, "oi": oi, "buy_quantity": 1000, "sell_quantity": 900,
                      "lower_circuit_limit": round(price * 0.9, 2), "upper_circuit_limit": round(price * 1.1, 2),

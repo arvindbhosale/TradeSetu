@@ -1306,6 +1306,7 @@
     $("#ad-title").replaceChildren(a.name, " ", h("span", { class: "pill " + (a.mode === "live" ? "bad" : ""), text: a.mode === "live" ? "LIVE" : "Paper" }), " ",
       h("span", { class: "pill " + (blocked ? "warn" : a.enabled ? "good" : ""), text: a.status }));
     $("#ad-edit").hidden = !d.can_edit;
+    $("#ad-exit").hidden = a.exit_requested || !(kind === "fno" ? a.book : a.position || a.pending);
     const what = kind === "fno"
       ? `${a.kind === "futures" ? `${a.underlying} futures` : a.structure_name} on ${a.underlying} (${a.expiry_kind}) · ${a.lots} lot(s)`
       : `${a.strategy_name} on ${a.symbol} · ${state.app.intervals[a.interval]} candles · budget ${rupees(a.budget)}`;
@@ -1325,6 +1326,7 @@
       h("h3", { text: kind === "fno" ? "Each leg" : "Each stock" }),
       h("div", { class: "scroll" }, table([
         { label: "Stock / contract", get: (g) => g.symbol + otherMode(g) }, { label: "Status", get: status },
+        { label: "Opened (IST)", get: (g) => g.opened_at || "–" }, { label: "Closed (IST)", get: (g) => g.closed_at || (g.status === "Active" ? "still open" : "–") },
         { label: "Bought", num: true, get: (g) => g.bought || "–" }, { label: "Buy price ₹", num: true, get: (g) => price(g.buy_price) },
         { label: "Sold", num: true, get: (g) => g.sold || "–" }, { label: "Sell price ₹", num: true, get: (g) => price(g.sell_price) },
         { label: "Open qty", num: true, get: (g) => (g.open_quantity ? `${Math.abs(g.open_quantity)} ${g.open_quantity < 0 ? "sold" : "bought"}` : "–") },
@@ -1332,6 +1334,18 @@
         { label: "Realised P&L", num: true, get: (g) => money(g.realized), tone: (g) => tone(g.realized) },
         { label: "Unrealised P&L", num: true, get: (g) => (g.status === "Active" ? money(g.unrealized) : "–"), tone: (g) => tone(g.unrealized) }],
         legs, "Nothing bought or sold yet.")),
+      h("h3", { text: "Highest and lowest open P&L each day" }),
+      h("p", { class: "hint", text: (kind === "fno" ? "All open legs added up. " : "") + "Sampled about once a minute while the desk runs, before the charges of closing. Not the booked result: it shows how far the open trade went each day." }),
+      h("div", { class: "scroll" }, table([
+        { label: "Date", get: (r) => r.day },
+        { label: "Highest open P&L", num: true, get: (r) => money(r.high), tone: (r) => tone(r.high) }, { label: "at (IST)", get: (r) => r.high_at },
+        { label: "Lowest open P&L", num: true, get: (r) => money(r.low), tone: (r) => tone(r.low) }, { label: "at (IST)", get: (r) => r.low_at }],
+        d.daily || [], "Nothing recorded yet: it is recorded while a position is open and the desk is running.")),
+      kind === "fno" && (a.history || []).length ? h("h3", { text: "Closed trades" }) : null,
+      kind === "fno" && (a.history || []).length ? h("div", { class: "scroll" }, table([
+        { label: "Opened (IST)", get: (r) => r.opened }, { label: "Closed (IST)", get: (r) => r.closed },
+        { label: "Why closed", get: (r) => r.reason }, { label: "P&L after charges", num: true, get: (r) => money(r.pnl), tone: (r) => tone(r.pnl) },
+        { label: "Legs", get: (r) => (r.legs || []).join(", ") }], a.history.slice().reverse(), "")) : null,
       d.orders.length ? h("h3", { text: "Pending orders" }) : null,
       d.orders.length ? h("div", { class: "scroll" }, table([
         { label: "Stock / contract", get: (o) => o.symbol }, { label: "Buy / Sell", get: (o) => (o.side === "BUY" ? "Buy" : "Sell"), tone: (o) => (o.side === "BUY" ? "pos" : "neg") },
@@ -1354,6 +1368,12 @@
 
   $("#ad-close").addEventListener("click", () => $("#algo-dialog").close());
   $("#ad-refresh").addEventListener("click", loadAlgoDetail);
+  $("#ad-exit").addEventListener("click", async (e) => {
+    const d = detailView.data; if (!d) return;
+    if (detailView.kind === "fno") await fnoAction(d.algo, "exit", e.currentTarget); else await algoAction(d.algo, "exit", e.currentTarget);
+    busy(e.currentTarget, false);
+    loadAlgoDetail();
+  });
   $("#algo-dialog").addEventListener("close", () => { clearInterval(detailView.timer); detailView.timer = null; });
   $("#ad-edit").addEventListener("click", () => {
     const d = detailView.data; if (!d) return;
@@ -1371,7 +1391,9 @@
       body = { phrase: typed };
     }
     if (action === "delete" && !window.confirm(`Delete the algo “${algo.name}”?`)) return;
-    if (action === "exit" && !window.confirm(`Sell the ${algo.position} shares “${algo.name}” holds now and stop it?${algo.mode === "live" ? " This is a LIVE order." : ""}`)) return;
+    if (action === "exit" && !window.confirm(`Sell the ${algo.position} shares “${algo.name}” holds now and stop it?`
+      + (algo.protect ? " Its target/stoploss GTT is cancelled first." : "") + (algo.mode === "live" ? " This is a LIVE order." : "")
+      + (algo.enabled ? "" : " The algo is stopped: it only sells, it does not start trading again."))) return;
     if (action === "clear" && !window.confirm(`Mark “${algo.name}” as holding nothing? No order is sent; do this only after you have dealt with its ${algo.position} shares yourself.`)) return;
     busy(button, true, "…");
     try {
@@ -1381,10 +1403,57 @@
     await refreshAlgos();
   }
 
+  // -- Exit several algos at once: the ticked ones, or every open position of one account ----------
+  const exitPick = { stock: new Set(), fno: new Set(), holding: { stock: [], fno: [] } };
+  function pickBox(kind, a, holds) {
+    if (!holds || a.exit_requested) { exitPick[kind].delete(a.id); return null; }
+    const box = h("input", { type: "checkbox", "aria-label": `Select ${a.name} to exit` });
+    box.checked = exitPick[kind].has(a.id);
+    box.addEventListener("change", () => { if (box.checked) exitPick[kind].add(a.id); else exitPick[kind].delete(a.id); paintExitBars(); });
+    return h("label", { class: "pick", title: "Select to exit" }, box);
+  }
+  function paintExitBars() {
+    const n = exitPick.stock.size + exitPick.fno.size;
+    $$("[data-exit-bar]").forEach((bar) => {
+      const sel = bar.querySelector('[data-exit="selected"]');
+      sel.disabled = !n; sel.textContent = n ? `Exit selected (${n})` : "Exit selected";
+    });
+  }
+  async function exitMany(how, button) {
+    const errorBox = button.closest("#algo-fno") ? "#fno-algo-error" : "#algo-error";
+    showError(errorBox, null);
+    const all = [...exitPick.holding.stock, ...exitPick.holding.fno];
+    const chosen = how === "selected"
+      ? all.filter((a) => exitPick[a.kind].has(a.id))
+      : all.filter((a) => a.mode === how);
+    if (!chosen.length) { showError(errorBox, new Error(how === "selected" ? "Tick at least one algo." : `No ${how} algo holds anything.`)); return; }
+    const live = chosen.some((a) => a.mode === "live");
+    const names = chosen.map((a) => `• ${a.name} (${a.mode === "live" ? "LIVE" : "paper"}${a.kind === "fno" ? ", every leg" : ""})`).join("\n");
+    if (!window.confirm(`Close these ${chosen.length} algo position(s) now and stop the algos?\n\n${names}\n\n`
+      + "Target and stoploss orders (GTT) are cancelled first. F&O: sold legs are bought back before bought legs are sold. "
+      + "Outside market hours the exit waits for the open." + (live ? "\n\nThis sends LIVE orders with real money." : ""))) return;
+    if (live && window.prompt("Type  EXIT  to send the live exit orders.") !== "EXIT") return;
+    busy(button, true, "…");
+    try {
+      const body = how === "selected"
+        ? { stock: chosen.filter((a) => a.kind === "stock").map((a) => a.id), fno: chosen.filter((a) => a.kind === "fno").map((a) => a.id) }
+        : { mode: how };
+      const { results } = await api("/algo-exits", { method: "POST", body });
+      const failed = results.filter((r) => !r.ok);
+      if (failed.length) showError(errorBox, new Error(`Could not exit: ${failed.map((r) => r.error).join("; ")}`));
+      exitPick.stock.clear(); exitPick.fno.clear();
+    } catch (err) { showError(errorBox, err); }
+    busy(button, false);
+    await Promise.all([refreshAlgos(), refreshFnoAlgos()]);
+  }
+  $$("[data-exit-bar] [data-exit]").forEach((b) => b.addEventListener("click", (e) => exitMany(b.dataset.exit, e.currentTarget)));
+
   async function refreshAlgos() {
     let list;
     try { list = (await api("/algos")).algos; } catch (err) { showError("#algo-error", err); return; }
     const host = $("#algo-list");
+    exitPick.holding.stock = list.filter((a) => (a.position || a.pending) && !a.exit_requested).map((a) => ({ kind: "stock", id: a.id, name: a.name, mode: a.mode }));
+    paintExitBars();
     if (!list.length) { host.replaceChildren(h("p", { class: "hint", text: "No algos yet. Create one above." })); return; }
     host.replaceChildren(...list.map((a) => {
       const act = (label, action, cls) => h("button", { class: cls || null, type: "button", text: label, onclick: (e) => algoAction(a, action, e.target) });
@@ -1392,13 +1461,13 @@
       const signal = a.last_signal ? `${a.last_signal.target ? "buy" : "sell / stay out"} on ${a.last_signal.bar} (close ${rupees(a.last_signal.close, 2)})` : "not checked yet";
       return h("div", { class: "algo" },
         h("div", { class: "head" },
-          h("span", {}, h("button", { type: "button", class: "name", text: a.name, title: "Buy and sell prices, P&L and orders", onclick: () => openAlgoDetail("stock", a.id) }), " ",
+          h("span", {}, pickBox("stock", a, a.position || a.pending), h("button", { type: "button", class: "name", text: a.name, title: "Buy and sell prices, P&L and orders", onclick: () => openAlgoDetail("stock", a.id) }), " ",
             h("span", { class: "pill " + (a.mode === "live" ? "bad" : ""), text: a.mode === "live" ? "LIVE" : "Paper" }), " ",
             h("span", { class: "pill " + (blocked ? "warn" : a.enabled ? "good" : ""), text: a.status }), " ",
             a.hold_until ? h("span", { class: "pill warn", text: `Buys held to ${a.hold_until}` }) : null),
           h("span", { class: "actions" },
             h("button", { type: "button", text: "Details", onclick: () => openAlgoDetail("stock", a.id) }),
-            a.enabled && a.position && !a.exit_requested ? act("Exit", "exit", "danger") : null,
+            (a.position || a.pending) && !a.exit_requested ? act("Exit", "exit", "danger") : null,
             a.hold_until ? act("Allow buys", "release") : null,
             canEdit(a) ? h("button", { type: "button", text: "Edit", onclick: () => editStockAlgo(a) }) : null,
             a.enabled ? act("Stop", "stop") : act("Start", "start", a.mode === "live" ? "danger" : "primary"),
@@ -1411,7 +1480,7 @@
           h("dt", { text: "Budget" }), h("dd", { text: rupees(a.budget) }),
           a.queued ? h("dt", { text: "Queued" }) : null, a.queued ? h("dd", { text: `${a.queued.side} (${a.queued.reason}), waiting for the trade window` }) : null,
           a.protect ? h("dt", { text: "Protected by" }) : null, a.protect ? h("dd", { text: `GTT ${a.protect}` }) : null,
-          h("dt", { text: "Position" }), h("dd", { text: a.position ? `${a.position} shares at ${rupees(a.average_price, 2)}` : "flat" }),
+          h("dt", { text: "Position" }), h("dd", { text: a.position ? `${a.position} shares at ${rupees(a.average_price, 2)}${a.entry_at ? ` · opened ${a.entry_at} IST` : ""}` : "flat" }),
           h("dt", { text: "Last signal" }), h("dd", { text: signal }),
           a.pending ? h("dt", { text: "Pending order" }) : null,
           a.pending ? h("dd", { text: `${a.pending.side} ${a.pending.quantity} at ${rupees(a.pending.price, 2)}, order ${a.pending.order_id}, sent ${a.pending.placed}` }) : null),
@@ -1562,7 +1631,7 @@
       if (typed == null) return;
       body = { phrase: typed };
     }
-    if (action === "exit" && !window.confirm(`Close every leg of “${algo.name}” now and stop it?`)) return;
+    if (action === "exit" && !window.confirm(`Close every leg of “${algo.name}” now and stop it? Sold legs are bought back first, then bought legs are sold.${algo.mode === "live" ? " This sends LIVE orders." : ""}`)) return;
     if (action === "stop" && algo.book) {
       if (!window.confirm(`“${algo.name}” holds open legs. Stopping leaves them open and unwatched: no stop, no exit. Use Exit to close them instead.\n\nStop anyway?`)) return;
       body = { force: true };
@@ -1585,6 +1654,8 @@
     const host = $("#fno-list");
     const notes = [];
     if (!data.kite_connected) notes.push(h("p", { class: "hint warn", text: "Kite is not connected: F&O algos, paper and live, need Kite for option prices. Log in on the Trade tab." }));
+    exitPick.holding.fno = data.algos.filter((a) => a.book && !a.exit_requested).map((a) => ({ kind: "fno", id: a.id, name: a.name, mode: a.mode }));
+    paintExitBars();
     if (!data.algos.length) { host.replaceChildren(...notes, h("p", { class: "hint", text: "No F&O algos yet. Create one above." })); return; }
     host.replaceChildren(...notes, ...data.algos.map((a) => {
       const act = (label, action, cls) => h("button", { class: cls || null, type: "button", text: label, onclick: (e) => fnoAction(a, action, e.target) });
@@ -1594,7 +1665,7 @@
         a.leg_exits_text ? `each ${a.leg_scope === "all" ? "" : a.leg_scope + " "}leg: ${a.leg_exits_text}` : null].filter(Boolean).join(" · ");
       return h("div", { class: "algo" },
         h("div", { class: "head" },
-          h("span", {}, h("button", { type: "button", class: "name", text: a.name, title: "Each leg's buy and sell prices, P&L and orders", onclick: () => openAlgoDetail("fno", a.id) }), " ",
+          h("span", {}, pickBox("fno", a, a.book), h("button", { type: "button", class: "name", text: a.name, title: "Each leg's buy and sell prices, P&L and orders", onclick: () => openAlgoDetail("fno", a.id) }), " ",
             h("span", { class: "pill " + (a.mode === "live" ? "bad" : ""), text: a.mode === "live" ? "LIVE" : "Paper" }), " ",
             a.naked ? h("span", { class: "pill warn", text: "naked short" }) : null, " ",
             h("span", { class: "pill " + (blocked ? "warn" : a.enabled ? "good" : ""), text: a.status }), " ",
@@ -1604,12 +1675,12 @@
             a.hold_until ? act("Allow entries", "release") : null,
             canEdit(a) && !a.exit_requested ? h("button", { type: "button", text: "Edit", onclick: () => editFnoAlgo(a) }) : null,
             a.enabled ? act("Stop", "stop") : act("Start", "start", a.mode === "live" ? "danger" : "primary"),
-            a.enabled ? act("Run now", "run") : null, book ? act("Exit", "exit", "danger") : null,
+            a.enabled ? act("Run now", "run") : null, book && !a.exit_requested ? act("Exit", "exit", "danger") : null,
             !a.enabled && book ? act("Clear legs", "clear") : null, !a.enabled && !book ? act("Delete", "delete") : null)),
         h("dl", { class: "kv" },
           h("dt", { text: "Trades" }), h("dd", { text: `${a.kind === "futures" ? `${a.underlying} near-month futures, ${{ long: "buy only", short: "sell only", both: "buy and sell" }[a.direction] || a.direction}` : `${a.structure_name}${a.legs_text ? ` (${a.legs_text})` : ""} · ${a.underlying} ${a.expiry_text || a.expiry_kind}`} · ${a.lots} lot(s) · ${how}` }),
           h("dt", { text: "Exit rules" }), h("dd", { text: risk }),
-          h("dt", { text: "Position" }), h("dd", { text: book ? `${book.phase}${book.pnl != null ? ` · P&L ${fnoRupees(book.pnl)}` : ""} · margin about ${rupees(book.margin)} · since ${book.opened}` : "flat" }),
+          h("dt", { text: "Position" }), h("dd", { text: book ? `${book.phase}${book.pnl != null ? ` · P&L ${fnoRupees(book.pnl)}` : ""} · margin about ${rupees(book.margin)} · opened ${book.opened} IST` : "flat" }),
           h("dt", { text: "Realised" }), h("dd", { text: `${fnoRupees(a.realized)} over ${a.trades} trade(s), after charges` })),
         book ? h("div", { class: "scroll" }, h("table", {},
           h("thead", {}, h("tr", {}, ["Leg", "Expiry", "Qty", "Held", "Avg", "Pending"].map((t) => h("th", { text: t })))),
@@ -3167,7 +3238,7 @@
   // A leg's strike in words, counted from the money: ATM, ATM+2, ATM−3.
   function strikeWords(n) { return !n ? "ATM" : `ATM${n > 0 ? "+" : "−"}${Math.abs(n)}`; }
   function legsWords(legs) {
-    return legs.map((g) => `${g.side === "BUY" ? "Buy" : "Sell"} ${g.lots > 1 ? g.lots + "× " : ""}${g.type === "FUT" ? "Futures" : `${strikeWords(g.strikes)} ${g.type}`}${g.expiry === "far" && g.type !== "FUT" ? " (next expiry)" : ""}`).join(", ");
+    return legs.map((g) => `${g.side === "BUY" ? "Buy" : "Sell"} ${g.lots > 1 ? g.lots + "× " : ""}${g.type === "FUT" ? "Futures" : `${strikeWords(g.strikes)} ${g.type}`}${g.expiry === "far" && g.type !== "FUT" ? " (expiry after)" : ""}`).join(", ");
   }
   // Option strategy picker: presets grouped by market view, then "Your own strategy".
   function structureOptions(select, list) {
@@ -3202,7 +3273,7 @@
         h("td", {}, select("leg_type", leg.type, [["CE", "Call (CE)"], ["PE", "Put (PE)"], ["FUT", "Futures"]])),
         h("td", {}, select("leg_strikes", leg.strikes, strikes)),
         h("td", {}, h("input", { name: "leg_lots", type: "number", min: "1", max: "10", step: "1", value: leg.lots, style: "width:4.5em", "aria-label": "lots" })),
-        h("td", {}, select("leg_expiry", leg.expiry, [["near", "This expiry"], ["far", "Next expiry"]])),
+        h("td", {}, select("leg_expiry", leg.expiry, [["near", "Chosen expiry"], ["far", "The expiry after"]])),
         h("td", {}, h("button", { type: "button", text: "Remove", onclick: () => { row.remove(); legsChanged(); } })));
       const futures = () => { $("select[name=leg_strikes]", row).disabled = $("select[name=leg_type]", row).value === "FUT"; $("select[name=leg_expiry]", row).disabled = $("select[name=leg_type]", row).value === "FUT"; };
       row.addEventListener("change", () => { futures(); legsChanged(); });
@@ -3249,15 +3320,22 @@
       form.w.value = x.w; resetLegs();
     });
     form.mode.addEventListener("change", sync);
-    form.underlying.addEventListener("change", () => { if (!["NIFTY", "SENSEX"].includes(form.underlying.value)) form.expiry_kind.value = "monthly"; loadSpot(); });
-    resetLegs(); loadSpot();
+    // Which expiry: worded for weekly or monthly. A leg on "the expiry after" is one later than this.
+    const aheadWords = () => {
+      const weekly = form.expiry_kind.value === "weekly";
+      const words = weekly ? ["This week", "Next week", "2 weeks ahead", "3 weeks ahead"] : ["This month", "Next month", "2 months ahead", "3 months ahead"];
+      [...form.expiry_ahead.options].forEach((o, n) => { o.textContent = words[n]; });
+    };
+    form.expiry_kind.addEventListener("change", aheadWords);
+    form.underlying.addEventListener("change", () => { if (!["NIFTY", "SENSEX"].includes(form.underlying.value)) form.expiry_kind.value = "monthly"; aheadWords(); loadSpot(); });
+    resetLegs(); aheadWords(); loadSpot();
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const button = $("button[type=submit]", form); showError("#sbt-error", null); syncSharedDates(); busy(button, true, "Running…");
       const weekdays = $$("input[name=wd]", form).filter((c) => c.checked).map((c) => Number(c.value));
       const num = (name) => Number(form[name].value || 0);
       const body = { structure: form.structure.value, underlying: form.underlying.value, mode: form.mode.value, start: form.start.value, end: form.end.value,
-        expiry_kind: form.expiry_kind.value, interval: form.interval.value, entry_time: form.entry_time.value, exit_time: form.exit_time.value,
+        expiry_kind: form.expiry_kind.value, expiry_ahead: Number(form.expiry_ahead.value || 0), interval: form.interval.value, entry_time: form.entry_time.value, exit_time: form.exit_time.value,
         min_days: num("min_days"), exit_days_before: num("exit_days_before"), strategy: form.strategy.value, weekdays,
         k: num("k"), w: num("w"), legs: ownLegs(), leg_exits: $("#sbt-exits").read(), leg_scope: form.leg_scope.value, stop_pct: num("stop_pct"), target_pct: num("target_pct"),
         stop_rs: num("stop_rs"), target_rs: num("target_rs"), lots: num("lots"),
@@ -3272,7 +3350,7 @@
       showError("#sbt-error", null); busy(button, true, "Working…");
       const opt = (name) => (form[name].value === "" ? null : Number(form[name].value));
       const body = { structure: form.structure.value, underlying: form.underlying.value, expiry_kind: form.expiry_kind.value,
-        k: Number(form.k.value || 0), w: Number(form.w.value || 1), legs: ownLegs(), lots: Number(form.lots.value || 1), margin_pct: Number(form.margin_pct.value || 12),
+        expiry_ahead: Number(form.expiry_ahead.value || 0), k: Number(form.k.value || 0), w: Number(form.w.value || 1), legs: ownLegs(), lots: Number(form.lots.value || 1), margin_pct: Number(form.margin_pct.value || 12),
         iv_scale: Number(form.iv_scale.value || 1), spot: opt("spot"), iv_pct: opt("iv_pct"), days: opt("days"), far_days: opt("far_days"), premiums, labels };
       if (premiums && lastPayoff) Object.assign(body, { spot: lastPayoff.spot, iv_pct: lastPayoff.iv_pct, days: lastPayoff.days, far_days: lastPayoff.far_days });
       try { lastPayoff = await api("/options/payoff", { method: "POST", body }); renderPayoff(lastPayoff); }
@@ -4452,11 +4530,14 @@
     const reviewed = d.trades.filter((t) => t.note && (t.note.followed_plan || t.note.lesson)).length;
     $("#journal-count").textContent = d.trades.length ? `${reviewed} of ${d.trades.length} trades reviewed` : "";
     $("#journal-trades").replaceChildren(table([
-      { label: "Opened (IST)", get: (t) => t.opened_at }, { label: "Stock / contract", get: (t) => t.symbol },
+      { label: "Opened (IST)", get: (t) => t.opened_at }, { label: "Closed (IST)", get: (t) => t.closed_at || "still open" },
+      { label: "Status", get: (t) => h("span", { class: "pill " + (t.status === "Closed" ? "" : "good"), text: t.status === "Closed" ? "Closed" : t.status === "Part closed" ? "Part closed" : "Holding" }) },
+      { label: "Stock / contract", get: (t) => t.symbol },
       { label: "From", get: (t) => sourceLabel(t.source) }, { label: "Side", get: (t) => (t.side === "SHORT" ? "Short" : "Long") },
       { label: "Qty", num: true, get: (t) => t.quantity }, { label: "Entry ₹", num: true, get: (t) => inr2.format(t.entry) },
       { label: "Exit ₹", num: true, get: (t) => (t.exit == null ? "open" : inr2.format(t.exit)) },
       { label: "Profit/Loss", num: true, get: (t) => signedInr(t.pnl), tone: (t) => tone(t.pnl) },
+      { label: "Highest open P&L", num: true, get: (t) => (t.best_open == null ? "–" : h("button", { type: "button", class: "linkish " + tone(t.best_open), text: signedInr(t.best_open), title: "Each day's highest and lowest open P&L", onclick: () => openDaily(t) })) },
       { label: "R", num: true, get: (t) => (t.r == null ? "–" : t.r.toFixed(2) + "R"), tone: (t) => tone(t.r) },
       { label: "Setup", get: (t) => (t.note && t.note.setup) || "–" }, { label: "Review", get: review },
       { label: "", get: (t) => h("button", { type: "button", text: t.note ? "Edit note" : "Write note", onclick: () => openNote(t) }) }],
@@ -4470,6 +4551,19 @@
         try { await api("/journal/" + encodeURIComponent(n.id), { method: "DELETE" }); refreshJournalPanel(); } catch (err) { showError("#journal-error", err); } } }) }],
       d.pending, ""));
   }
+
+  function openDaily(t) {
+    $("#daily-title").textContent = `${t.symbol}: open P&L each day`;
+    $("#daily-trade").textContent = `${t.side === "SHORT" ? "Sold" : "Bought"} ${t.quantity} at ₹${inr2.format(t.entry)} · opened ${t.opened_at} IST`
+      + (t.closed_at && t.status === "Closed" ? ` · closed ${t.closed_at} IST at ₹${inr2.format(t.exit)}, booked ${signedInr(t.pnl)}` : " · still open");
+    $("#daily-body").replaceChildren(table([
+      { label: "Date", get: (r) => r.day },
+      { label: "Highest open P&L", num: true, get: (r) => signedInr(r.high), tone: (r) => tone(r.high) }, { label: "at (IST)", get: (r) => r.high_at },
+      { label: "Lowest open P&L", num: true, get: (r) => signedInr(r.low), tone: (r) => tone(r.low) }, { label: "at (IST)", get: (r) => r.low_at }],
+      t.daily || [], "Nothing recorded."));
+    $("#daily-dialog").showModal();
+  }
+  $("#daily-close").addEventListener("click", () => $("#daily-dialog").close());
 
   const noteView = { trade: null };
   function openNote(trade) {
