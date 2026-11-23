@@ -351,3 +351,7 @@ table.legs-edit td:last-child { width: 1%; }
   table.legs-edit td { display: block; padding: 0; border: 0; width: auto !important; }
   table.legs-edit select, table.legs-edit input { min-width: 0; }
 }
+
+.exit-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.exit-bar .hint { flex: 1 1 220px; margin: 0; }
+.algo .pick { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; font-size: .85em; }
