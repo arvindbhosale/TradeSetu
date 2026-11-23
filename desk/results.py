@@ -47,7 +47,7 @@ def positions(closed: list[dict], open_rows: list[dict], notes: dict[str, dict])
                  "opened_at": first["opened_at"], "closed_at": last["time_ist"],
                  "days": (closed_at.date() - opened.date()).days if opened and closed_at else None,
                  "status": "Part closed" if key in still_open else "Closed", "note": note,
-                 "r": None, "exits": _exits(rows, long)}
+                 "r": None, "exits": _exits(rows, long), "entries": _entries(rows, factor=first.get("multiplier", 1))}
         if note and note.get("stop") and entry and quantity:
             risk = abs(entry - note["stop"]) * quantity * first.get("multiplier", 1)
             trade["r"] = round(pnl / risk, 2) if risk else None
@@ -63,6 +63,13 @@ def positions(closed: list[dict], open_rows: list[dict], notes: dict[str, dict])
     out.sort(key=lambda t: t["closed_at"] or "9999", reverse=True)
     out.sort(key=lambda t: t["status"] != "Open")
     return out
+
+
+def _entries(rows: list[dict], factor: float = 1) -> list[dict]:
+    """Each buy (or sell, for a short) that opened or added to a position, oldest first: more than one when the
+    position was added to."""
+    seen = rows[-1].get("entries") or []
+    return [{**e, "quantity": round(e["quantity"] / factor, 6) if factor != 1 else e["quantity"]} for e in seen]
 
 
 def _exits(rows: list[dict], long: bool) -> list[dict]:

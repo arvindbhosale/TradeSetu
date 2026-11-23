@@ -12,6 +12,11 @@ check of an idea, not a measured edge.
 
 Book profit in steps (``steps``, in lots, levels in % or points of the premium paid): checked on each candle's close
 like the stoploss and target, closing that many lots of the option there and holding the rest.
+
+Add to winners (``adds``, in lots, levels in % or points of the first premium paid): checked on each candle's close,
+buying that many more lots of the same option when the capital covers the premium (else skipped and counted). After
+an add the stoploss of every lot moves so a fall to it loses no more than the first lots' planned loss (their whole
+premium without a stoploss); see ``scalein.stop_price``. Adds stop once a profit step has been booked.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from . import market
 from .backtest import BacktestParams, _curve_stats, _metrics, _points
 from .charges import order_charges
 from .fno import exchange_of
+from .scalein import NONE as NO_ADDS, Adds, stop_price
 from .scaleout import NONE as NO_STEPS, Steps
 
 RATE = 0.065            # risk-free rate for option pricing, about the 91-day T-bill
@@ -191,7 +197,7 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
                 lots: int, lot_size: int, side: str = "calls", moneyness: int = 0, min_days: float = 2,
                 expiry_weekday: int = 1, stop_pct: float = 0, target_pct: float = 0, iv_scale: float = 1.0,
                 slippage_pct: float = 1.0, intraday: bool = False, square_off: str = "15:00", strategy_name: str = "",
-                steps: Steps = NO_STEPS) -> dict:
+                steps: Steps = NO_STEPS, adds: Adds = NO_ADDS) -> dict:
     """Buy options on the underlying strategy's signals, priced with Black-Scholes. See the module note."""
     if side not in ("calls", "puts", "both"):
         raise ValueError("side must be calls, puts or both")
@@ -203,6 +209,8 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
         raise ValueError("not enough candles")
     if steps.active and sum(steps.lots()) > lots:
         raise ValueError(f"the profit steps close {sum(steps.lots())} lots but the position has {lots}")
+    if adds.active and lots + adds.total() > 50:
+        raise ValueError(f"{lots} lots plus {adds.total():g} added is more than 50 lots")
     exchange = exchange_of(underlying)
     step = STRIKE_STEP.get(underlying, 50)
     vol_by_day = (vix / 100).reindex(bars.index.normalize().unique()).ffill().bfill()
@@ -220,6 +228,7 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
     equity = []
     plan = steps.lots() if steps.active else []
     steps_booked = 0
+    adds_made = adds_skipped = 0
 
     def vol_at(stamp):
         return float(vol_by_day.get(stamp.normalize(), vol_by_day.iloc[-1])) * iv_scale
@@ -246,11 +255,14 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
         fill, pnl = settle(premium, held["lots"])
         pnl += held["booked"]
         trade = {"entry_date": held["opened"].strftime("%Y-%m-%d %H:%M"), "exit_date": stamps[i].strftime("%Y-%m-%d %H:%M"),
-                 "contract": held["label"], "quantity": quantity, "lots": lots, "entry_price": round(held["premium"], 2),
+                 "contract": held["label"], "quantity": held["bought"] * lot_size, "lots": held["bought"],
+                 "entry_price": round(held["premium"], 2),
                  "exit_price": round(fill, 2), "pnl": round(pnl, 2), "return_pct": round(pnl / held["cost"] * 100, 2),
                  "days": (stamps[i] - held["opened"]).days, "exit": reason, "open": False}
         if held["partials"]:
             trade["partials"] = held["partials"]
+        if held["adds"]:
+            trade["adds"], trade["average_price"] = held["adds"], round(held["avg"], 2)
         trades.append(trade)
         held = None
 
@@ -271,6 +283,33 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
             steps_booked += 1
             held["partials"].append({"date": stamps[i].strftime("%Y-%m-%d %H:%M"), "lots": n, "quantity": n * lot_size,
                                      "price": round(fill, 2), "pnl": round(pnl, 2), "why": f"profit step {held['done']}"})
+
+    def add_more(i, premium) -> None:
+        """Add ``adds_done``: buy that many more lots of the held option at ``premium`` when the cash covers it."""
+        nonlocal cash, total_charges, adds_made, adds_skipped
+        n = adds.lots()[held["adds_done"]]
+        held["adds_done"] += 1
+        fill = premium * (1 + slip)
+        qty = n * lot_size
+        fees = option_charges("BUY", qty, fill, exchange)
+        stamp_text = stamps[i].strftime("%Y-%m-%d %H:%M")
+        if qty * fill + fees > cash:
+            adds_skipped += 1
+            held["adds"].append({"date": stamp_text, "lots": 0, "quantity": 0, "price": round(fill, 2),
+                                 "why": f"add {held['adds_done']} skipped: cash short"})
+            return
+        cash -= qty * fill + fees
+        total_charges += fees
+        held["avg"] = (held["avg"] * held["lots"] + fill * n) / (held["lots"] + n)
+        held["lots"] += n
+        held["bought"] += n
+        held["open_cost"] += qty * fill + fees
+        held["cost"] += qty * fill + fees
+        adds_made += 1
+        moved = stop_price(1, held["avg"], held["lots"] * lot_size, held["risk"], adds.stop_after)
+        held["add_stop"] = moved if held["add_stop"] is None else max(held["add_stop"], moved)
+        held["adds"].append({"date": stamp_text, "lots": n, "quantity": qty, "price": round(fill, 2),
+                             "why": f"add {held['adds_done']}", "stop": round(held["add_stop"], 2)})
 
     for i in range(len(stamps)):
         stamp, spot_open = stamps[i], opens[i]
@@ -305,17 +344,28 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
                     total_charges += fees
                     held = {**option, "premium": premium, "cost": cost, "opened": stamp,
                             "label": f"{underlying} {expiry:%d %b} {strike:g} {wanted_kind}",
-                            "lots": lots, "open_cost": cost, "done": 0, "booked": 0.0, "partials": []}
+                            "lots": lots, "open_cost": cost, "done": 0, "booked": 0.0, "partials": [],
+                            "avg": premium, "bought": lots, "adds_done": 0, "add_stop": None, "adds": [],
+                            # the loss the first lots planned: to the stoploss, or the whole premium without one
+                            "risk": quantity * premium * (stop_pct / 100 if stop_pct else 1)}
         if held is not None:
             now_premium = price(held, stamp + pd.Timedelta(minutes=1), closes[i])
             moved = steps.lock(held["done"]) if steps.active else None
-            locked = held["premium"] + steps.distance(held["premium"], moved) if moved is not None else None
+            locked = (held["avg"] if not moved else held["premium"] + steps.distance(held["premium"], moved)) \
+                if moved is not None else None
             if stop_pct and now_premium <= held["premium"] * (1 - stop_pct / 100):
                 close(i, now_premium, "stoploss")
             elif locked is not None and now_premium <= locked:
                 close(i, now_premium, steps.lock_name(held["done"]))
+            elif held["add_stop"] is not None and now_premium <= held["add_stop"]:
+                close(i, now_premium, "stoploss moved after adding")
             else:
                 take_steps(i, now_premium)
+                while (held is not None and adds.active and not held["done"] and held["adds_done"] < len(adds.levels)
+                       and now_premium >= held["premium"] + adds.distance(held["premium"], adds.levels[held["adds_done"]])
+                       and not (intraday and stamp.time() >= cutoff)
+                       and not (target_pct and now_premium >= held["premium"] * (1 + target_pct / 100))):
+                    add_more(i, now_premium)
                 if held is not None and target_pct and now_premium >= held["premium"] * (1 + target_pct / 100):
                     close(i, now_premium, "target")
         value = cash + (held["lots"] * lot_size * price(held, stamp + pd.Timedelta(minutes=1), closes[i]) if held is not None else 0)
@@ -328,7 +378,9 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
                        "quantity": quantity, "lots": lots, "entry_price": round(held["premium"], 2), "exit_price": round(last, 2),
                        "pnl": round(pnl, 2), "return_pct": round(pnl / held["cost"] * 100, 2),
                        "days": (stamps[-1] - held["opened"]).days, "exit": "open", "open": True,
-                       **({"partials": held["partials"]} if held["partials"] else {})})
+                       **({"partials": held["partials"]} if held["partials"] else {}),
+                       **({"adds": held["adds"], "average_price": round(held["avg"], 2)} if held["adds"] else {})})
+        trades[-1].update(quantity=held["bought"] * lot_size, lots=held["bought"])
     curve = pd.Series(equity, index=stamps)
     hold = capital * bars["Close"] / bars["Close"].iloc[0]
     if intraday:
@@ -344,7 +396,8 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
     return {"strategy": {"name": f"{strategy_name} → {side} ({where})"},
             "params": params.__dict__, "simulated": True, "lot_size": lot_size,
             "period": {"start": curve.index[0].strftime("%Y-%m-%d"), "end": curve.index[-1].strftime("%Y-%m-%d"), "bars": len(bars), "days": len(curve)},
-            "metrics": {**_metrics(curve, trades, params, total_charges, in_market), "steps_booked": steps_booked},
+            "metrics": {**_metrics(curve, trades, params, total_charges, in_market), "steps_booked": steps_booked,
+                        "adds_made": adds_made, "adds_skipped": adds_skipped},
             "buy_hold": _curve_stats(hold, params),
             "trades": trades, "equity": _points(curve), "buy_hold_equity": _points(hold), "benchmark_equity": None, "benchmark": None,
             "symbol": underlying, "skipped_entries": skipped}

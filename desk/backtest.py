@@ -26,6 +26,13 @@ How a run trades, so its figures can be read for what they are:
   are taken in price order, and a target above them after them; a stoploss in the same candle comes first. A
   stoploss moved by a step (to cost, or to the previous step) applies from the next candle. A trade is one row: its
   partial sales are listed under ``partials`` and added into its P&L.
+- Add to winners (``adds``, ``scalein.Adds``): more shares are bought at each profit level above the first buy (filled
+  at the level, or at the open when the day opens past it), when the cash covers them; one that cannot be paid for is
+  skipped and counted. With adds the first buy uses only the part of the allocation that leaves room for every add at
+  its level's price (``scalein.Adds.first_budget``), so the adds fit in the same money.
+  Levels, the stoploss and the target are measured from the first buy; after an add the stoploss of the whole
+  position moves (``scalein.stop_price``) from the next candle. Adds and steps in one candle are taken in price
+  order; once a step has booked part of the position no more adds are made. Adds are listed under ``adds``.
 - Long only, whole shares, one position.
 - Prices are adjusted for splits and bonuses (Yahoo's for dividends too).
 - Each trade records how far it fell and rose from its entry (``worst_pct``, ``best_pct``), and
@@ -46,6 +53,7 @@ import pandas as pd
 
 from .charges import DEFAULT_SCHEDULE, ChargeSchedule, order_charges
 from .risk import ExitRules
+from .scalein import Adds, stop_price
 from .scaleout import NONE as NO_STEPS, Steps
 from .strategies import STRATEGIES
 
@@ -70,6 +78,7 @@ class BacktestParams:
     trade_end: str = "15:00"           # no entries from here on (intraday trades)
     square_off: str = "15:00"          # open intraday positions are closed at this time
     steps: Steps | None = None         # book profit in steps: part of the shares sold at each profit level
+    adds: Adds | None = None           # add to winners: more shares bought at each profit level
 
     @property
     def holds_overnight(self) -> bool:
@@ -85,9 +94,10 @@ class BacktestParams:
         return ExitRules(unit="pct", stop_loss=self.stop_loss_pct, target=self.target_pct)
 
     def as_dict(self) -> dict:
-        out = {k: v for k, v in self.__dict__.items() if k not in ("exits", "steps")}
+        out = {k: v for k, v in self.__dict__.items() if k not in ("exits", "steps", "adds")}
         out["exits"] = self.rules().as_dict()
         out["steps"] = (self.steps or NO_STEPS).as_dict() if self.steps and self.steps.active else None
+        out["adds"] = self.adds.as_dict() if self.adds and self.adds.active else None
         out["trade_type"] = self.trade_type
         return out
 
@@ -195,6 +205,14 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
     bought = 0               # shares bought
     partials: list[dict] = []
     steps_booked = 0
+    adds = params.adds if params.adds is not None and params.adds.active else None
+    first_qty = 0            # shares of the first buy: what the adds are a % of
+    average = 0.0            # average buy price of the shares held, before charges
+    adds_done = 0            # add levels passed in the open position (made or skipped)
+    add_stop = None          # the whole position's stoploss after an add
+    risk0 = 0.0              # the loss the first buy's stoploss planned, in rupees
+    added: list[dict] = []
+    adds_made = adds_skipped = 0
 
     def sell(i: int, price: float, n: int) -> float:
         """Sell ``n`` of the shares held; returns their profit after charges."""
@@ -202,8 +220,8 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
         if product == "CNC" and sessions[i] == sessions[entry_index]:
             # Bought and sold in one session: the exchange nets it as an intraday trade, so both legs pay
             # intraday rates (no delivery STT or DP charge). The buy was charged as delivery: refund the difference.
-            paid = order_charges("BUY", n, entry_price, "CNC", params.exchange, schedule).total
-            due = order_charges("BUY", n, entry_price, "MIS", params.exchange, schedule).total
+            paid = order_charges("BUY", n, average, "CNC", params.exchange, schedule).total
+            due = order_charges("BUY", n, average, "MIS", params.exchange, schedule).total
             cash += paid - due
             total_charges -= paid - due
             entry_cost -= paid - due
@@ -231,6 +249,8 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
         }
         if partials:
             trade["partials"] = list(partials)
+        if added:
+            trade["adds"], trade["average_price"] = list(added), round(average, 2)
         trades.append(trade)
 
     def book_step(i: int, price: float, n: int) -> None:
@@ -241,10 +261,39 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
         partials.append({"date": dates[i].strftime(stamp), "quantity": n, "price": round(price, 2),
                          "pnl": round(float(pnl), 2), "why": f"profit step {done}"})
 
+    def add_more(i: int, price: float) -> None:
+        """Add ``adds_done``: buy that % of the first buy's shares at ``price`` when the cash covers it."""
+        nonlocal cash, qty, entry_cost, total_charges, invested, bought, average, adds_done, add_stop, plan
+        nonlocal adds_made, adds_skipped
+        n = adds.shares(first_qty, adds_done)
+        adds_done += 1
+        fees = order_charges("BUY", n, price, product, params.exchange, schedule).total if n > 0 else 0.0
+        if n <= 0 or n * price + fees > cash:
+            adds_skipped += 1
+            added.append({"date": dates[i].strftime(stamp), "quantity": 0, "price": round(price, 2),
+                          "why": f"add {adds_done} skipped: " + ("less than one share" if n <= 0 else "cash short")})
+            return
+        cash -= n * price + fees
+        total_charges += fees
+        entry_cost += n * price + fees
+        invested += n * price + fees
+        average = (average * qty + price * n) / (qty + n)
+        qty += n
+        bought += n
+        adds_made += 1
+        moved = stop_price(1, average, qty, risk0, adds.stop_after)
+        add_stop = moved if add_stop is None else max(add_stop, moved)
+        if steps:
+            plan = steps.shares(bought)              # no step is booked yet: the steps share out every share
+        added.append({"date": dates[i].strftime(stamp), "quantity": n, "price": round(price, 2),
+                      "why": f"add {adds_done}", "stop": round(add_stop, 2)})
+
     def buy(i: int, price: float, again: bool = False) -> bool:
         nonlocal cash, qty, entry_price, entry_cost, entry_index, total_charges, peak, reentry_trade, worst, best
         nonlocal plan, done, booked, invested, bought, partials
-        shares = _max_quantity(min(cash, cash * params.allocation_pct / 100), price,
+        nonlocal first_qty, average, adds_done, add_stop, risk0, added
+        budget = min(cash, cash * params.allocation_pct / 100)
+        shares = _max_quantity(adds.first_budget(budget, price) if adds else budget, price,
                                params.exchange, schedule, product)
         if shares <= 0:
             return False
@@ -257,6 +306,10 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
         reentry_trade = again
         bought, invested, booked, done, partials = shares, entry_cost, 0.0, 0, []
         plan = steps.shares(shares) if steps else []
+        first_qty, average, adds_done, add_stop, added = shares, price, 0, None, []
+        if adds:
+            stop = exit_levels()[0]
+            risk0 = shares * (price - stop) if stop is not None and stop < price else 0.0
         return True
 
     def exit_levels():
@@ -268,9 +321,11 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
                 stop, kind = trail, "trailing stoploss"
         moved = steps.lock(done) if steps else None
         if moved is not None:
-            locked = entry_price + steps.distance(entry_price, moved)
+            locked = average if not moved else entry_price + steps.distance(entry_price, moved)
             if stop is None or locked > stop:
                 stop, kind = locked, steps.lock_name(done)
+        if add_stop is not None and (stop is None or add_stop > stop):
+            stop, kind = add_stop, "stoploss moved after adding"
         return stop, kind, goal
 
     for i in range(len(bars)):
@@ -315,7 +370,7 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
             reentries_left = rules.reentry
 
         # 2. Stoploss, profit steps and target on a position held through today.
-        if qty > 0 and (rules.active or trail_frac or steps):
+        if qty > 0 and (rules.active or trail_frac or steps or adds):
             stop, kind, goal = exit_levels()
             gapped = held_before      # an entry made at this open cannot gap past its own levels
             low, high = (closes[i], closes[i]) if close_only else (lows[i], highs[i])
@@ -326,10 +381,17 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
                 if kind == "stoploss" and reentries_left > 0:
                     rearm = {"price": entry_price / (1 + slip), "left": reentries_left}
             else:
-                while steps and done < len(plan) and qty > 0:
-                    level = entry_price + steps.distance(entry_price, steps.levels[done])
+                while qty > 0:
+                    step_at = (entry_price + steps.distance(entry_price, steps.levels[done])
+                               if steps and done < len(plan) else math.inf)
+                    add_at = (entry_price + adds.distance(entry_price, adds.levels[adds_done])
+                              if adds and not done and adds_done < len(adds.levels) and may_enter else math.inf)
+                    level = min(step_at, add_at)
                     if high < level or (goal is not None and level >= goal):
                         break                              # not reached, or the target comes first
+                    if add_at < step_at:
+                        add_more(i, (max(level, opens[i]) if gapped else level) * (1 + slip))
+                        continue
                     fill = (max(level, opens[i]) if gapped else level) * (1 - slip)
                     n, done = plan[done], done + 1
                     if n >= qty:
@@ -360,6 +422,8 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
         }
         if partials:
             trade["partials"] = list(partials)
+        if added:
+            trade["adds"], trade["average_price"] = list(added), round(average, 2)
         trades.append(trade)
 
     curve = pd.Series(equity, index=dates)
@@ -375,7 +439,7 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
                    "bars": len(bars), "days": len(curve)},
         "trade_type": params.trade_type,
         "metrics": {**_metrics(curve, trades, params, total_charges, in_market), "reentries": reentries,
-                    "steps_booked": steps_booked,
+                    "steps_booked": steps_booked, "adds_made": adds_made, "adds_skipped": adds_skipped,
                     "exits": exit_summary(trades, rules)},
         "buy_hold": _curve_stats(hold, params),
         "trades": trades,

@@ -107,7 +107,7 @@ class Ledger:
             book = books.setdefault(key, {"quantity": 0, "cost": 0.0, "opened": day, "opened_at": fill["time_ist"],
                                           "factor": factor, "realized": 0.0,
                                           "charges": 0.0, "bought": 0, "buy_value": 0.0, "sold": 0, "sell_value": 0.0,
-                                          "fills": []})
+                                          "fills": [], "entries": []})
             lots = fill["quantity"]
             if fill["side"] == "BUY":
                 book["bought"] += lots
@@ -149,11 +149,19 @@ class Ledger:
                                "buy_price": round(price if buying else average, 2),
                                "sell_price": round(average if buying else price, 2),
                                "pnl": round(profit, 2),
-                               "return_pct": round(profit / (closing * average) * 100, 2) if average else 0.0})
+                               "return_pct": round(profit / (closing * average) * 100, 2) if average else 0.0,
+                               "entries": list(book["entries"])})
             rest = quantity - closing
             if rest and (buying or fill["exchange"] in ("NFO", "BFO", "MCX") or fill.get("short")):
                 if book["quantity"] == 0:
-                    book["opened"], book["opened_at"] = day, fill["time_ist"]
+                    book["opened"], book["opened_at"], book["entries"] = day, fill["time_ist"], []
+                # Each fill that opens or adds to the position: a trade with adds lists every one.
+                if book["entries"] and book["entries"][-1]["time"] == fill["time_ist"]:
+                    last = book["entries"][-1]
+                    last["price"] = round((last["price"] * last["quantity"] + price * rest) / (last["quantity"] + rest), 2)
+                    last["quantity"] += rest
+                else:
+                    book["entries"].append({"time": fill["time_ist"], "quantity": rest, "price": round(price, 2)})
                 part = charge * rest / quantity
                 book["quantity"] += rest if buying else -rest
                 book["cost"] += rest * price + part if buying else -(rest * price - part)

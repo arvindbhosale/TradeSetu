@@ -35,6 +35,15 @@ a leg marked ×2), so a step closes the bought and the sold legs together and ne
 Its level is the open position's profit at a candle's close, in rupees per lot or in % of its premium (received or
 paid; the margin when that is nil), checked like the whole-position stop and target.
 
+Add to winners (``adds``, ``scalein.Adds``), checked on a candle's close after the stops and targets: ``position``
+scope adds lots of every leg (the same strikes, at that candle's prices) when the profit of the first lot reaches a
+level, in ₹ a lot or % of its premium; ``leg`` scope adds lots of one bought option leg when its own premium has risen
+by the level (% of its first premium, or ₹ a lot). Each add needs equity for the margin of the larger position, else
+it is skipped and counted. Adds are made only while every leg of the first entry is open, before any profit step,
+and (intraday) before the exit time. After the first add, the whole position closes when its profit falls to minus
+the first entry's planned loss (its ₹ or % stoploss), or to zero without one or with ``cost``
+(``scalein.floor_after``).
+
 ``analyse`` works out one structure now, without a backtest: premiums, the
 payoff at the near expiry and today, breakevens, maximum profit and loss,
 chance of profit, Greeks and margin.
@@ -54,6 +63,7 @@ from .fno import BSE_INDICES, exchange_of
 from .futures import monthly_expiries
 from .options import RATE, STRIKE_STEP, bs_greeks, bs_price, implied_vol, option_charges
 from .risk import ExitRules
+from .scalein import NONE as NO_ADDS, Adds, floor_after
 from .scaleout import NONE as NO_STEPS, Steps
 
 # (action, type, offset[, ratio[, series]]): action +1 buy / -1 sell; offset in strikes from the money, k = short
@@ -482,7 +492,8 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                   signal: pd.Series | None = None, margin_pct: float = 12.0, iv_scale: float = 1.0, skew: float = 0.0,
                   slippage_pct: float = 1.0, holidays=frozenset(), risk_free_rate_pct: float = 6.5,
                   leg_exits: ExitRules | None = None, leg_scope: str = "sold", history=None, legs=None,
-                  stop_rs: float = 0.0, target_rs: float = 0.0, expiry_ahead: int = 0, steps: Steps = NO_STEPS) -> dict:
+                  stop_rs: float = 0.0, target_rs: float = 0.0, expiry_ahead: int = 0, steps: Steps = NO_STEPS,
+                  adds: Adds = NO_ADDS) -> dict:
     """Backtest one structure. ``leg_exits`` are each option leg's own exit rules (stoploss, target, trailing,
     stoploss to cost, re-entry; ``risk.ExitRules``, distances on the leg's premium) for the legs ``leg_scope``
     names: ``sold``, ``bought`` or ``all``. Without them ``leg_sl_pct`` is a % stoploss on each sold leg.
@@ -528,6 +539,12 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
         raise ValueError(f"the profit steps close {sum(steps.lots())} lots but the position has {lots}")
     if steps.active and steps.unit not in ("pct", "rs"):
         raise ValueError("an option strategy's profit steps are in ₹ a lot or % of the premium")
+    if adds.active and adds.unit not in ("pct", "rs"):
+        raise ValueError("an option strategy's adds are in ₹ a lot or % of the premium")
+    if adds.active and lots + adds.total() > 50:
+        raise ValueError(f"{lots} lots plus {adds.total():g} added is more than 50 lots")
+    if adds.active and adds.scope == "leg" and not any(x["action"] > 0 and x["type"] != "FUT" for x in specs):
+        raise ValueError("only a bought option leg can be added to on its own, and this strategy has none")
     if leg_exits is None:
         leg_exits = ExitRules(unit="pct", stop_loss=leg_sl_pct)
     leg_exits.validate("Each leg")
@@ -566,12 +583,17 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
     book = None             # {"legs": [...], "expiry", "opened_i", "margin", "net_open", "qty": lots open × lot size}
     plan = steps.lots() if steps.active else []
     steps_booked = 0
+    adds_made = adds_skipped = 0
 
-    def leg_fee(leg, side, price, size=None):
+    def leg_fee(leg, side, price, size=None, extra=0):
         size = (book["qty"] if book else qty) if size is None else size
         if leg["type"] == "FUT":
-            return futures_charges(side, size * leg["ratio"], price, exchange).total
-        return option_charges(side, size * leg["ratio"], price, exchange)
+            return futures_charges(side, size * leg["ratio"] + extra, price, exchange).total
+        return option_charges(side, size * leg["ratio"] + extra, price, exchange)
+
+    def units(g) -> int:
+        """How much of a leg is open: its share of the position's lots, and lots added to it alone."""
+        return book["qty"] * g["ratio"] + g.get("extra", 0)
 
     def pick_expiry(stamp, after, least):
         """The first expiry ``least`` days after ``after``: one NSE listed that day when the history has the day."""
@@ -619,17 +641,20 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
         net = sum(-g["action"] * g["ratio"] * g["entry"] for g in legs if g["type"] != "FUT") * qty     # + credit, − debit
         book = {"legs": legs, "expiry": expiry, "opened_i": i, "margin": margin, "net_open": net, "fees": fees,
                 "realised": 0.0, "stopped": 0, "reentries": 0, "spot": spot, "qty": qty, "lots": lots, "done": 0,
-                "partials": []}
+                "partials": [], "bought": lots, "adds_done": 0, "adds": [], "floor": None,
+                # the loss the first entry's whole-position stoploss planned, in rupees (0: none set)
+                "risk": max(stop_rs, stop_pct / 100 * (abs(net) or margin)) if (stop_rs or stop_pct) else 0.0}
 
-    def settle_leg(g, price, size, side_fee=True) -> float:
-        """Close ``size`` (lots open × lot size) of a leg at ``price``; returns the fill."""
+    def settle_leg(g, price, size, side_fee=True, extra=0) -> float:
+        """Close ``size`` (lots open × lot size) of a leg, and ``extra`` added to it alone, at ``price``; returns
+        the fill."""
         nonlocal cash, total_charges
         leg_slip = FUT_SLIP if g["type"] == "FUT" else slip
         fill = price * (1 - leg_slip) if g["action"] > 0 else price * (1 + leg_slip)
         if g["type"] != "FUT" and price <= 0:
             fill = 0.0
-        pnl = g["action"] * (fill - g["entry"]) * size * g["ratio"]
-        fee = leg_fee(g, "SELL" if g["action"] > 0 else "BUY", max(fill, 0.05), size) \
+        pnl = g["action"] * (fill - g["entry"]) * (size * g["ratio"] + extra)
+        fee = leg_fee(g, "SELL" if g["action"] > 0 else "BUY", max(fill, 0.05), size, extra) \
             if side_fee and (fill > 0 or g["type"] == "FUT") else 0.0
         cash += pnl - fee
         total_charges += fee
@@ -638,22 +663,28 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
         return fill
 
     def close_leg(g, price, side_fee=True):
-        g["open"], g["exit"] = False, settle_leg(g, price, book["qty"], side_fee)
+        g["open"], g["exit"] = False, settle_leg(g, price, book["qty"], side_fee, g.get("extra", 0))
 
     def mtm(spot, stamp):
-        return sum(g["action"] * (pricer.price(g, spot, stamp, g["expiry"]) - g["entry"]) * book["qty"] * g["ratio"]
+        return sum(g["action"] * (pricer.price(g, spot, stamp, g["expiry"]) - g["entry"]) * units(g)
                    for g in book["legs"] if g["open"])
 
-    def per_lot(spot, stamp) -> float | None:
-        """The open legs' profit for one lot of the position: rupees, or % of their premium (the margin when nil)."""
+    def first(g) -> float:
+        """A leg's first entry price: profit levels are measured from it."""
+        return g.get("first", g["entry"])
+
+    def per_lot(spot, stamp, unit=None) -> float | None:
+        """The open legs' profit for one lot of the position, from the first entry: rupees, or % of their premium
+        (the margin when nil)."""
+        unit = unit or steps.unit
         open_legs = [g for g in book["legs"] if g["open"]]
         if not open_legs:
             return None
         prices = {id(g): pricer.price(g, spot, stamp, g["expiry"]) for g in open_legs}
-        pnl = sum(g["action"] * (prices[id(g)] - g["entry"]) * lot_size * g["ratio"] for g in open_legs)
-        if steps.unit == "rs":
+        pnl = sum(g["action"] * (prices[id(g)] - first(g)) * lot_size * g["ratio"] for g in open_legs)
+        if unit == "rs":
             return pnl
-        base = abs(sum(-g["action"] * g["ratio"] * g["entry"] for g in open_legs if g["type"] != "FUT")) * lot_size
+        base = abs(sum(-g["action"] * g["ratio"] * first(g) for g in open_legs if g["type"] != "FUT")) * lot_size
         base = base or book["margin"] / book["lots"]
         return pnl / base * 100 if base else None
 
@@ -672,6 +703,97 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
         book["partials"].append({"date": stamp.strftime("%Y-%m-%d %H:%M"), "lots": n, "quantity": n * lot_size,
                                  "price": round(spot, 2), "pnl": round(book["realised"] - book["fees"] - before, 2),
                                  "why": f"profit step {book['done']}"})
+
+    def addable() -> bool:
+        """Adds are made only to the first entry as it was: every leg open, none stopped or entered again, no
+        profit step booked."""
+        return (book["done"] == 0 and not book["stopped"] and not book["reentries"]
+                and all(g["open"] for g in book["legs"]))
+
+    def add_record(stamp, lots_added, why, price=None):
+        book["adds"].append({"date": stamp.strftime("%Y-%m-%d %H:%M"), "lots": lots_added,
+                             "quantity": lots_added * lot_size, **({"price": round(price, 2)} if price else {}),
+                             "why": why})
+
+    def grow(g, mid, add_units):
+        """Open ``add_units`` more of leg ``g`` at its model price ``mid``; its entry becomes the average."""
+        nonlocal cash, total_charges
+        leg_slip = FUT_SLIP if g["type"] == "FUT" else slip
+        fill = mid * (1 + leg_slip) if g["action"] > 0 else mid * (1 - leg_slip)
+        g.setdefault("first", g["entry"])
+        before = units(g)
+        g["entry"] = (g["entry"] * before + fill * add_units) / (before + add_units)
+        if g["type"] == "FUT":
+            fee = futures_charges("BUY" if g["action"] > 0 else "SELL", add_units, fill, exchange).total
+        else:
+            fee = option_charges("BUY" if g["action"] > 0 else "SELL", add_units, fill, exchange)
+            pricer.count()
+        cash -= fee
+        total_charges += fee
+        book["fees"] += fee
+        return fill
+
+    def add_position(i, spot, stamp) -> None:
+        """Add the next level's lots of every leg, bought legs first, when equity covers the larger position."""
+        nonlocal adds_made, adds_skipped
+        n = adds.lots()[book["adds_done"]]
+        book["adds_done"] += 1
+        mids = {id(g): pricer.price(g, spot, stamp, g["expiry"]) for g in book["legs"]}
+        need = estimate_margin([{**g, "entry": mids[id(g)]} for g in book["legs"]], spot,
+                               (book["lots"] + n) * lot_size, margin_pct)
+        if need > cash + mtm(spot, stamp):
+            adds_skipped += 1
+            add_record(stamp, 0, f"add {book['adds_done']} skipped: margin short")
+            return
+        for g in sorted(book["legs"], key=lambda x: x["action"] < 0):        # bought legs first
+            grow(g, mids[id(g)], n * lot_size * g["ratio"])
+        book["lots"] += n
+        book["bought"] += n
+        book["qty"] = book["lots"] * lot_size
+        book["margin"] = need
+        adds_made += 1
+        book["floor"] = floor_after(book["risk"], adds.stop_after)
+        add_record(stamp, n, f"add {book['adds_done']}: {n} lot{'s' if n != 1 else ''} of every leg", spot)
+
+    def add_leg(i, g, spot, stamp) -> None:
+        """Add the next level's lots of one bought option leg, when equity covers its premium."""
+        nonlocal adds_made, adds_skipped
+        n = adds.lots()[g.get("adds_done", 0)]
+        g["adds_done"] = g.get("adds_done", 0) + 1
+        mid = pricer.price(g, spot, stamp, g["expiry"])
+        premium = n * lot_size * mid * (1 + slip)
+        if book["margin"] + premium > cash + mtm(spot, stamp):
+            adds_skipped += 1
+            add_record(stamp, 0, f"add {g['adds_done']} to the bought {g['strike']:g} {g['type']} skipped: money short")
+            return
+        fill = grow(g, mid, n * lot_size)
+        g["extra"] = g.get("extra", 0) + n * lot_size
+        book["margin"] += premium
+        adds_made += 1
+        book["floor"] = floor_after(book["risk"], adds.stop_after)
+        add_record(stamp, n, f"add {g['adds_done']}: {n} lot{'s' if n != 1 else ''} of the bought {g['strike']:g} "
+                             f"{g['type']}", fill)
+
+    def take_adds(i, stamp) -> None:
+        if not adds.active or not addable() or (intraday and stamp.time() >= t_exit):
+            return
+        spot = closes[i]
+        if adds.scope == "position":
+            while book["adds_done"] < len(adds.levels):
+                profit = per_lot(spot, stamp, adds.unit)
+                if profit is None or profit < adds.levels[book["adds_done"]]:
+                    return
+                add_position(i, spot, stamp)
+            return
+        for g in [x for x in book["legs"] if x["action"] > 0 and x["type"] != "FUT" and x["open"]]:
+            while g.get("adds_done", 0) < len(adds.levels):
+                price = pricer.price(g, spot, stamp, g["expiry"])
+                start = first(g)
+                gain = ((price - start) / start * 100 if start else 0.0) if adds.unit == "pct" \
+                    else (price - start) * lot_size * g["ratio"]
+                if gain < adds.levels[g.get("adds_done", 0)]:
+                    break
+                add_leg(i, g, spot, stamp)
 
     def close_book(i, spot, stamp, reason, at_expiry=False):
         nonlocal book
@@ -700,7 +822,10 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                        "return_pct": round(pnl / book["margin"] * 100, 2) if book["margin"] else None,
                        "days": int((stamp - stamps[book["opened_i"]]).days), "exit": reason, "legs_stopped": book["stopped"],
                        "reentries": book["reentries"], "margin": round(book["margin"], 0), "open": False,
-                       **({"partials": book["partials"]} if book["partials"] else {})})
+                       **({"partials": book["partials"]} if book["partials"] else {}),
+                       **({"adds": book["adds"]} if book["adds"] else {})})
+        if book["bought"] != lots:
+            trades[-1].update(lots=book["bought"], quantity=book["bought"] * lot_size)
         book = None
 
     def in_scope(g) -> bool:
@@ -713,7 +838,7 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
     def reopen(g, i, stamp, price_mid):
         """Open the leg again (a re-entry), as a new leg of the same book."""
         nonlocal cash, total_charges
-        leg = {k: v for k, v in g.items() if k not in ("exit", "rearm")}
+        leg = {k: v for k, v in g.items() if k not in ("exit", "rearm", "first", "extra", "adds_done")}
         leg_slip = slip
         leg["entry"] = price_mid * (1 + leg_slip) if g["action"] > 0 else price_mid * (1 - leg_slip)
         leg["mid"] = leg["best"] = price_mid
@@ -780,13 +905,15 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                     close_leg(g, first if gapped else goal)
                 else:
                     g["best"] = max(g["best"], high) if side > 0 else min(g["best"], low)
-        if (stop_pct or target_pct or stop_rs or target_rs or steps.active) and book:
+        if book and (stop_pct or target_pct or stop_rs or target_rs or steps.active or book["floor"] is not None):
             base = abs(book["net_open"]) or book["margin"]
             running = book["realised"] + mtm(closes[i], stamp)
             if stop_rs and running <= -stop_rs:
                 return "stoploss in ₹"
             if stop_pct and running <= -stop_pct / 100 * base:
                 return "stoploss"
+            if book["floor"] is not None and running <= book["floor"]:
+                return "stoploss moved after adding"
             if steps.active:
                 profit = per_lot(closes[i], stamp)
                 moved = steps.lock(book["done"])
@@ -803,6 +930,8 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                 return "target in ₹"
             if target_pct and running >= target_pct / 100 * base:
                 return "target"
+        if adds.active and book:
+            take_adds(i, stamp)
         return None
 
     def live(b) -> bool:
@@ -861,7 +990,10 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                        "pnl": round(running, 2), "return_pct": round(running / book["margin"] * 100, 2) if book["margin"] else None,
                        "days": int((stamps[-1] - stamps[book["opened_i"]]).days), "exit": "open", "legs_stopped": book["stopped"],
                        "reentries": book["reentries"], "margin": round(book["margin"], 0), "open": True,
-                       **({"partials": book["partials"]} if book["partials"] else {})})
+                       **({"partials": book["partials"]} if book["partials"] else {}),
+                       **({"adds": book["adds"]} if book["adds"] else {})})
+        if book["bought"] != lots:
+            trades[-1].update(lots=book["bought"], quantity=book["bought"] * lot_size)
     curve = pd.Series(equity, index=stamps)
     hold = capital * bars["Close"] / bars["Close"].iloc[0]
     if intraday:
@@ -870,6 +1002,7 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
     metrics = _metrics(curve, trades, params, total_charges, in_market)
     metrics.update(skipped_entries=skipped, legs_stopped=sum(t["legs_stopped"] for t in trades),
                    reentries=sum(t.get("reentries", 0) for t in trades), steps_booked=steps_booked,
+                   adds_made=adds_made, adds_skipped=adds_skipped,
                    avg_margin=round(float(np.mean([t["margin"] for t in trades])), 0) if trades else None)
     return {"strategy": {"name": f"{name} · {mode}"}, "structure": structure, "mode": mode,
             "legs": [{"side": "BUY" if x["action"] > 0 else "SELL", "type": x["type"], "strikes": x["n"], "lots": x["ratio"],
@@ -877,6 +1010,7 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
             "params": {**params.__dict__, "lots": lots, "lot_size": lot_size, "k": k, "w": w, "expiry_kind": expiry_kind,
                        "expiry_ahead": ahead, "leg_sl_pct": leg_sl_pct, "stop_pct": stop_pct, "target_pct": target_pct, "iv_scale": iv_scale,
                        "stop_rs": stop_rs, "target_rs": target_rs, "steps": steps.as_dict() if steps.active else None,
+                       "adds": adds.as_dict() if adds.active else None,
                        "leg_exits": leg_exits.as_dict(), "leg_scope": leg_scope},
             "simulated": pricer.used is None or pricer.used["model"] > 0, "pricing": pricer.used,
             "symbol": underlying, "skipped_entries": skipped,

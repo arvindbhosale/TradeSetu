@@ -38,6 +38,15 @@ Rules that matter with real money:
   back the sold legs first and then sells as many lots of their hedges: never a sold leg left uncovered, never a
   hedge sold alone. Levels: an option strategy's profit per lot (₹, or % of its premium), a future's move (% or
   points). A stoploss moved by a step (to cost, or to the previous step) closes what is left.
+- **Add to winners** (``adds``, ``scalein.Adds``). At each profit level from the first entry, that many lots are
+  added: of every leg (``position``: bought legs first, sold legs once every hedge has filled, as an entry), or of
+  one bought option leg whose own premium has risen by the level (``leg``; a sold leg is never added alone).
+  Before each add the margin of the added legs (Zerodha's basket figure when the Kite server has it) is checked
+  against the funds; an add that is short is skipped. Adds are made only inside the entry time and the trade window,
+  with the kill switch off, while every leg of the entry is open and before any profit step; an add that does not
+  fill is given up without touching the legs already held. After the first add the whole position closes when its
+  profit and loss falls to minus the maximum loss (``risk``), or to zero (``cost``, or a paper algo without a
+  maximum loss): the rupee loss never grows with the position. Adds count toward every risk check of an order.
 - **Expiry.** Every leg is closed at the exit time on its expiry day rather than left to settle (an in-the-money
   option left to expire pays STT on its full value).
 """
@@ -54,7 +63,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
-from . import data, market, mcx, optstrat, risk, scaleout
+from . import data, market, mcx, optstrat, risk, scalein, scaleout
 from .algo import AlgoError
 from .broker import Desk, OrderRejected, fees
 from .fno import INDICES
@@ -282,6 +291,13 @@ class FnoAlgoEngine:
         except ValueError as exc:
             raise AlgoError(f"{str(exc).rstrip('.')}.") from None
         out["steps"] = steps.as_dict() if steps.active else None
+        try:
+            adds = scalein.from_payload(raw.get("adds"), "structure" if kind == "structure" else "futures", out["lots"],
+                                        optstrat.legs_for(out["structure"], out["k"], out["w"], own)
+                                        if kind == "structure" else None)
+        except ValueError as exc:
+            raise AlgoError(f"{str(exc).rstrip('.')}.") from None
+        out["adds"] = adds.as_dict() if adds.active else None
         out["weekdays"] = sorted(set(weekdays))
         out["min_days"] = number("min_days", 0, 0, 30, "Minimum days to expiry")
         out["exit_days_before"] = number("exit_days_before", 0, 0, 10, "Exit days before expiry", True)
@@ -333,7 +349,7 @@ class FnoAlgoEngine:
             return _copy(algo)
 
     # While legs are open, only these can change: they are read afresh on every check and touch no leg's state.
-    OPEN_EDITABLE = ("max_loss", "target", "limit_buffer_pct", "leg_exits", "leg_scope", "steps")
+    OPEN_EDITABLE = ("max_loss", "target", "limit_buffer_pct", "leg_exits", "leg_scope", "steps", "adds")
     _DERIVED = ("exchange", "structure_name", "naked", "leg_sl_pct", "strategy_name", "legs_text")
 
     def update(self, algo_id: str, raw: dict) -> dict:
@@ -364,8 +380,8 @@ class FnoAlgoEngine:
                 locked = [k for k in changed if k not in self.OPEN_EDITABLE]
                 if locked:
                     raise AlgoError("This algo has open legs. While it does, only the maximum loss, the target, the "
-                                    "exit rules for each leg, the profit steps and the limit buffer can change. Exit, "
-                                    "or clear the legs, to change the rest.")
+                                    "exit rules for each leg, the profit steps, the adds and the limit buffer can "
+                                    "change. Exit, or clear the legs, to change the rest.")
             was_enabled = algo["enabled"]
             algo.update(config)
             core = [k for k in changed if k not in self.OPEN_EDITABLE]
@@ -384,8 +400,11 @@ class FnoAlgoEngine:
         how = {"intraday": f"intraday {algo['entry_time']}-{algo['exit_time']}",
                "positional": f"positional, out {algo['exit_days_before']} day(s) before expiry",
                "signal": f"on {algo.get('strategy_name')} signals"}[algo["schedule"]]
-        steps = scaleout.of(algo.get("steps")).text("structure" if algo["kind"] == "structure" else "futures")
-        return f"{what} on {algo['underlying']} ({expiry_text(algo)}), {how}" + (f"; {steps}" if steps else "")
+        kind = "structure" if algo["kind"] == "structure" else "futures"
+        steps = scaleout.of(algo.get("steps")).text(kind)
+        adds = scalein.of(algo.get("adds")).text(kind)
+        return (f"{what} on {algo['underlying']} ({expiry_text(algo)}), {how}" + (f"; {steps}" if steps else "")
+                + (f"; {adds}" if adds else ""))
 
     def set_enabled(self, algo_id: str, enabled: bool, phrase: str = "", force: bool = False) -> dict:
         with self._lock:
@@ -952,7 +971,8 @@ class FnoAlgoEngine:
         algo["book"] = {"phase": "opening", "direction": direction, "opened": self._now().strftime("%Y-%m-%d %H:%M"),
                         "day": today, "spot": round(plan["spot"], 2), "near": plan["near"], "far": plan["far"],
                         "margin": plan["margin"], "legs": plan["legs"], "reason": None, "peak": 0.0,
-                        "lots_open": algo["lots"], "steps_done": 0, "partials": []}
+                        "lots_open": algo["lots"], "steps_done": 0, "partials": [], "adds_done": 0, "adds": [],
+                        "floor": None}
         legs = ", ".join(f"{'+' if g['action'] > 0 else '−'}{g['quantity']} {g['tradingsymbol']} @ {g['ltp']:,.2f}" for g in plan["legs"])
         margin = (f"Zerodha's margin ₹{plan['margin']:,.0f}" if plan["margin_source"] == "kite"
                   else f"Margin about ₹{plan['margin']:,.0f} (estimate)")
@@ -961,7 +981,10 @@ class FnoAlgoEngine:
 
     def _work_open(self, algo: dict) -> tuple[str, bool]:
         book = algo["book"]
+        adding = book.get("adding")
         if self._now().strftime("%H:%M") >= algo["exit_time"]:
+            if adding:
+                return self._give_up_add(algo, "not filled by the exit time")
             return self._begin_close(algo, "entry not complete by the exit time", block=True)
         for group in ([g for g in book["legs"] if g["action"] > 0], [g for g in book["legs"] if g["action"] < 0]):
             todo = [g for g in group if g["open_qty"] < g["quantity"]]
@@ -971,15 +994,23 @@ class FnoAlgoEngine:
                 if leg["pending"]:
                     continue
                 if leg["tries"] >= ENTRY_TRIES:
+                    if adding:
+                        return self._give_up_add(algo, f"{leg['tradingsymbol']} did not fill after {ENTRY_TRIES} tries")
                     return self._begin_close(algo, f"{leg['tradingsymbol']} did not fill after {ENTRY_TRIES} tries; "
                                                    f"entry given up", block=True)
                 try:
                     self._send(algo, leg, "BUY" if leg["action"] > 0 else "SELL", leg["quantity"] - leg["open_qty"], "open")
                 except OrderRejected as exc:
+                    if adding:
+                        return self._give_up_add(algo, f"{leg['tradingsymbol']} refused ({exc})")
                     return self._begin_close(algo, f"{leg['tradingsymbol']} refused ({exc}); entry given up", block=True)
             if any(g["pending"] or g["open_qty"] < g["quantity"] for g in group):
                 return "Running: entering, waiting for fills", True        # the sells wait for every hedge
         book["phase"] = "open"
+        if adding:
+            return self._added(algo)
+        for g in book["legs"]:
+            g.setdefault("first", g["avg"])          # profit levels are measured from the first entry
         self._log(algo, f"Entered: every leg filled. Premium {'received' if self._net_entry(book) > 0 else 'paid'} "
                         f"₹{abs(self._net_entry(book)):,.0f}.")
         self.desk.notifier.notify(f"F&O algo “{algo['name']}” entered", f"{self._describe(algo)} · {algo['mode']}", "good")
@@ -1026,6 +1057,9 @@ class FnoAlgoEngine:
         book["pnl"], book["peak"] = round(pnl, 2), max(book.get("peak", 0.0), pnl)
         if algo["max_loss"] and pnl <= -algo["max_loss"]:
             return self._begin_close(algo, f"maximum loss: ₹{pnl:,.0f} against ₹{algo['max_loss']:,.0f}", block=True)
+        if book.get("floor") is not None and pnl <= book["floor"]:
+            return self._begin_close(algo, f"stoploss moved after adding: ₹{pnl:,.0f} against ₹{book['floor']:,.0f}",
+                                     block=True)
         if algo["target"] and pnl >= algo["target"]:
             return self._begin_close(algo, f"target: ₹{pnl:,.0f}", block=True)
         if algo["schedule"] == "intraday" and now.strftime("%H:%M") >= algo["exit_time"]:
@@ -1047,6 +1081,9 @@ class FnoAlgoEngine:
             stepped = self._profit_steps(algo, prices)
             if stepped:
                 return stepped
+            added = self._scale_in(algo, prices)
+            if added:
+                return added
         rules = self.leg_rules(algo)
         if rules.active:
             hedged = any(g["action"] < 0 and g["type"] != "FUT" for g in book["legs"])
@@ -1098,15 +1135,16 @@ class FnoAlgoEngine:
         legs = [g for g in book["legs"] if g["open_qty"]]
         if not legs or any(not prices.get(g["instrument"]) for g in legs):
             return None
+        first = lambda g: g.get("first") or g["avg"]  # noqa: E731 - levels are measured from the first entry
         if algo["kind"] == "futures":
             g = legs[0]
-            move = (prices[g["instrument"]] - g["avg"]) * (1 if g["action"] > 0 else -1)
-            return move / g["avg"] * 100 if steps.unit == "pct" else move
-        pnl = sum((prices[g["instrument"]] - g["avg"]) * (1 if g["action"] > 0 else -1) * g["ratio"] * g["lot_size"]
+            move = (prices[g["instrument"]] - first(g)) * (1 if g["action"] > 0 else -1)
+            return move / first(g) * 100 if steps.unit == "pct" else move
+        pnl = sum((prices[g["instrument"]] - first(g)) * (1 if g["action"] > 0 else -1) * g["ratio"] * g["lot_size"]
                   * g.get("mult", 1) for g in legs)
         if steps.unit == "rs":
             return pnl
-        base = abs(sum(-g["action"] * g["ratio"] * g["avg"] * g["lot_size"] * g.get("mult", 1)
+        base = abs(sum(-g["action"] * g["ratio"] * first(g) * g["lot_size"] * g.get("mult", 1)
                        for g in legs if g["type"] != "FUT"))
         base = base or (book.get("margin") or 0) / max(book.get("lots_open", algo["lots"]), 1)
         return pnl / base * 100 if base else None
@@ -1147,6 +1185,152 @@ class FnoAlgoEngine:
         self.desk.notifier.notify(f"F&O algo “{algo['name']}” booked profit on {n} lot{'s' if n != 1 else ''}",
                                   f"{why} · {book['lots_open']} left · {algo['mode']}", "good")
         return self._work_close(algo)
+
+    # -- adding to winners ----------------------------------------------------------------------------------------
+
+    def _add_blocked(self, algo: dict) -> str | None:
+        """Why no add can be made now, or None."""
+        book, now = algo["book"], self._now()
+        if book.get("steps_done"):
+            return "a profit step has been booked"
+        if any(g["closing"] or g["pending"] or g.get("rearm") or g.get("reentry") or g.get("stopped")
+               or g["open_qty"] < g["quantity"] for g in book["legs"]):
+            return "a leg is closing, stopped or entering again"
+        if self.desk.settings.get("kill_switch"):
+            return "the kill switch is on"
+        if algo.get("hold_until") and now.strftime("%Y-%m-%d") <= algo["hold_until"]:
+            return "new entries are held"
+        if self.desk.flatten_day == now.strftime("%Y-%m-%d"):
+            return "the daily loss limit was hit"
+        if not algo["entry_time"] <= now.strftime("%H:%M") < algo["exit_time"]:
+            return "outside the entry and exit times"
+        window = self._window(algo)
+        if self.desk.settings.get("enforce_trade_window") and not window["entries"]:
+            return f"outside the trade window ({window['trade_start']}-{window['trade_end']})"
+        return None
+
+    def _add_margin(self, algo: dict, legs: list[tuple[dict, int]], prices: dict) -> tuple[float, str]:
+        """The margin of the legs an add opens (``(leg, quantity)``): Zerodha's basket figure, else an estimate."""
+        kite = self.desk.kite
+        if not margin_why_not(kite):
+            product = "MIS" if algo["schedule"] == "intraday" else "NRML"
+            with contextlib.suppress(MarginUnavailable):
+                got = zerodha_basket(kite, [{"exchange": g["exchange"], "tradingsymbol": g["tradingsymbol"],
+                                             "side": "BUY" if g["action"] > 0 else "SELL", "quantity": q,
+                                             "price": prices[g["instrument"]]} for g, q in legs], product=product)
+                return float(got["total"]), "Zerodha's margin"
+        book = algo["book"]
+        if all(g["action"] > 0 and g["type"] != "FUT" for g, _ in legs):          # bought options: the premium
+            return sum(prices[g["instrument"]] * q * g.get("mult", 1) for g, q in legs), "premium"
+        lots = sum(q // (g["ratio"] * g["lot_size"]) for g, q in legs[:1])
+        return (book.get("margin") or 0) * lots / max(book.get("lots_open", algo["lots"]), 1), "margin of about"
+
+    def _skip_add(self, algo: dict, why: str) -> None:
+        self._log(algo, why)
+        self.desk.notifier.notify(f"F&O algo “{algo['name']}” skipped an add", why, "warn",
+                                  key=f"fno-add-skipped:{algo['id']}:{why[:40]}")
+
+    def _scale_in(self, algo: dict, prices: dict) -> tuple[str, bool] | None:
+        """Start the next add once the profit has reached its level. None when no add is due."""
+        adds = scalein.of(algo.get("adds"))
+        book = algo["book"]
+        if not adds.active or book["phase"] != "open":
+            return None
+        legs = [g for g in book["legs"] if g["open_qty"]]
+        if adds.scope == "leg":
+            due = []
+            for g in legs:
+                done = g.get("adds_done", 0)
+                if g["action"] < 0 or g["type"] == "FUT" or done >= len(adds.levels) or not prices.get(g["instrument"]):
+                    continue
+                start = g.get("first") or g["avg"]
+                gain = ((prices[g["instrument"]] - start) / start * 100 if adds.unit == "pct" else
+                        (prices[g["instrument"]] - start) * g["lot_size"] * g.get("mult", 1))
+                if gain >= adds.levels[done]:
+                    due.append((g, gain))
+            if not due:
+                return None
+            g, gain = due[0]
+            done, shown = g.get("adds_done", 0), (f"{gain:+.1f}%" if adds.unit == "pct" else f"₹{gain:,.0f} a lot")
+            what = f"add {done + 1} to the bought {g['tradingsymbol']} (up {shown})"
+        else:
+            done = book.get("adds_done", 0)
+            if done >= len(adds.levels):
+                return None
+            profit = self.step_profit(algo, adds, prices)
+            if profit is None or profit < adds.levels[done]:
+                return None
+            shown = (f"₹{profit:,.0f} a lot" if adds.unit == "rs" else f"{profit:+.1f}%" if adds.unit == "pct"
+                     else f"{profit:+,.2f} points")
+            what = f"add {done + 1} (profit {shown})"
+            g = None
+        blocked = self._add_blocked(algo)
+        if blocked:
+            self._log(algo, f"{what[:1].upper()}{what[1:]}: held back, {blocked}.")
+            return None
+        n = adds.lots()[done]
+        if g is not None:
+            g["adds_done"] = done + 1
+            orders = [(g, n * g["lot_size"])]
+        else:
+            book["adds_done"] = done + 1
+            orders = [(x, n * x["ratio"] * x["lot_size"]) for x in book["legs"]]
+        need, source = self._add_margin(algo, orders, prices)
+        funds = self._funds(algo)
+        if funds is not None and algo["mode"] == "paper":
+            funds -= book.get("margin") or 0                    # the paper book does not block this algo's own margin
+        if funds is None:
+            self._skip_add(algo, f"{what[:1].upper()}{what[1:]} skipped: could not read your funds from Kite.")
+            return None
+        if need > funds:
+            self._skip_add(algo, f"{what[:1].upper()}{what[1:]} skipped: {source} ₹{need:,.0f} is more than the "
+                                 f"₹{max(funds, 0):,.0f} available.")
+            return None
+        for leg, quantity in orders:
+            leg["quantity"] += quantity
+            leg["tries"] = 0
+        book["adding"] = {"lots": n, "what": what, "margin": round(need, 0), "leg": g["tradingsymbol"] if g else None,
+                          "before": [x["open_qty"] for x in book["legs"]]}
+        book["phase"] = "opening"
+        self._log(algo, f"{what[:1].upper()}{what[1:]}: adding {n} lot{'s' if n != 1 else ''}"
+                        + (f" of {g['tradingsymbol']}" if g else " of every leg, bought legs first")
+                        + f". {source[:1].upper()}{source[1:]} ₹{need:,.0f}.")
+        return self._work_open(algo)
+
+    def _added(self, algo: dict) -> tuple[str, bool]:
+        """Every order of an add has filled: count it and move the stoploss of the whole position."""
+        book = algo["book"]
+        adding = book.pop("adding")
+        if not adding["leg"]:
+            book["lots_open"] = book.get("lots_open", algo["lots"]) + adding["lots"]
+        book["margin"] = (book.get("margin") or 0) + adding["margin"]
+        adds = scalein.of(algo.get("adds"))
+        book["floor"] = scalein.floor_after(algo["max_loss"], adds.stop_after)
+        book.setdefault("adds", []).append({"time": self._now().strftime("%Y-%m-%d %H:%M"), "lots": adding["lots"],
+                                            "why": adding["what"], **({"leg": adding["leg"]} if adding["leg"] else {})})
+        floor = (f"closes if the P&L falls to −₹{-book['floor']:,.0f} (the maximum loss)" if book["floor"] < 0
+                 else "closes if the P&L falls back to ₹0")
+        self._log(algo, f"Added {adding['lots']} lot{'s' if adding['lots'] != 1 else ''}"
+                        + (f" of {adding['leg']}" if adding["leg"] else " of every leg") + f": the whole position now {floor}.")
+        self.desk.notifier.notify(f"F&O algo “{algo['name']}” added {adding['lots']} lot{'s' if adding['lots'] != 1 else ''}",
+                                  f"{adding['what']} · {algo['mode']}", "good")
+        return self._watch(algo)
+
+    def _give_up_add(self, algo: dict, why: str) -> tuple[str, bool]:
+        """An add that cannot complete: keep what filled (bought legs fill first, so nothing is left unhedged), send
+        nothing more, and carry on with the position."""
+        book = algo["book"]
+        adding = book.pop("adding")
+        for g, before in zip(book["legs"], adding["before"], strict=False):
+            g["quantity"] = g["open_qty"]
+            g["tries"] = 0
+            if g["open_qty"] > before:
+                self._log(algo, f"Kept {g['open_qty'] - before} more of {g['tradingsymbol']} from the add that "
+                                f"did not complete; it closes with the position.")
+        book["phase"] = "open"
+        self._log(algo, f"{adding['what'][:1].upper()}{adding['what'][1:]} given up: {why}.")
+        self.desk.notifier.notify(f"F&O algo “{algo['name']}” gave up an add", why, "warn")
+        return self._watch(algo)
 
     @staticmethod
     def leg_rules(algo: dict) -> risk.ExitRules:
@@ -1261,7 +1445,8 @@ class FnoAlgoEngine:
         algo["history"] = (algo["history"] + [{"opened": book["opened"], "closed": self._now().strftime("%Y-%m-%d %H:%M"),
                                                "reason": book["reason"], "pnl": round(pnl, 2),
                                                "legs": [g["tradingsymbol"] for g in book["legs"]],
-                                               "partials": book.get("partials") or []}])[-50:]
+                                               "partials": book.get("partials") or [],
+                                               "adds": book.get("adds") or []}])[-50:]
         self._log(algo, f"Flat: {book['reason']}. Trade P&L ₹{pnl:,.2f} after charges.")
         self.desk.notifier.notify(f"F&O algo “{algo['name']}” closed", f"{book['reason']} · ₹{pnl:,.0f} · {algo['mode']}",
                                   "good" if pnl >= 0 else "warn")
