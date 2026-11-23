@@ -30,7 +30,8 @@ The screenshots use sample data, not real prices.
    - [Strategies of market legends](#strategies-of-market-legends)
 6. [Backtest](#6-backtest)
    - [Exit rules: stoploss, target, trailing, re-entry](#exit-rules-stoploss-target-trailing-re-entry)
-   - [Create an algo from the result](#create-an-algo-from-the-result)
+   - [Book profit in steps](#book-profit-in-steps)
+  - [Create an algo from the result](#create-an-algo-from-the-result)
    - [Positional (swing) backtests](#positional-swing-backtests)
    - [Optimise a strategy (walk-forward)](#optimise-a-strategy-walk-forward)
    - [Pair trading: two stocks that move together](#pair-trading-two-stocks-that-move-together)
@@ -945,6 +946,22 @@ The same box is used by stock backtests, stock algos, and each leg of an option 
 Re-entry happens only after a plain stoploss. A target, a trailing stoploss, a stoploss moved to cost or a sell signal ends the trade normally, and the next buy waits for a fresh signal.
 
 If both the stoploss and the target are inside one candle, the stoploss is assumed to have come first.
+
+### Book profit in steps
+
+Every backtest (stocks, index futures, options buying, option strategies) and every algo (stock and F&O) has a **Book profit in steps** box. Use it to sell part of a position as the profit grows instead of all of it at the target.
+
+| Box | What it does |
+|---|---|
+| **When the profit reaches** | The profit level for each step, in % or points (stocks, futures, options buying) or ₹ profit for each lot or % of the premium (option strategies). Each step must be higher than the one before. Up to 6 steps. |
+| **Close** | Stocks: **% of the shares** bought. Futures and options: a whole number of **lots**. The steps together cannot close more than you bought. |
+| **After a step, the stoploss of what is left** | **Moves to the entry price (cost)** (the default), **Moves to cost after step 1, then to the step before**, or **Stays where it is**. |
+
+An option strategy closes matched lots: one lot of every leg (times its ratio) per lot closed, so a sold leg is never left without its hedge. Sold legs are bought back first, then their hedges are sold. If the last step is reached, everything left is closed. A target set in the exit rules still sells what is left.
+
+Stock algos sell the step at the live price; a positional algo then places its stoploss/target GTT again for the shares left. A step that is not filled is tried again. Algos on day candles watch their steps while the desk runs in market hours.
+
+The backtest result shows **With steps** and **Without steps** side by side. Booking in steps usually lowers the average winning trade, because part of each winner is sold early; it helps when prices often reach the first level and then turn back. Check the comparison before using it live. Each partial close is listed in the trades table and, with its time, in the trade journal (**Each close (IST)**).
 
 ### Create an algo from the result
 

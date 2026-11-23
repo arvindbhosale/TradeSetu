@@ -22,6 +22,12 @@ Two trade types. Day candles are always positional; intraday candles can be eith
   when Settings enforces it. The daily loss limit does not sell it (as with
   delivery holdings).
 
+Book profit in steps (``steps``, ``scaleout.Steps``): at each profit level above the average buy price, part of
+the shares (a % of those bought, rounded down to whole shares) is sold on the live price, the rest held for the
+strategy, the stoploss or the target. It needs the desk running: a day-candle algo watches the price for its steps
+during market hours. A stoploss moved by a step (to cost, or to the previous step) is also moved in the GTT, which is
+placed again for the shares left after each partial sale.
+
 A holding limit (``max_hold_days``) sells a positional position once it has been
 held that many trading days: a day-candle algo queues the sell for the open of
 that day, an intraday-candle one sells at its first check that day.
@@ -50,7 +56,7 @@ import pandas as pd
 
 from tradingagents.dataflows.symbols import kite_instrument, normalize_symbol, safe_ticker_component
 
-from . import data, market, risk
+from . import data, market, risk, scaleout
 from .broker import Desk, OrderRejected
 from .kite import KiteError
 from .settings import home
@@ -192,10 +198,15 @@ class AlgoEngine:
         except ValueError as exc:
             raise AlgoError(f"{str(exc)[:1].upper()}{str(exc)[1:]}.") from None
         levels.update(target_pct=0.0, stop_loss_pct=0.0)       # kept for algos saved before exit rules
+        try:
+            steps = scaleout.from_payload(raw.get("steps"), "stock")
+        except ValueError as exc:
+            raise AlgoError(f"{str(exc).rstrip('.')}.") from None
         return {"name": name, "symbol": symbol, "strategy": strategy.key, "strategy_name": strategy.name,
                 "params": params, "interval": interval, "trade_type": kind, "max_hold_days": int(hold),
                 "product": "CNC" if kind == "positional" else "MIS",
-                "mode": mode, "budget": float(budget), **levels, "exits": exits.as_dict()}
+                "mode": mode, "budget": float(budget), **levels, "exits": exits.as_dict(),
+                "steps": steps.as_dict() if steps.active else None}
 
     @staticmethod
     def _summary(algo: dict) -> str:
@@ -204,8 +215,9 @@ class AlgoEngine:
         if positional(algo) and algo.get("max_hold_days"):
             kind += f", sold after {algo['max_hold_days']} day{'s' if algo['max_hold_days'] > 1 else ''} held"
         exits = AlgoEngine.rules(algo).text()
+        steps = scaleout.of(algo.get("steps")).text("stock")
         return (f"{algo['strategy_name']} on {algo['symbol']}, ₹{algo['budget']:,.0f}, {algo['mode']}, {kind}; "
-                f"{exits}")
+                f"{exits}" + (f"; {steps}" if steps else ""))
 
     def create(self, raw: dict) -> dict:
         config = self._config(raw)
@@ -252,7 +264,7 @@ class AlgoEngine:
                     raise AlgoError(f"This algo {self._holding_text(algo)}. While it does, only the budget, the "
                                     f"exit rules and the holding limit can change. Close or clear the position to "
                                     f"change the rest.")
-                if "exits" in changed and algo["protect"] and algo["mode"] == "live":
+                if ("exits" in changed or "steps" in changed) and algo["protect"] and algo["mode"] == "live":
                     raise AlgoError(f"The target and stoploss of this algo sit at your broker as GTT {algo['protect']}. "
                                     f"Change them there, or close the position first.")
             was_enabled = algo["enabled"]
@@ -264,7 +276,7 @@ class AlgoEngine:
                 self._retry_at.pop(algo_id, None)
             if "mode" in changed and was_enabled:
                 algo.update(enabled=False, status="Stopped")
-            if "exits" in changed and algo["position"]:
+            if ("exits" in changed or "steps" in changed) and algo["position"]:
                 algo.update(trail_stop=None, stop_level=None, stop_kind=None, reentries_left=self.rules(algo).reentry)
                 if algo["protect"]:                         # paper GTT: replace it with the new levels
                     with contextlib.suppress(KiteError):
@@ -467,7 +479,45 @@ class AlgoEngine:
             trail = peak * (1 - algo["trail_pct"] / 100)
             if stop is None or trail > stop:
                 stop, kind = trail, "trailing stoploss"
+        steps, done = scaleout.of(algo.get("steps")), algo.get("steps_done") or 0
+        moved = steps.lock(done) if steps.active else None
+        if moved is not None:
+            locked = entry + steps.distance(entry, moved)
+            if stop is None or locked > stop:
+                stop, kind = locked, steps.lock_name(done)
         return stop, kind, goal
+
+    @staticmethod
+    def steps_left(algo: dict) -> bool:
+        """Whether the open position has a profit step still to take."""
+        steps = scaleout.of(algo.get("steps"))
+        return bool(algo["position"] and steps.active and (algo.get("steps_done") or 0) < len(steps.levels))
+
+    def _profit_step(self, algo: dict, price: float | None) -> dict | None:
+        """Sell the next profit step's shares when the price has reached its level. None when nothing is due."""
+        if not price or algo["pending"] or not self.steps_left(algo):
+            return None
+        steps, done = scaleout.of(algo["steps"]), algo.get("steps_done") or 0
+        entry = algo["average_price"]
+        level = entry + steps.distance(entry, steps.levels[done])
+        if price < level:
+            return None
+        algo["steps_done"] = done + 1
+        shares = min(steps.shares(algo.get("entry_qty") or algo["position"])[done], algo["position"])
+        why = f"profit step {done + 1} at ₹{level:,.2f} (bought at ₹{entry:,.2f}), price ₹{price:,.2f}"
+        if shares <= 0:
+            self._log(algo, f"{why[:1].upper()}{why[1:]}: {steps.sizes[done]:g}% of "
+                            f"{algo.get('entry_qty') or algo['position']} shares is less than one share; skipped.")
+            return None
+        held = algo["position"]
+        if shares >= held:
+            algo["blocked"], algo["rearm"] = True, None
+            out = self._send(algo, "SELL", why, fallback_price=price)
+        else:
+            out = self._send(algo, "SELL", why, fallback_price=price, quantity=shares, step=done + 1)
+        if algo["position"] == held and not algo["pending"]:
+            algo["steps_done"] = done          # nothing was sold (refused, or the GTT could not be cancelled): try again
+        return out
 
     def _stopped_out(self, algo: dict, kind: str) -> None:
         """After a stoploss exit: block the plain re-entry and, when allowed, arm a re-entry."""
@@ -497,6 +547,12 @@ class AlgoEngine:
 
         if algo["protect"]:
             self._check_protection(algo)
+
+        # 0. Book profit in steps on the live price, during market hours.
+        if not algo["queued"] and self.steps_left(algo) and market.session_status(now)["open"]:
+            stepped = self._profit_step(algo, self.desk.last_price("{}:{}".format(*kite_instrument(algo["symbol"])))[0])
+            if stepped:
+                return stepped
 
         # 1. Send an order queued by an earlier evaluation, once the window allows it.
         if algo["queued"]:
@@ -641,6 +697,9 @@ class AlgoEngine:
             if goal is not None and price >= goal:
                 algo["blocked"], algo["rearm"] = True, None
                 return self._send(algo, "SELL", f"target ₹{goal:,.2f} (bought at ₹{entry:,.2f}), price ₹{price:,.2f}")
+            stepped = self._profit_step(algo, price)
+            if stepped:
+                return stepped
 
         # 3b. A re-entry after a stoploss, while the strategy still says buy.
         if (algo.get("rearm") and (algo["last_signal"] or {}).get("target") == 1 and entries_open
@@ -722,7 +781,9 @@ class AlgoEngine:
 
     # -- orders --------------------------------------------------------------
 
-    def _send(self, algo: dict, side: str, reason: str, fallback_price: float | None = None) -> dict:
+    def _send(self, algo: dict, side: str, reason: str, fallback_price: float | None = None,
+              quantity: int | None = None, step: int | None = None) -> dict:
+        """Place one order. A SELL sells the whole position, or ``quantity`` shares of it for profit step ``step``."""
         cfg = self.desk.settings.all()
         live = algo["mode"] == "live"
         exchange, tradingsymbol = kite_instrument(algo["symbol"])
@@ -732,7 +793,8 @@ class AlgoEngine:
             return self._result(algo, "Blocked: no price", False, f"{side} ({reason}): no price available.")
         buffer = cfg["limit_buffer_pct"] / 100
         price = market.round_to_tick(reference * (1 + buffer if side == "BUY" else 1 - buffer), side)
-        quantity = int(algo["budget"] // price) if side == "BUY" else algo["position"]
+        part = side == "SELL" and quantity is not None and quantity < algo["position"]
+        quantity = int(algo["budget"] // price) if side == "BUY" else (quantity if part else algo["position"])
         if quantity < 1:
             algo["queued"] = None
             return self._result(algo, "Running: budget too small", True,
@@ -769,16 +831,20 @@ class AlgoEngine:
         if live:
             algo["pending"] = {"order_id": placed.get("order_id"), "side": side, "quantity": quantity,
                                "price": price, "variety": order["variety"],
-                               "placed": self._now().strftime("%Y-%m-%d %H:%M")}
+                               "placed": self._now().strftime("%Y-%m-%d %H:%M"), "step": step if part else None}
             return self._result(algo, "Running: order sent", True,
                                 f"Sent {side} {quantity} at limit ₹{price:,.2f} ({order['variety']}, {reason}), "
                                 f"order {placed.get('order_id')}. Not yet filled.")
         self._apply_fill(algo, side, quantity, placed["fill_price"])
-        self._log(algo, f"Paper {side} {quantity} filled at ₹{placed['fill_price']:,.2f} ({reason}).")
-        if side == "SELL" and not reason.endswith("signal"):
+        self._log(algo, f"Paper {side} {quantity} filled at ₹{placed['fill_price']:,.2f} ({reason})."
+                  + (f" {algo['position']} shares held for the next step or the exit." if part else ""))
+        if part:
+            self.desk.notifier.notify(f"Algo “{algo['name']}” booked profit on {quantity} shares",
+                                      f"{reason} · {algo['position']} still held · paper", "good")
+        elif side == "SELL" and not reason.endswith("signal"):
             self.desk.notifier.notify(f"Algo “{algo['name']}” closed its position", f"{reason} · paper", "warn")
-        if side == "BUY":
-            self._protect(algo)
+        if side == "BUY" or part:
+            self._protect(algo)               # after a partial sale: a GTT for the shares left
         return self._result(algo, f"Running: {self._holding(algo)}", True)
 
     def _protect(self, algo: dict) -> None:
@@ -886,7 +952,9 @@ class AlgoEngine:
             if not algo["position"]:
                 algo["entry_day"] = self._now().strftime("%Y-%m-%d")
                 algo["entry_at"] = self._now().strftime("%Y-%m-%d %H:%M:%S")
+                algo["steps_done"] = 0
             total = algo["position"] + quantity
+            algo["entry_qty"] = total
             algo["average_price"] = round((algo["position"] * algo["average_price"] + quantity * price) / total, 2)
             algo["position"] = total
             algo["peak"], algo["trail_stop"], algo["stop_level"] = price, None, None
@@ -918,15 +986,19 @@ class AlgoEngine:
             self._apply_fill(algo, pending["side"], quantity, price)
             self._log(algo, f"Order {pending['order_id']}: {pending['side']} {quantity} filled at ₹{price:,.2f}.")
             algo["pending"] = None
-            if pending["side"] == "BUY":
-                self._protect(algo)
+            if pending["side"] == "BUY" or algo["position"]:
+                self._protect(algo)             # after a partial sale: a GTT for the shares left
             return True
         if status in ("CANCELLED", "REJECTED"):
             reason = row.get("status_message") or "no reason given"
             self._log(algo, f"Order {pending['order_id']} {status.lower()} unfilled ({reason}). Position unchanged.")
             if pending["side"] == "BUY":
                 algo["seen_flat"] = True
+            if pending.get("step"):
+                algo["steps_done"] = pending["step"] - 1      # the step was not sold: it is tried again
             algo["pending"] = None
+            if algo["position"] and not algo["protect"]:
+                self._protect(algo)             # the GTT went before the sell: put it back
             return True
         if algo["interval"] != "1d" and self._now() - placed > UNFILLED_AFTER:
             with contextlib.suppress(KiteError):
@@ -958,7 +1030,7 @@ class AlgoEngine:
                     if (market.OPEN <= clock < market.CLOSE or (algo["position"] and not positional(algo))
                             or algo["pending"]):
                         out.append(algo["id"])
-                elif (algo["queued"] or algo["pending"] or algo["protect"]) and (
+                elif (algo["queued"] or algo["pending"] or algo["protect"] or self.steps_left(algo)) and (
                         market.OPEN <= clock < market.CLOSE or RUN_AFTER <= clock <= RUN_UNTIL) or RUN_AFTER <= clock <= RUN_UNTIL and algo["last_bar"] != today:
                     out.append(algo["id"])
         return out
@@ -1049,7 +1121,7 @@ _BLANK = {
     "pending": None, "queued": None, "protect": None,
     "last_bar": None, "last_signal": None, "status": "Stopped", "log": [],
     "exit_requested": False, "hold_until": None, "trade_type": None, "max_hold_days": 0, "entry_day": None,
-    "entry_at": None,
+    "entry_at": None, "steps": None, "steps_done": 0, "entry_qty": 0,
 }
 
 

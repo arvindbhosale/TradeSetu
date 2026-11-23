@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import secrets
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -42,6 +43,7 @@ from . import (
     mcx,
     results,
     risk,
+    scaleout,
 )
 from .algo import AlgoEngine, AlgoError, arm_phrase
 from .auth import COOKIE, SESSION_SECONDS, Auth
@@ -766,7 +768,9 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                 benchmark = data.history(index_symbol, start, end, fetch=fetch)["Close"]
             except data.NoData as exc:
                 benchmark_note = f"Benchmark unavailable: {exc}"
-        result = run_strategy(bars, strategy, payload.get("strategy_params"), params, benchmark)
+        steps = scaleout.from_payload(payload.get("steps"), "stock")
+        result = scaleout.run_both(lambda s: run_strategy(bars, strategy, payload.get("strategy_params"),
+                                                          replace(params, steps=s if s.active else None), benchmark), steps)
         result["symbol"], result["interval"] = canonical, interval
         result["benchmark_name"] = {"^NSEI": "Nifty 50", "^BSESN": "Sensex"}[index_symbol] if result["benchmark"] else None
         result["benchmark_note"] = benchmark_note
@@ -2233,14 +2237,16 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         cfg = settings.all()
         contracts = derivatives.contracts(underlying)
         lot = int(_number(payload, "lot_size", contracts[0]["lot_size"] if contracts else opt.LOT_DEFAULT.get(underlying, 50)))
-        result = opt.run_options(
+        lots = int(_number(payload, "lots", 1))
+        result = scaleout.run_both(lambda s: opt.run_options(
             underlying, bars, positions, vix, capital=_number(payload, "capital", cfg["paper_capital"]),
-            lots=int(_number(payload, "lots", 1)), lot_size=lot, side=str(payload.get("side", "calls")),
+            lots=lots, lot_size=lot, side=str(payload.get("side", "calls")),
             moneyness=int(_number(payload, "moneyness", 0)), min_days=_number(payload, "min_days", 2),
             expiry_weekday=int(_number(payload, "expiry_weekday", 3 if underlying in BSE_INDICES else 1)),
             stop_pct=_number(payload, "stop_pct", 0), target_pct=_number(payload, "target_pct", 0),
             iv_scale=_number(payload, "iv_scale", 1.0), slippage_pct=_number(payload, "slippage_pct", 1.0),
-            intraday=interval != "1d", square_off=cfg["square_off"], strategy_name=strategy.name)
+            intraday=interval != "1d", square_off=cfg["square_off"], strategy_name=strategy.name, steps=s),
+            scaleout.from_payload(payload.get("steps"), "option", lots))
         skipped = result.get("skipped_entries") or 0
         result.update(interval=interval, data_note=f"Underlying candles from {source}. Option premiums are simulated with "
                       f"Black-Scholes and India VIX × {_number(payload, 'iv_scale', 1.0):g}: Kite keeps no candles for expired contracts."
@@ -2289,14 +2295,15 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         signal = strategy.positions(bars, strategy.resolve(payload.get("strategy_params")))
         cfg = settings.all()
         lot = int(_number(payload, "lot_size", (front or {}).get("lot_size") or opt.LOT_DEFAULT.get(underlying, 50)))
-        result = fut.run_futures(
-            bars, signal, underlying=underlying, lot_size=lot, lots=int(_number(payload, "lots", 1)),
+        lots = int(_number(payload, "lots", 1))
+        result = scaleout.run_both(lambda s: fut.run_futures(
+            bars, signal, underlying=underlying, lot_size=lot, lots=lots, steps=s,
             capital=_number(payload, "capital", cfg["paper_capital"]), direction=str(payload.get("direction", "long")),
             margin_pct=_number(payload, "margin_pct", 12.0), stop_pct=_number(payload, "stop_pct", 0),
             target_pct=_number(payload, "target_pct", 0), slippage_pct=_number(payload, "slippage_pct", 0.02),
             intraday=interval != "1d", trade_start=cfg["trade_start"], trade_end=cfg["trade_end"], square_off=cfg["square_off"],
             continuous=continuous, carry_pct=_number(payload, "carry_pct", 7.0), holidays=frozenset(market.HOLIDAYS),
-            exchange=exchange, strategy_name=strategy.name)
+            exchange=exchange, strategy_name=strategy.name), scaleout.from_payload(payload.get("steps"), "futures", lots))
         m = result["metrics"]
         notes = [f"Prices: {source}."]
         if continuous:
@@ -2353,10 +2360,11 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if premiums not in ("real", "model"):
             raise ValueError("premiums must be real or model")
         stored_days = chain_history.covers(underlying, bars.index[0].date(), bars.index[-1].date()) if premiums == "real" else 0
-        result = optstrat.run_structure(
+        lots = int(_number(payload, "lots", 1))
+        result = scaleout.run_both(lambda s: optstrat.run_structure(
             underlying, bars, vix, structure=str(payload.get("structure", "")), mode=mode, lot_size=lot,
-            history=chain_history if stored_days else None,
-            lots=int(_number(payload, "lots", 1)), capital=_number(payload, "capital", cfg["paper_capital"]),
+            history=chain_history if stored_days else None, steps=s,
+            lots=lots, capital=_number(payload, "capital", cfg["paper_capital"]),
             k=int(_number(payload, "k", 2)), w=int(_number(payload, "w", 4)), expiry_kind=str(payload.get("expiry_kind", "weekly")),
             min_days=_number(payload, "min_days", 0 if mode == "intraday" else 1), weekdays=tuple(weekdays),
             entry_time=times[0], exit_time=times[1], exit_days_before=int(_number(payload, "exit_days_before", 0)),
@@ -2368,7 +2376,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                                         legacy={"stop_loss": _number(payload, "leg_sl_pct", 0)}),
             leg_scope=str(payload.get("leg_scope") or "sold"), legs=payload.get("legs") or None,
             stop_rs=_number(payload, "stop_rs", 0), target_rs=_number(payload, "target_rs", 0),
-            expiry_ahead=_number(payload, "expiry_ahead", 0))
+            expiry_ahead=_number(payload, "expiry_ahead", 0)),
+            scaleout.from_payload(payload.get("steps"), "structure", lots))
         m = result["metrics"]
         notes = [f"Index candles from {source}.", _premium_note(result.get("pricing"), premiums, mode, underlying,
                                                               _number(payload, "iv_scale", 1.0))]

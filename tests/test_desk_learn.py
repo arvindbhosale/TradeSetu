@@ -154,6 +154,8 @@ def test_partial_exits_add_up_to_one_trade_and_a_plan_ties_to_its_fill(tmp_path)
     assert [r["status"] for r in rows] == ["Open", "Closed"]
     done = rows[1]
     assert done["pnl"] == 750 and done["quantity"] == 10 and done["exit"] == 1075 and done["days"] == 2
+    assert done["exits"] == [{"time": "2026-11-03 10:00:00", "quantity": 5, "price": 1100.0, "pnl": 500.0},
+                             {"time": "2026-11-04 10:00:00", "quantity": 5, "price": 1050.0, "pnl": 250.0}]
     assert done["note"]["setup"] == "Breakout" and done["r"] == 1.5        # ₹750 / (₹50 x 10)
     assert rows[0]["note"] is None                                         # the plan stays with the first trade
     assert notes.pending("paper") == []
