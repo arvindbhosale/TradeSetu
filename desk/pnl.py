@@ -40,8 +40,9 @@ class Ledger:
 
     def add(self, mode: str, source: str, exchange: str, tradingsymbol: str, side: str, quantity: int,
             price: float, product: str = "CNC", charges: float | None = None, trade_id: str | None = None,
-            time_ist: str | None = None) -> bool:
-        """Record one fill. A ``trade_id`` already recorded is ignored."""
+            time_ist: str | None = None, short: bool = False) -> bool:
+        """Record one fill. A ``trade_id`` already recorded is ignored. ``short`` marks an intraday short sale of
+        shares, which opens a position below zero like an F&O sale."""
         if quantity <= 0 or price <= 0:
             return False
         with self._lock:
@@ -68,6 +69,8 @@ class Ledger:
                      "source": source or "manual", "exchange": exchange, "tradingsymbol": tradingsymbol,
                      "side": side, "quantity": int(quantity), "price": round(float(price), 2), "product": product,
                      "charges": round(float(charges or 0), 2), "trade_id": trade_id}
+            if short:
+                entry["short"] = True
             if factor != 1.0:
                 entry["multiplier"] = factor      # MCX: quantity is in lots; rupees = price x lots x multiplier
             with open(self.path, "a", encoding="utf-8") as handle:
@@ -96,7 +99,9 @@ class Ledger:
         days: dict[str, float] = defaultdict(float)
         closed = []
         for fill in sorted((f for f in self.fills() if f.get("mode") == mode), key=lambda f: f["time_ist"]):
-            source, day = fill["source"], fill["time_ist"][:10]
+            # A chart order's exits (its GTT, stoploss or target order) close the position its manual entry opened.
+            source = "manual" if str(fill["source"]).startswith("chart:") else fill["source"]
+            day = fill["time_ist"][:10]
             key = (source, fill["exchange"], fill["tradingsymbol"])
             factor = fill.get("multiplier") or 1
             book = books.setdefault(key, {"quantity": 0, "cost": 0.0, "opened": day, "opened_at": fill["time_ist"],
@@ -117,8 +122,8 @@ class Ledger:
             stats["fills"] += 1
             stats["charges"] += fill["charges"]
             stats["turnover"] += fill["quantity"] * fill["price"] * factor
-            # A book is signed: above zero long, below zero short (F&O only; a sale of shares the desk never
-            # recorded buying is not the desk's trade). ``cost`` is the quantity times the average entry price,
+            # A book is signed: above zero long, below zero short (F&O, or an intraday short sale of shares marked
+            # ``short``; any other sale of shares the desk never recorded buying is not the desk's trade). ``cost`` is the quantity times the average entry price,
             # with entry charges in it, so it is negative for a short: the proceeds less the sell charges.
             # MCX quantities are lots; the book counts price units (lots x multiplier) so every sum below is rupees.
             quantity, price, charge = fill["quantity"] * factor, fill["price"], fill["charges"]
@@ -146,7 +151,7 @@ class Ledger:
                                "pnl": round(profit, 2),
                                "return_pct": round(profit / (closing * average) * 100, 2) if average else 0.0})
             rest = quantity - closing
-            if rest and (buying or fill["exchange"] in ("NFO", "BFO", "MCX")):
+            if rest and (buying or fill["exchange"] in ("NFO", "BFO", "MCX") or fill.get("short")):
                 if book["quantity"] == 0:
                     book["opened"], book["opened_at"] = day, fill["time_ist"]
                 part = charge * rest / quantity

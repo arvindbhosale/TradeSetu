@@ -91,6 +91,15 @@ class FakeKite:
     def gtts(self):
         return [dict(g) for g in self.gtt_list]
 
+    def positions(self):
+        """Net positions from the orders that filled, as Kite lists them (below zero when short)."""
+        net = {}
+        for o in self.orders_list:
+            if o["status"] == "COMPLETE":
+                key = (o["exchange"], o["tradingsymbol"], o["product"])
+                net[key] = net.get(key, 0) + int(o.get("filled_quantity") or o["quantity"]) * (1 if o["transaction_type"] == "BUY" else -1)
+        return [{"exchange": e, "tradingsymbol": t, "product": p, "quantity": q} for (e, t, p), q in net.items()]
+
 
 def make(tmp_path, clock, kite=None, **settings):
     cfg = Settings(tmp_path / "settings.json")
@@ -131,6 +140,8 @@ def test_a_paper_buy_from_the_chart_fills_and_gets_an_oco_gtt_that_sells_at_the_
     done = charts.view()["items"][0]
     assert done["state"] == "closed" and "Target hit" in done["closed"]
     assert desk.paper.quantity("NSE:RELIANCE") == 0
+    closed = desk.ledger.closed_trades("paper")      # the GTT's sell closes the trade the chart buy opened
+    assert len(closed) == 1 and closed[0]["side"] == "LONG" and closed[0]["pnl"] > 0
 
 
 def test_levels_on_the_wrong_side_or_too_much_risk_are_refused_and_the_token_dies(tmp_path):
@@ -142,7 +153,7 @@ def test_levels_on_the_wrong_side_or_too_much_risk_are_refused_and_the_token_die
     assert not risky["ok"] and any("Your limit is 1% a trade" in e for e in risky["errors"])
     close = charts.preview(buy(stop=999.0, target=None))
     assert not close["ok"] and any("0.25%" in e for e in close["errors"])
-    with pytest.raises(OrderRejected, match="for buys"):
+    with pytest.raises(OrderRejected, match="for a new buy or short sale"):
         charts.preview(buy(side="SELL"))
     # a refused chart order leaves no working desk token behind
     assert not desk._tokens
@@ -224,6 +235,131 @@ def test_a_live_intraday_buy_keeps_one_sell_order_that_becomes_the_target_when_t
     kite.order("O2")["average_price"] = 980.0
     charts.tick()
     assert charts.view()["items"][0]["state"] == "closed"
+
+
+def short(mode="paper", stop=1020.0, target=950.0, quantity=10, **order):
+    raw = buy(mode=mode, product="MIS", stop=stop, target=target, quantity=quantity, side="SELL", **order)
+    raw["order"]["short"] = True
+    return raw
+
+
+def test_a_paper_short_sale_fills_counts_as_a_new_position_and_the_desk_buys_back_at_the_stoploss(tmp_path):
+    clock = Clock("2026-11-16 10:00")
+    charts, desk, kite = make(tmp_path, clock)
+    review = charts.preview(short())
+    assert review["ok"], review["errors"]
+    assert review["kind"] == "short" and review["phrase"] == "SHORT SELL 10 RELIANCE" and review["risk"]["loss"] > 200
+    assert review["order"]["intent"] == "open" and "buys back" in review["protection"]
+    cash = desk.paper.cash
+    placed = charts.place(review["token"], review["phrase"])
+    assert desk.paper.quantity("NSE:RELIANCE") == -10 and desk.paper.cash > cash          # the sale's proceeds
+    item = placed["chart_order"]
+    assert item["side"] == "short" and item["state"] == "protected" and item["protection"] == {"kind": "watch"}
+    assert desk.orders_today("paper") == 1                       # counted against the orders-a-day limit
+    # a drag moves the levels; the stoploss must stay above the price
+    assert not charts.change_preview(item["id"], {"stop": 990.0, "target": 950.0})["ok"]
+    charts.change(charts.change_preview(item["id"], {"stop": 1015.0, "target": 950.0})["token"])
+    kite.price = 1010.0
+    charts.tick()
+    assert desk.paper.quantity("NSE:RELIANCE") == -10
+    kite.price = 1016.0
+    charts.tick()
+    assert desk.paper.quantity("NSE:RELIANCE") == 0
+    done = charts.view()["items"][0]
+    assert done["state"] == "closed" and "Stoploss hit: bought back 10" in done["closed"]
+    closed = desk.ledger.closed_trades("paper")
+    assert len(closed) == 1 and closed[0]["side"] == "SHORT" and closed[0]["pnl"] < 0
+
+
+def test_a_short_sale_obeys_the_kill_switch_window_and_limits_and_is_intraday_only(tmp_path):
+    clock = Clock("2026-11-16 10:00")
+    charts, desk, kite = make(tmp_path, clock)
+    desk.settings.update({"kill_switch": True})
+    assert any("no new short sales" in e for e in charts.preview(short())["errors"])
+    desk.settings.update({"kill_switch": False, "max_order_value": 5000})
+    assert any("limit per order" in e for e in charts.preview(short())["errors"])
+    desk.settings.update({"max_order_value": 1_000_000, "max_risk_pct": 0.01})
+    assert any("Your limit is" in e for e in charts.preview(short())["errors"])
+    desk.settings.update({"max_risk_pct": 2})
+    with pytest.raises(OrderRejected, match="Delivery \\(CNC\\) shares cannot be sold short"):
+        raw = short()
+        raw["order"]["product"] = "CNC"
+        charts.preview(raw)
+    bad = charts.preview(short(stop=990.0, target=1010.0))
+    assert any("above the sale price" in e for e in bad["errors"]) and any("below the sale price" in e for e in bad["errors"])
+    clock.set("2026-11-16 15:10")
+    assert any("New short sales are taken only between" in e for e in charts.preview(short())["errors"])
+    # a plain Sell never turns into a short sale, and a short never starts from a long
+    clock.set("2026-11-16 10:00")
+    assert any("cannot sell 10" in e for e in charts.preview(buy(side="SELL", stop=None, target=None))["errors"])
+    place(charts, buy(stop=None, target=None, product="MIS"))
+    with pytest.raises(OrderRejected, match="Sell those first"):
+        charts.preview(short())
+
+
+def test_a_buy_while_short_buys_back_and_paper_shorts_are_bought_back_at_the_square_off(tmp_path):
+    clock = Clock("2026-11-16 10:00")
+    charts, desk, kite = make(tmp_path, clock)
+    place(charts, short(stop=None, target=None, quantity=20))
+    cover = charts.preview(buy(stop=None, target=None, product="MIS", quantity=5))
+    assert cover["ok"] and cover["kind"] == "cover" and cover["order"]["intent"] == "close"
+    desk.settings.update({"kill_switch": True})            # buying back is never blocked
+    cover = charts.preview(buy(stop=None, target=None, product="MIS", quantity=5))
+    assert cover["ok"], cover["errors"]
+    charts.place(cover["token"], cover["phrase"])
+    assert desk.paper.quantity("NSE:RELIANCE") == -15
+    assert any("would buy more than you sold" in e
+               for e in charts.preview(buy(stop=None, target=None, product="MIS", quantity=16))["errors"])
+    with pytest.raises(OrderRejected, match="for a new buy or short sale"):
+        charts.preview(buy(product="MIS", quantity=5))
+    desk.settings.update({"kill_switch": False})
+    item = place(charts, short(quantity=5))["chart_order"]
+    assert desk.paper.quantity("NSE:RELIANCE") == -20
+    clock.set("2026-11-16 14:59")
+    charts.tick()
+    assert desk.paper.quantity("NSE:RELIANCE") == -20
+    clock.set("2026-11-16 15:00")                             # the square-off time in Settings
+    charts.tick()
+    assert desk.paper.quantity("NSE:RELIANCE") == 0
+    assert next(i for i in charts.view()["items"] if i["id"] == item["id"])["state"] == "closed"
+    desk.settings.update({"enforce_trade_window": False})
+    assert any("past the square-off time" in e for e in charts.preview(short())["errors"])
+
+
+def test_a_live_intraday_short_keeps_one_buy_order_that_becomes_the_target_when_the_price_falls(tmp_path):
+    clock = Clock("2026-11-16 10:00")
+    charts, desk, kite = make(tmp_path, clock)
+    review = charts.preview(short(mode="live"))
+    assert review["ok"], review["errors"]
+    item = charts.place(review["token"], review["phrase"])["chart_order"]
+    assert kite.order("O1")["transaction_type"] == "SELL" and kite.order("O1")["product"] == "MIS"
+    kite.order("O1").update(status="COMPLETE", filled_quantity=10, average_price=1000.0)
+    charts.tick()
+    stop_order = kite.order("O2")
+    assert stop_order["transaction_type"] == "BUY" and stop_order["order_type"] == "SL"
+    assert stop_order["trigger_price"] == 1020.0 and stop_order["price"] > 1020.0
+    # while the stoploss order works, a Buy from the chart is refused: it would leave that order to open a long
+    assert any("still working at Zerodha" in e
+               for e in charts.preview(buy(mode="live", product="MIS", stop=None, target=None))["errors"])
+    kite.price = 949.5
+    charts.tick()
+    assert kite.order("O2")["order_type"] == "LIMIT" and kite.order("O2")["price"] == 950.0
+    assert len(kite.orders_list) == 2
+    kite.price = 1021.0
+    charts.tick()
+    assert kite.order("O2")["price"] > 1021.0
+    kite.order("O2").update(status="COMPLETE", average_price=1022.0)
+    charts.tick()
+    assert "bought back 10" in charts.view()["items"][0]["closed"]
+    assert item["side"] == "short"
+
+
+def test_a_live_intraday_sell_beyond_what_you_hold_is_refused_unless_it_is_a_short_sale(tmp_path):
+    clock = Clock("2026-11-16 10:00")
+    charts, desk, kite = make(tmp_path, clock)
+    with pytest.raises(OrderRejected, match="choose Short sell"):
+        charts.preview(buy(mode="live", product="MIS", side="SELL", stop=None, target=None))
+    assert charts.preview(short(mode="live", stop=None, target=None))["ok"]
 
 
 def test_a_protection_that_kite_refuses_is_reported_and_removing_cancels_an_unfilled_buy(tmp_path):
@@ -310,6 +446,6 @@ def test_chart_order_api_round_trip(tmp_path):
         assert r.status_code == 200 and r.json()["tradingsymbol"] == "RELIANCE" and r.json()["items"] == []
         r = client.post("/api/chart-orders/preview", json={"symbol": "RELIANCE", "side": "SELL", "quantity": 1,
                                                            "stop": 900})
-        assert r.status_code == 422 and "for buys" in r.json()["error"]
+        assert r.status_code == 422 and "for a new buy or short sale" in r.json()["error"]
         r = client.post("/api/chart-orders/missing/change/preview", json={"stop": 900})
         assert r.status_code == 422

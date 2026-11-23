@@ -27,3 +27,10 @@ test("a press picks the nearest line within reach and ignores lines off the char
   assert.equal(nearest([{ y: 100 }, { y: 200 }], 150), -1);
   assert.equal(nearest([{ y: null }], 0), -1);
 });
+
+test("a short sale gains when the price falls, and its lines start over and under the price", () => {
+  assert.equal(outcome(10, 1000, 1020, true), -200);
+  assert.equal(outcome(10, 1000, 950, true), 500);
+  const { stop, target } = defaultLevels(1000, true);
+  assert.ok(Math.abs(stop - 1010) < 1e-9 && Math.abs(target - 980) < 1e-9);
+});

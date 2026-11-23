@@ -1228,7 +1228,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         exchange, name = chart_order_instrument(str(payload.get("symbol", "")))
         order = {"exchange": exchange, "tradingsymbol": name, "side": payload.get("side"),
                  "quantity": payload.get("quantity"), "product": payload.get("product", "MIS"),
-                 "order_type": payload.get("order_type", "LIMIT"), "price": payload.get("price") or 0}
+                 "order_type": payload.get("order_type", "LIMIT"), "price": payload.get("price") or 0,
+                 "short": payload.get("short") is True}
         return chart_orders.preview({"mode": str(payload.get("mode", "paper")), "order": order,
                                      "stop": payload.get("stop"), "target": payload.get("target")})
 
