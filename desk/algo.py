@@ -66,6 +66,7 @@ UNFILLED_AFTER = timedelta(minutes=3)      # an intraday limit order still open 
 TICK_SECONDS = 20
 JOB_NAMES = {                               # the engines the server drives from this clock, in plain words
     "Scanner.tick": "Scanner",
+    "OpenPeaks.tick": "Open P&L high/low recorder",
     "Derivatives.tick": "F&O contract refresh",
     "FnoAlgoEngine.tick": "F&O algos",
     "Desk.close_paper_mcx": "Paper MCX square-off",
@@ -321,18 +322,22 @@ class AlgoEngine:
                 raise AlgoError("Stop the algo first.")
             self._log(algo, f"Position of {algo['position']} cleared by hand; no order was sent.")
             algo.update(position=0, average_price=0.0, pending=None, queued=None, protect=None, seen_flat=False,
-                        entry_day=None)
+                        entry_day=None, entry_at=None)
             self._save()
             return json.loads(json.dumps(algo))
 
     def request_exit(self, algo_id: str, reason: str = "Exit pressed") -> dict:
         """Sell what the algo holds at the next chance inside market hours, then stop it. Works with the kill
-        switch on: it only ever sells."""
+        switch on, and on a stopped algo: it only ever sells (its target/stoploss GTT is cancelled first)."""
         with self._lock:
             algo = self.get(algo_id)
-            if not algo["enabled"]:
-                raise AlgoError("This algo is stopped, so nothing watches its position. Start it, or sell the "
-                                "shares yourself and press Clear position.")
+            if not algo["position"] and not algo["pending"]:
+                if algo["enabled"]:
+                    algo.update(enabled=False, exit_requested=False, queued=None, status="Stopped")
+                    self._log(algo, f"{reason} with nothing held: stopped.")
+                    self._save()
+                    return json.loads(json.dumps(algo))
+                raise AlgoError("This algo is stopped and holds nothing, so there is nothing to exit.")
             algo["queued"] = None if (algo["queued"] or {}).get("side") == "BUY" else algo["queued"]
             algo["exit_requested"] = True
             self._log(algo, f"{reason}: selling what it holds, then stopping.")
@@ -870,7 +875,7 @@ class AlgoEngine:
                 self._stopped_out(algo, kind)
             else:
                 algo["blocked"], algo["rearm"] = True, None
-            algo.update(position=0, average_price=0.0, entry_day=None)
+            algo.update(position=0, average_price=0.0, entry_day=None, entry_at=None)
         else:
             self._log(algo, f"GTT {algo['protect']} is {state}. The position is no longer protected by it.")
         algo["protect"] = None
@@ -879,6 +884,7 @@ class AlgoEngine:
         if side == "BUY":
             if not algo["position"]:
                 algo["entry_day"] = self._now().strftime("%Y-%m-%d")
+                algo["entry_at"] = self._now().strftime("%Y-%m-%d %H:%M:%S")
             total = algo["position"] + quantity
             algo["average_price"] = round((algo["position"] * algo["average_price"] + quantity * price) / total, 2)
             algo["position"] = total
@@ -886,7 +892,7 @@ class AlgoEngine:
         else:
             algo["position"] = max(algo["position"] - quantity, 0)
             if not algo["position"]:
-                algo["average_price"], algo["entry_day"] = 0.0, None
+                algo["average_price"], algo["entry_day"], algo["entry_at"] = 0.0, None, None
 
     def _reconcile(self, algo: dict) -> bool:
         """Settle a live order sent earlier. True once it is no longer pending."""
@@ -939,7 +945,7 @@ class AlgoEngine:
         out = []
         with self._lock:
             for algo in self._algos.values():
-                if not algo["enabled"] or self._retry_at.get(algo["id"], now) > now:
+                if not (algo["enabled"] or algo.get("exit_requested")) or self._retry_at.get(algo["id"], now) > now:
                     continue
                 if algo.get("exit_requested"):
                     if market.OPEN <= clock < market.CLOSE or not algo["position"]:
@@ -1042,6 +1048,7 @@ _BLANK = {
     "pending": None, "queued": None, "protect": None,
     "last_bar": None, "last_signal": None, "status": "Stopped", "log": [],
     "exit_requested": False, "hold_until": None, "trade_type": None, "max_hold_days": 0, "entry_day": None,
+    "entry_at": None,
 }
 
 
