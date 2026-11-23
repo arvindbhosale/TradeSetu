@@ -8,6 +8,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- **Short sell from the live chart** (NSE/BSE, paper and live Kite): an intraday (MIS) short sale with its Stoploss line above the price and Target below, dragged like a buy's; a Short position drawing fills it (**Short sell with this plan**). A short sale counts as a new position for the kill switch, trade window, limit per order, orders-a-day limit and risk limit per trade; buying back never is blocked. Live: one stoploss buy order at Zerodha that the desk turns into a limit buy at the target. Paper: the desk watches the levels and buys back at the last price, and buys back every paper short at the square-off time. An intraday Buy while short buys it back. The ticket's trade type reads **Intraday** / **Positional**; positional is greyed out for a short (Indian exchanges allow no delivery short). Orders for shares take `intent` `open` (SELL) / `close` (BUY) for MIS only; the confirmation phrase of a short is `SHORT SELL <qty> <symbol>`; `short: true` in `POST /api/chart-orders/preview`.
 - **Close algo positions yourself**: **Exit selected** (tick algos, stocks and F&O together), **Close all paper** and **Close all live** on the Algos tab, and **Exit** in an algo's Details. Exit now also works on a stopped algo that still holds shares (it only sells). Target/stoploss GTTs are cancelled before the sell; F&O sold legs are bought back before hedges are sold; live exits need typing EXIT (`POST /api/algo-exits` with `mode` or `stock`/`fno` ids).
 - **Open and close times** (IST) in the trade journal and in each algo's Details (`closed_at`, `opened_at`/`closed_at` on algo legs, `entry_at` on stock algos); F&O algos list their closed trades with open and close times.
 - **Highest and lowest open P&L each day** for every open trade and every algo, sampled once a minute while the desk runs (09:15 to 23:30 IST on trading days), shown in the journal (**Highest open P&L**, day-by-day on press) and in algo Details (`desk/openpeaks.py`, `open_peaks.json`; `daily`, `best_open`, `worst_open` in `GET /api/journal`, `daily` in algo detail).
@@ -45,6 +46,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - New TradeSetu logo in the README, the desk sidebar, the sign-in page, the browser tab icon, the installed-app icons and the social preview.
 
 ### Fixed
+- Paper short sale from the chart did nothing: the paper book refused any sale beyond the shares held.
+- A chart order's exit (its GTT, stoploss or target order) now closes the trade its entry opened in P&L; before, the exit was booked under its own source and the round trip never showed as a closed trade.
+- A live intraday **Sell** from the chart of more than you hold is refused (it was an unchecked short sale that the limits did not count).
 - A live delivery (CNC) sell of shares bought the same day was refused as a short sale, because the broker lists them under positions until the next day. The holding check now adds today's CNC buys less today's CNC sells.
 - A day-candle backtest trade bought at the open and stopped out the same day paid delivery charges; it now pays intraday charges, as the exchange treats it.
 

@@ -451,9 +451,10 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
           h("span", { class: "up", text: `Reward ${money(plan.reward)} (${Math.abs(plan.rewardPct).toFixed(2)}%)` }), ` · Risk : Reward 1 : ${rr}`,
           plan.now == null ? "" : ` · At last price ${plan.now >= 0 ? "+" : "−"}${money(Math.abs(plan.now))}`));
       if (!classic && (st.venue === "india" || st.venue === "crypto")) {
-        parts.push(h("button", { type: "button", class: "primary", text: d.kind === "long" ? "Buy with this plan" : "Order from this plan",
-          title: d.kind === "long" ? "Fill the trade ticket below with this entry, stoploss, target and quantity" : "Short selling is not available from the chart",
-          disabled: d.kind !== "long", onclick: () => trade.fill(plan) }));
+        const shortOk = d.kind === "long" || st.venue === "india";
+        parts.push(h("button", { type: "button", class: "primary", text: d.kind === "long" ? "Buy with this plan" : "Short sell with this plan",
+          title: shortOk ? "Fill the trade ticket below with this entry, stoploss, target and quantity" : "Crypto paper trading has no short selling",
+          disabled: !shortOk, onclick: () => trade.fill(plan) }));
       }
     }
     parts.push(h("button", { type: "button", class: "cd-del", text: "Delete", onclick: () => { st.drawings = st.drawings.filter((x) => x !== d); select(null); saveDrawings(); } }),
