@@ -24,6 +24,12 @@ Book profit in steps (``steps``, ``scaleout.Steps`` in lots): at each profit lev
 price from the entry, that many lots are closed (at the level, or at the open when the candle opens past it), the
 rest later. Levels reached in one candle are taken in price order, a target beyond them after them; a stoploss in
 the same candle comes first. A stoploss moved by a step applies from the next candle.
+
+Add to winners (``adds``, ``scalein.Adds`` in lots): at each profit level from the first entry, that many lots are
+added (at the level, or at the open when the candle opens past it) when equity covers the margin of the larger
+position; otherwise the add is skipped and counted. Profit is worked out on the average entry; levels, stoploss and
+target stay measured from the first entry, and after an add the stoploss of every lot moves (``scalein.stop_price``)
+from the next candle. Adds stop once a profit step has been booked.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ import pandas as pd
 
 from .backtest import BacktestParams, _curve_stats, _metrics, _points
 from .charges import futures_charges
+from .scalein import NONE as NO_ADDS, Adds, stop_price
 from .scaleout import NONE as NO_STEPS, Steps
 
 DIRECTIONS = {"long": "Long only (buy on the signal, exit when it ends)",
@@ -63,7 +70,8 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
                 stop_pct: float = 0.0, target_pct: float = 0.0, slippage_pct: float = 0.02,
                 intraday: bool = False, trade_start: str = "09:30", trade_end: str = "15:00", square_off: str = "15:15",
                 continuous: bool = True, carry_pct: float = 7.0, holidays=frozenset(), exchange: str = "NFO",
-                strategy_name: str = "", risk_free_rate_pct: float = 6.5, steps: Steps = NO_STEPS) -> dict:
+                strategy_name: str = "", risk_free_rate_pct: float = 6.5, steps: Steps = NO_STEPS,
+                adds: Adds = NO_ADDS) -> dict:
     if direction not in DIRECTIONS:
         raise ValueError(f"direction must be one of {', '.join(DIRECTIONS)}")
     if lots < 1 or lot_size < 1:
@@ -78,6 +86,8 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
         raise ValueError("not enough candles")
     if steps.active and sum(steps.lots()) > lots:
         raise ValueError(f"the profit steps close {sum(steps.lots())} lots but the position has {lots}")
+    if adds.active and lots + adds.total() > 50:
+        raise ValueError(f"{lots} lots plus {adds.total():g} added is more than 50 lots")
     params = BacktestParams(capital=capital, risk_free_rate_pct=risk_free_rate_pct, intraday=intraday,
                             trade_start=trade_start, trade_end=trade_end, square_off=square_off)
     params.validate()
@@ -112,6 +122,8 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
     held = lots                              # lots open; fewer than ``lots`` after a profit step
     plan = steps.lots() if steps.active else []
     done, booked, partials, steps_booked = 0, 0.0, [], 0
+    first, opened = 0.0, lots                # the first entry's price (levels are measured from it); lots bought
+    adds_done, add_stop, risk0, added, adds_made, adds_skipped = 0, None, 0.0, [], 0, 0
 
     def fee(side, price, n=None):
         return futures_charges(side, (held if n is None else n) * lot_size, price, exchange).total
@@ -130,15 +142,18 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
 
     def close_trade(i, price, reason):
         nonlocal pos
+        average = entry
         pnl = settle(i, price, held) + booked
-        margin = margin_pct / 100 * qty_per * entry
-        trade = {"side": "LONG" if pos > 0 else "SHORT", "lots": lots, "quantity": qty_per,
+        margin = margin_pct / 100 * opened * lot_size * average
+        trade = {"side": "LONG" if pos > 0 else "SHORT", "lots": opened, "quantity": opened * lot_size,
                  "entry_date": stamps[entry_i].strftime(fmt), "exit_date": stamps[i].strftime(fmt),
-                 "entry_price": round(entry, 2), "exit_price": round(price, 2), "pnl": round(pnl, 2),
+                 "entry_price": round(first, 2), "exit_price": round(price, 2), "pnl": round(pnl, 2),
                  "return_pct": round(pnl / margin * 100, 2) if margin else None,
                  "days": int((stamps[i] - stamps[entry_i]).days), "rolls": rolls_in_trade, "exit": reason, "open": False}
         if partials:
             trade["partials"] = list(partials)
+        if added:
+            trade["adds"], trade["average_price"] = list(added), round(average, 2)
         trades.append(trade)
         pos = 0
 
@@ -150,13 +165,47 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
         partials.append({"date": stamps[i].strftime(fmt), "lots": n, "quantity": n * lot_size, "price": round(price, 2),
                          "pnl": round(pnl, 2), "why": f"profit step {done}"})
 
+    def add_more(i, price) -> None:
+        """Add ``adds_done``: that many lots at ``price`` when equity covers the margin of the whole position."""
+        nonlocal cash, total_charges, entry_cost, entry, held, opened, adds_done, add_stop, adds_made, adds_skipped
+        n = adds.lots()[adds_done]
+        adds_done += 1
+        equity_now = cash + pos * held * lot_size * (price - entry)
+        if margin_pct / 100 * (held + n) * lot_size * price > equity_now:
+            adds_skipped += 1
+            added.append({"date": stamps[i].strftime(fmt), "lots": 0, "quantity": 0, "price": round(price, 2),
+                          "why": f"add {adds_done} skipped: margin short"})
+            return
+        charge = fee("BUY" if pos > 0 else "SELL", price, n)
+        cash -= charge
+        total_charges += charge
+        entry_cost += charge
+        entry = (entry * held + price * n) / (held + n)
+        held += n
+        opened += n
+        adds_made += 1
+        moved = stop_price(pos, entry, held * lot_size, risk0, adds.stop_after)
+        add_stop = moved if add_stop is None else (max(add_stop, moved) if pos > 0 else min(add_stop, moved))
+        added.append({"date": stamps[i].strftime(fmt), "lots": n, "quantity": n * lot_size, "price": round(price, 2),
+                      "why": f"add {adds_done}", "stop": round(add_stop, 2)})
+
     def take_steps(i, high, low, goal) -> None:
-        """The profit steps this candle reached, in price order, short of the target."""
+        """The profit steps and adds this candle reached, in price order, short of the target."""
         nonlocal done
-        while pos and done < len(plan):
-            level = entry + pos * steps.distance(entry, steps.levels[done])
+        window = not intraday or t_start <= stamps[i].time() < t_end
+        while pos:
+            step_at = first + pos * steps.distance(first, steps.levels[done]) if done < len(plan) else None
+            add_at = (first + pos * adds.distance(first, adds.levels[adds_done])
+                      if adds.active and not done and adds_done < len(adds.levels) and window else None)
+            if step_at is None and add_at is None:
+                return
+            adding = step_at is None or (add_at is not None and (add_at - step_at) * pos < 0)
+            level = add_at if adding else step_at
             if (high < level if pos > 0 else low > level) or (goal is not None and (level - goal) * pos >= 0):
                 return
+            if adding:
+                add_more(i, (max(opens[i], level) * (1 + slip)) if pos > 0 else (min(opens[i], level) * (1 - slip)))
+                continue
             fill = (max(opens[i], level) * (1 - slip)) if pos > 0 else (min(opens[i], level) * (1 + slip))
             n, done = plan[done], done + 1
             if n >= held:
@@ -165,14 +214,16 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
                 book_step(i, fill, n)
 
     def locked_stop(stop):
-        """The stoploss, moved by the profit steps taken."""
+        """The stoploss, moved by the profit steps taken and by the adds made."""
+        kind = "stoploss"
         moved = steps.lock(done) if steps.active else None
-        if moved is None:
-            return stop, "stoploss"
-        level = entry + pos * steps.distance(entry, moved)
-        if stop is None or (level - stop) * pos > 0:
-            return level, steps.lock_name(done)
-        return stop, "stoploss"
+        if moved is not None:
+            level = entry if not moved else first + pos * steps.distance(first, moved)
+            if stop is None or (level - stop) * pos > 0:
+                stop, kind = level, steps.lock_name(done)
+        if add_stop is not None and (stop is None or (add_stop - stop) * pos > 0):
+            stop, kind = add_stop, "stoploss moved after adding"
+        return stop, kind
 
     fmt = "%Y-%m-%d %H:%M" if intraday else "%Y-%m-%d"
     for i in range(len(bars)):
@@ -185,6 +236,9 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
             total_charges += charge
             entry_cost += charge
             entry += basis
+            first += basis
+            if add_stop is not None:
+                add_stop += basis
             rolls += 1
             rolls_in_trade += 1
         # 2. yesterday's decision, filled at today's open
@@ -210,11 +264,13 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
                     total_charges += charge
                     pos, entry, entry_i, entry_cost, rolls_in_trade = target, price, i, charge, 0
                     held, done, booked, partials = lots, 0, 0.0, []
+                    first, opened, adds_done, add_stop, added = price, lots, 0, None, []
+                    risk0 = qty_per * price * stop_pct / 100
         # 3. stoploss, profit steps and target inside the candle
-        if pos and (stop_pct or target_pct or steps.active):
+        if pos and (stop_pct or target_pct or steps.active or adds.active):
             if pos > 0:
-                stop, kind = locked_stop(entry * (1 - stop_pct / 100) if stop_pct else None)
-                goal = entry * (1 + target_pct / 100) if target_pct else None
+                stop, kind = locked_stop(first * (1 - stop_pct / 100) if stop_pct else None)
+                goal = first * (1 + target_pct / 100) if target_pct else None
                 if stop is not None and lows[i] <= stop:
                     close_trade(i, min(opens[i], stop) * (1 - slip), kind)
                 else:
@@ -222,8 +278,8 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
                     if pos and goal is not None and highs[i] >= goal:
                         close_trade(i, max(opens[i], goal) * (1 - slip), "target")
             else:
-                stop, kind = locked_stop(entry * (1 + stop_pct / 100) if stop_pct else None)
-                goal = entry * (1 - target_pct / 100) if target_pct else None
+                stop, kind = locked_stop(first * (1 + stop_pct / 100) if stop_pct else None)
+                goal = first * (1 - target_pct / 100) if target_pct else None
                 if stop is not None and highs[i] >= stop:
                     close_trade(i, max(opens[i], stop) * (1 + slip), kind)
                 else:
@@ -240,13 +296,15 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
     if pos:
         gross = pos * held * lot_size * (closes[-1] - entry)
         pnl = gross - entry_cost + booked
-        trade = {"side": "LONG" if pos > 0 else "SHORT", "lots": lots, "quantity": qty_per,
-                 "entry_date": stamps[entry_i].strftime(fmt), "exit_date": None, "entry_price": round(entry, 2),
+        trade = {"side": "LONG" if pos > 0 else "SHORT", "lots": opened, "quantity": opened * lot_size,
+                 "entry_date": stamps[entry_i].strftime(fmt), "exit_date": None, "entry_price": round(first, 2),
                  "exit_price": round(closes[-1], 2), "pnl": round(pnl, 2),
-                 "return_pct": round(pnl / (margin_pct / 100 * qty_per * entry) * 100, 2),
+                 "return_pct": round(pnl / (margin_pct / 100 * opened * lot_size * entry) * 100, 2),
                  "days": int((stamps[-1] - stamps[entry_i]).days), "rolls": rolls_in_trade, "exit": "open", "open": True}
         if partials:
             trade["partials"] = list(partials)
+        if added:
+            trade["adds"], trade["average_price"] = list(added), round(entry, 2)
         trades.append(trade)
 
     curve = pd.Series(equity, index=stamps)
@@ -258,12 +316,14 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
     metrics = _metrics(curve, trades, params, total_charges, in_market)
     metrics.update(rolls=rolls, skipped_entries=skipped, long_trades=sum(t["side"] == "LONG" for t in trades),
                    short_trades=sum(t["side"] == "SHORT" for t in trades), steps_booked=steps_booked,
+                   adds_made=adds_made, adds_skipped=adds_skipped,
                    margin_per_lot=round(margin_pct / 100 * lot_size * float(closes[-1]), 0))
     label = {"long": "long", "short": "short", "both": "long & short"}[direction]
     return {"strategy": {"name": f"{strategy_name} → {underlying} futures, {label}"},
             "params": {**params.__dict__, "direction": direction, "lots": lots, "lot_size": lot_size, "margin_pct": margin_pct,
                        "stop_pct": stop_pct, "target_pct": target_pct, "slippage_pct": slippage_pct, "carry_pct": carry_pct,
-                       "steps": steps.as_dict() if steps.active else None},
+                       "steps": steps.as_dict() if steps.active else None,
+                       "adds": adds.as_dict() if adds.active else None},
             "period": {"start": curve.index[0].strftime("%Y-%m-%d"), "end": curve.index[-1].strftime("%Y-%m-%d"),
                        "bars": len(bars), "days": len(curve)},
             "metrics": metrics, "buy_hold": _curve_stats(hold, params), "trades": trades,

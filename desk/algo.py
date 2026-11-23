@@ -28,6 +28,13 @@ strategy, the stoploss or the target. It needs the desk running: a day-candle al
 during market hours. A stoploss moved by a step (to cost, or to the previous step) is also moved in the GTT, which is
 placed again for the shares left after each partial sale.
 
+Add to winners (``adds``, ``scalein.Adds``): at each profit level above the first buy, more shares (a % of the first
+buy's) are bought on the live price, inside the trade window, when the kill switch is off and the money is there (the
+cash Kite reports, or the paper cash; an add that cannot be paid for is skipped and logged). The budget covers the
+first buy and every add: the first buy uses only the part that leaves room for the adds at their levels. After an
+add the stoploss of every share moves so a fall to it loses no more than the first buy's stoploss planned
+(``scalein.stop_price``), and a positional algo's GTT is placed again for all the shares. No add after a profit step.
+
 A holding limit (``max_hold_days``) sells a positional position once it has been
 held that many trading days: a day-candle algo queues the sell for the open of
 that day, an intraday-candle one sells at its first check that day.
@@ -56,8 +63,8 @@ import pandas as pd
 
 from tradingagents.dataflows.symbols import kite_instrument, normalize_symbol, safe_ticker_component
 
-from . import data, market, risk, scaleout
-from .broker import Desk, OrderRejected
+from . import data, market, risk, scalein, scaleout
+from .broker import MIS_MARGIN_PCT, Desk, OrderRejected
 from .kite import KiteError
 from .settings import home
 
@@ -202,11 +209,15 @@ class AlgoEngine:
             steps = scaleout.from_payload(raw.get("steps"), "stock")
         except ValueError as exc:
             raise AlgoError(f"{str(exc).rstrip('.')}.") from None
+        try:
+            adds = scalein.from_payload(raw.get("adds"), "stock")
+        except ValueError as exc:
+            raise AlgoError(f"{str(exc).rstrip('.')}.") from None
         return {"name": name, "symbol": symbol, "strategy": strategy.key, "strategy_name": strategy.name,
                 "params": params, "interval": interval, "trade_type": kind, "max_hold_days": int(hold),
                 "product": "CNC" if kind == "positional" else "MIS",
                 "mode": mode, "budget": float(budget), **levels, "exits": exits.as_dict(),
-                "steps": steps.as_dict() if steps.active else None}
+                "steps": steps.as_dict() if steps.active else None, "adds": adds.as_dict() if adds.active else None}
 
     @staticmethod
     def _summary(algo: dict) -> str:
@@ -216,8 +227,9 @@ class AlgoEngine:
             kind += f", sold after {algo['max_hold_days']} day{'s' if algo['max_hold_days'] > 1 else ''} held"
         exits = AlgoEngine.rules(algo).text()
         steps = scaleout.of(algo.get("steps")).text("stock")
+        adds = scalein.of(algo.get("adds")).text("stock")
         return (f"{algo['strategy_name']} on {algo['symbol']}, ₹{algo['budget']:,.0f}, {algo['mode']}, {kind}; "
-                f"{exits}" + (f"; {steps}" if steps else ""))
+                f"{exits}" + (f"; {steps}" if steps else "") + (f"; {adds}" if adds else ""))
 
     def create(self, raw: dict) -> dict:
         config = self._config(raw)
@@ -264,7 +276,7 @@ class AlgoEngine:
                     raise AlgoError(f"This algo {self._holding_text(algo)}. While it does, only the budget, the "
                                     f"exit rules and the holding limit can change. Close or clear the position to "
                                     f"change the rest.")
-                if ("exits" in changed or "steps" in changed) and algo["protect"] and algo["mode"] == "live":
+                if (any(k in changed for k in ("exits", "steps", "adds"))) and algo["protect"] and algo["mode"] == "live":
                     raise AlgoError(f"The target and stoploss of this algo sit at your broker as GTT {algo['protect']}. "
                                     f"Change them there, or close the position first.")
             was_enabled = algo["enabled"]
@@ -276,7 +288,7 @@ class AlgoEngine:
                 self._retry_at.pop(algo_id, None)
             if "mode" in changed and was_enabled:
                 algo.update(enabled=False, status="Stopped")
-            if ("exits" in changed or "steps" in changed) and algo["position"]:
+            if any(k in changed for k in ("exits", "steps", "adds")) and algo["position"]:
                 algo.update(trail_stop=None, stop_level=None, stop_kind=None, reentries_left=self.rules(algo).reentry)
                 if algo["protect"]:                         # paper GTT: replace it with the new levels
                     with contextlib.suppress(KiteError):
@@ -470,9 +482,15 @@ class AlgoEngine:
             return risk.ExitRules(**algo["exits"])
         return risk.ExitRules(unit="pct", stop_loss=algo.get("stop_loss_pct") or 0.0, target=algo.get("target_pct") or 0.0)
 
+    @staticmethod
+    def _first(algo: dict) -> float:
+        """The first buy's price: the stoploss, target, profit steps and adds are measured from it. The average
+        price when there is none (a position bought before adds were kept)."""
+        return algo.get("first_price") or algo["average_price"]
+
     def _levels(self, algo: dict) -> tuple[float | None, str, float | None]:
         """Stoploss (with its kind) and target for the open position, from the best price seen since the buy."""
-        entry = algo["average_price"]
+        entry = self._first(algo)
         peak = max(algo.get("peak") or entry, entry)
         stop, kind, goal = self.rules(algo).levels(entry, peak, 1)
         if algo["trail_pct"]:                  # the older trailing stop: a set % below the high
@@ -482,9 +500,11 @@ class AlgoEngine:
         steps, done = scaleout.of(algo.get("steps")), algo.get("steps_done") or 0
         moved = steps.lock(done) if steps.active else None
         if moved is not None:
-            locked = entry + steps.distance(entry, moved)
+            locked = algo["average_price"] if not moved else entry + steps.distance(entry, moved)
             if stop is None or locked > stop:
                 stop, kind = locked, steps.lock_name(done)
+        if algo.get("add_stop") and (stop is None or algo["add_stop"] > stop):
+            stop, kind = algo["add_stop"], "stoploss moved after adding"
         return stop, kind, goal
 
     @staticmethod
@@ -498,7 +518,7 @@ class AlgoEngine:
         if not price or algo["pending"] or not self.steps_left(algo):
             return None
         steps, done = scaleout.of(algo["steps"]), algo.get("steps_done") or 0
-        entry = algo["average_price"]
+        entry = self._first(algo)
         level = entry + steps.distance(entry, steps.levels[done])
         if price < level:
             return None
@@ -517,6 +537,75 @@ class AlgoEngine:
             out = self._send(algo, "SELL", why, fallback_price=price, quantity=shares, step=done + 1)
         if algo["position"] == held and not algo["pending"]:
             algo["steps_done"] = done          # nothing was sold (refused, or the GTT could not be cancelled): try again
+        return out
+
+    @staticmethod
+    def adds_left(algo: dict) -> bool:
+        """Whether the open position has an add still to make: adds stop once a profit step is booked."""
+        adds = scalein.of(algo.get("adds"))
+        return bool(algo["position"] and adds.active and not (algo.get("steps_done") or 0)
+                    and (algo.get("adds_done") or 0) < len(adds.levels))
+
+    def _skip_add(self, algo: dict, why: str) -> None:
+        algo["adds_done"] = (algo.get("adds_done") or 0) + 1
+        self._log(algo, f"Add {algo['adds_done']} skipped: {why}.")
+        self.desk.notifier.notify(f"Algo “{algo['name']}” skipped an add", why, "warn",
+                                  key=f"add-skipped:{algo['id']}:{algo['adds_done']}")
+
+    def _scale_in(self, algo: dict, price: float | None, entries_open: bool) -> dict | None:
+        """Buy the next add's shares when the price has reached its level. None when nothing is due."""
+        if not price or algo["pending"] or algo["queued"] or not self.adds_left(algo):
+            return None
+        adds, done = scalein.of(algo["adds"]), algo.get("adds_done") or 0
+        first = self._first(algo)
+        level = first + adds.distance(first, adds.levels[done])
+        if price < level:
+            return None
+        why = f"add {done + 1} at ₹{level:,.2f} (first buy ₹{first:,.2f}), price ₹{price:,.2f}"
+        if self.desk.settings.get("kill_switch"):
+            self._log(algo, f"{why[:1].upper()}{why[1:]}: held back, the kill switch is on.")
+            return None
+        if self._held(algo):
+            self._log(algo, f"{why[:1].upper()}{why[1:]}: held back, new buys are held.")
+            return None
+        if not entries_open:
+            self._log(algo, f"{why[:1].upper()}{why[1:]}: held back until the trade window opens.")
+            return None
+        shares = adds.shares(algo.get("first_qty") or algo["position"], done)
+        room = int(max(algo["budget"] - algo["position"] * algo["average_price"], 0) // price)
+        if shares < 1:
+            self._skip_add(algo, f"{adds.sizes[done]:g}% of {algo.get('first_qty') or algo['position']} shares is less "
+                                 f"than one share")
+            return None
+        shares = min(shares, room)
+        if shares < 1:
+            self._skip_add(algo, f"the ₹{algo['budget']:,.0f} budget has no room for one more share at ₹{price:,.2f}")
+            return None
+        need = shares * price * (1 if algo["product"] == "CNC" else MIS_MARGIN_PCT / 100)
+        cash = self.desk._live_cash() if algo["mode"] == "live" else self.desk.paper.cash
+        if cash is None:
+            self._log(algo, f"{why[:1].upper()}{why[1:]}: held back, could not read your funds from Kite.")
+            return None
+        if need > cash:
+            self._skip_add(algo, f"₹{need:,.0f} needed for {shares} shares, ₹{cash:,.0f} available")
+            return None
+        if algo["protect"]:
+            # The GTT covers the shares held now; it goes first and is placed again for every share after the fill.
+            problem = self._drop_protection(algo)
+            if problem == "triggered":
+                self._check_protection(algo)
+                return None
+            if problem:
+                self._log(algo, f"{why[:1].upper()}{why[1:]}: held back, GTT {algo['protect']} could not be cancelled "
+                                f"first ({problem}). Trying again.")
+                return None
+        held = algo["position"]
+        algo["adds_done"] = done + 1
+        out = self._send(algo, "BUY", why, fallback_price=price, quantity=shares, add=done + 1)
+        if algo["position"] == held and not algo["pending"]:
+            self._log(algo, f"Add {done + 1} not bought; it is not tried again.")
+            if algo["position"] and not algo["protect"]:
+                self._protect(algo)               # the GTT went before the buy: put it back
         return out
 
     def _stopped_out(self, algo: dict, kind: str) -> None:
@@ -548,11 +637,15 @@ class AlgoEngine:
         if algo["protect"]:
             self._check_protection(algo)
 
-        # 0. Book profit in steps on the live price, during market hours.
-        if not algo["queued"] and self.steps_left(algo) and market.session_status(now)["open"]:
-            stepped = self._profit_step(algo, self.desk.last_price("{}:{}".format(*kite_instrument(algo["symbol"])))[0])
+        # 0. Book profit in steps, and add to winners, on the live price during market hours.
+        if not algo["queued"] and (self.steps_left(algo) or self.adds_left(algo)) and market.session_status(now)["open"]:
+            live_price = self.desk.last_price("{}:{}".format(*kite_instrument(algo["symbol"])))[0]
+            stepped = self._profit_step(algo, live_price)
             if stepped:
                 return stepped
+            added = self._scale_in(algo, live_price, window["entries"] if cfg["enforce_trade_window"] else True)
+            if added:
+                return added
 
         # 1. Send an order queued by an earlier evaluation, once the window allows it.
         if algo["queued"]:
@@ -700,6 +793,9 @@ class AlgoEngine:
             stepped = self._profit_step(algo, price)
             if stepped:
                 return stepped
+            added = self._scale_in(algo, price, entries_open)
+            if added:
+                return added
 
         # 3b. A re-entry after a stoploss, while the strategy still says buy.
         if (algo.get("rearm") and (algo["last_signal"] or {}).get("target") == 1 and entries_open
@@ -782,8 +878,9 @@ class AlgoEngine:
     # -- orders --------------------------------------------------------------
 
     def _send(self, algo: dict, side: str, reason: str, fallback_price: float | None = None,
-              quantity: int | None = None, step: int | None = None) -> dict:
-        """Place one order. A SELL sells the whole position, or ``quantity`` shares of it for profit step ``step``."""
+              quantity: int | None = None, step: int | None = None, add: int | None = None) -> dict:
+        """Place one order. A SELL sells the whole position, or ``quantity`` shares of it for profit step ``step``.
+        A BUY spends the budget (with adds, the part left for the first buy), or buys ``quantity`` for add ``add``."""
         cfg = self.desk.settings.all()
         live = algo["mode"] == "live"
         exchange, tradingsymbol = kite_instrument(algo["symbol"])
@@ -794,7 +891,12 @@ class AlgoEngine:
         buffer = cfg["limit_buffer_pct"] / 100
         price = market.round_to_tick(reference * (1 + buffer if side == "BUY" else 1 - buffer), side)
         part = side == "SELL" and quantity is not None and quantity < algo["position"]
-        quantity = int(algo["budget"] // price) if side == "BUY" else (quantity if part else algo["position"])
+        adding = side == "BUY" and add is not None and quantity is not None
+        if side == "BUY":
+            quantity = quantity if adding else int(
+                scalein.of(algo.get("adds")).first_budget(algo["budget"], price) // price)
+        else:
+            quantity = quantity if part else algo["position"]
         if quantity < 1:
             algo["queued"] = None
             return self._result(algo, "Running: budget too small", True,
@@ -831,7 +933,8 @@ class AlgoEngine:
         if live:
             algo["pending"] = {"order_id": placed.get("order_id"), "side": side, "quantity": quantity,
                                "price": price, "variety": order["variety"],
-                               "placed": self._now().strftime("%Y-%m-%d %H:%M"), "step": step if part else None}
+                               "placed": self._now().strftime("%Y-%m-%d %H:%M"), "step": step if part else None,
+                               "add": add if adding else None}
             return self._result(algo, "Running: order sent", True,
                                 f"Sent {side} {quantity} at limit ₹{price:,.2f} ({order['variety']}, {reason}), "
                                 f"order {placed.get('order_id')}. Not yet filled.")
@@ -841,10 +944,14 @@ class AlgoEngine:
         if part:
             self.desk.notifier.notify(f"Algo “{algo['name']}” booked profit on {quantity} shares",
                                       f"{reason} · {algo['position']} still held · paper", "good")
+        elif adding:
+            self.desk.notifier.notify(f"Algo “{algo['name']}” added {quantity} shares",
+                                      f"{reason} · {algo['position']} held · stoploss ₹{algo.get('add_stop') or 0:,.2f}"
+                                      f" · paper", "good")
         elif side == "SELL" and not reason.endswith("signal"):
             self.desk.notifier.notify(f"Algo “{algo['name']}” closed its position", f"{reason} · paper", "warn")
         if side == "BUY" or part:
-            self._protect(algo)               # after a partial sale: a GTT for the shares left
+            self._protect(algo)               # after a partial sale or an add: a GTT for the shares held
         return self._result(algo, f"Running: {self._holding(algo)}", True)
 
     def _protect(self, algo: dict) -> None:
@@ -949,15 +1056,31 @@ class AlgoEngine:
 
     def _apply_fill(self, algo: dict, side: str, quantity: int, price: float) -> None:
         if side == "BUY":
-            if not algo["position"]:
+            adding = bool(algo["position"])
+            if not adding:
                 algo["entry_day"] = self._now().strftime("%Y-%m-%d")
                 algo["entry_at"] = self._now().strftime("%Y-%m-%d %H:%M:%S")
-                algo["steps_done"] = 0
+                algo.update(steps_done=0, adds_done=0, add_stop=None, first_price=price, first_qty=quantity,
+                            risk0=0.0, adds_made=[])
             total = algo["position"] + quantity
             algo["entry_qty"] = total
             algo["average_price"] = round((algo["position"] * algo["average_price"] + quantity * price) / total, 2)
             algo["position"] = total
-            algo["peak"], algo["trail_stop"], algo["stop_level"] = price, None, None
+            if not adding:
+                algo["peak"], algo["trail_stop"], algo["stop_level"] = price, None, None
+                stop = self._levels(algo)[0]
+                algo["risk0"] = round(quantity * (price - stop), 2) if stop is not None and stop < price else 0.0
+            else:
+                adds = scalein.of(algo.get("adds"))
+                moved = round(scalein.stop_price(1, algo["average_price"], total, algo.get("risk0") or 0.0,
+                                                 adds.stop_after), 2)
+                algo["add_stop"] = max(algo.get("add_stop") or 0.0, moved)
+                algo["peak"] = max(algo.get("peak") or price, price)
+                algo["adds_made"] = (algo.get("adds_made") or []) + [
+                    {"time": self._now().strftime("%Y-%m-%d %H:%M"), "quantity": quantity, "price": round(price, 2),
+                     "stop": algo["add_stop"]}]
+                self._log(algo, f"Added {quantity} shares at ₹{price:,.2f}: {total} held at an average of "
+                                f"₹{algo['average_price']:,.2f}. Stoploss of every share moved to ₹{algo['add_stop']:,.2f}.")
         else:
             algo["position"] = max(algo["position"] - quantity, 0)
             if not algo["position"]:
@@ -992,8 +1115,10 @@ class AlgoEngine:
         if status in ("CANCELLED", "REJECTED"):
             reason = row.get("status_message") or "no reason given"
             self._log(algo, f"Order {pending['order_id']} {status.lower()} unfilled ({reason}). Position unchanged.")
-            if pending["side"] == "BUY":
+            if pending["side"] == "BUY" and not pending.get("add"):
                 algo["seen_flat"] = True
+            if pending.get("add"):
+                self._log(algo, f"Add {pending['add']} not bought; it is not tried again.")
             if pending.get("step"):
                 algo["steps_done"] = pending["step"] - 1      # the step was not sold: it is tried again
             algo["pending"] = None
@@ -1030,7 +1155,8 @@ class AlgoEngine:
                     if (market.OPEN <= clock < market.CLOSE or (algo["position"] and not positional(algo))
                             or algo["pending"]):
                         out.append(algo["id"])
-                elif (algo["queued"] or algo["pending"] or algo["protect"] or self.steps_left(algo)) and (
+                elif (algo["queued"] or algo["pending"] or algo["protect"] or self.steps_left(algo)
+                      or self.adds_left(algo)) and (
                         market.OPEN <= clock < market.CLOSE or RUN_AFTER <= clock <= RUN_UNTIL) or RUN_AFTER <= clock <= RUN_UNTIL and algo["last_bar"] != today:
                     out.append(algo["id"])
         return out
@@ -1122,6 +1248,7 @@ _BLANK = {
     "last_bar": None, "last_signal": None, "status": "Stopped", "log": [],
     "exit_requested": False, "hold_until": None, "trade_type": None, "max_hold_days": 0, "entry_day": None,
     "entry_at": None, "steps": None, "steps_done": 0, "entry_qty": 0,
+    "adds": None, "adds_done": 0, "add_stop": None, "first_price": None, "first_qty": 0, "risk0": 0.0, "adds_made": [],
 }
 
 

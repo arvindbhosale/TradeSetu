@@ -499,6 +499,115 @@
     return box;
   }
 
+  // -- add to winners: buy more of a position that is going your way, up to a set size -----------------------------
+  // kind as for the steps. An option strategy adds whole lots of every leg, or lots of one bought leg on its own:
+  // a sold leg is never added without its hedge.
+
+  const ADD_UNITS = {
+    stock: [["pct", "% above the first buy price"], ["points", "₹ a share above the first buy"]],
+    futures: [["pct", "% move from the first entry"], ["points", "index points from the first entry"]],
+    option: [["pct", "% above the first premium paid"], ["points", "premium points above the first buy"]],
+    structure: [["rs", "₹ profit for each lot"], ["pct", "% of the premium received or paid"]],
+  };
+  const MAX_ADDS = 5;
+
+  function addsBox(kind, lotsOf = () => null) {
+    const unit = h("select", { "data-a": "unit" });
+    const after = h("select", { "data-a": "stop_after" },
+      h("option", { value: "risk", text: "Moves up so the whole position can lose no more than your first stoploss planned" }),
+      h("option", { value: "cost", text: "Moves to the average buy price (breakeven)" }));
+    const scope = h("select", { "data-a": "scope" },
+      h("option", { value: "position", text: "Every leg: one more lot of the whole strategy, hedges bought first" }),
+      h("option", { value: "leg", text: "Only a bought leg that is gaining, on its own (never a sold leg)" }));
+    const scopeLabel = h("label", {}, "Add to", scope);
+    const rows = h("div", { class: "steps-rows" });
+    const sum = h("span", { class: "hint" });
+    const more = h("button", { type: "button", text: "Add a level" });
+    const about = h("p", { class: "hint" });
+    const box = h("details", { class: "advanced steps-box adds-box", "data-adds": "" }, h("summary", { text: "Add to winners" }), about,
+      h("p", { class: "warnbox", text: "Adding to a winner raises your average buy price. A sharp reversal can wipe out the gains, and the bigger position then loses faster. The stoploss below is moved after every add to limit that." }),
+      rows, h("div", { class: "row" }, more, sum),
+      h("div", { class: "row" }, h("label", {}, "Measure profit from the first entry in", unit), scopeLabel),
+      h("details", { class: "advanced" }, h("summary", { text: "Advanced" }),
+        h("div", { class: "row" }, h("label", {}, "After an add, the stoploss of the whole position", after)),
+        h("p", { class: "hint", text: "Each add is checked against the money (margin) available first and skipped when it is short. No add is made after a profit step has been booked, with the kill switch on, or outside the trade window. Gaps can still lose more than planned." })),
+      h("p", { class: "hint", text: "Our view: adding to winners pays only in strong trends; in choppy markets it buys near the top and gets stopped out. The backtest also runs without the adds and shows which did better." }));
+    const sizeWord = () => (box.kind === "stock" ? "% of the first buy" : "lots");
+    const line = (at = "", size = "") => {
+      const row = h("div", { class: "row step-row add-row" },
+        h("label", {}, "When the profit reaches", h("input", { "data-a": "at", type: "number", min: 0, step: "any", value: at })),
+        h("label", { "data-a-size": "" }, `add (${sizeWord()})`, h("input", { "data-a": "size", type: "number", min: 0, step: box.kind === "stock" ? "any" : 1, value: size })),
+        h("button", { type: "button", text: "Remove", onclick: () => { row.remove(); sync(); } }));
+      row.addEventListener("input", sync);
+      rows.append(row);
+      return row;
+    };
+    const sync = () => {
+      $$(".add-row", rows).forEach((row, n) => { $("[data-a-size]", row).firstChild.textContent = `Add ${n + 1}: buy (${sizeWord()})`; });
+      more.disabled = $$(".add-row", rows).length >= MAX_ADDS;
+      scopeLabel.hidden = box.kind !== "structure";
+      const sizes = $$("[data-a=size]", rows).map((el) => Number(el.value || 0)).filter((v) => v > 0);
+      const total = sizes.reduce((a, b) => a + b, 0), lots = Number(lotsOf() || 0);
+      if (!sizes.length) sum.textContent = "No adds: the position keeps its first size.";
+      else if (box.kind === "stock") sum.textContent = total > 300 ? `The adds buy ${total}% of the first buy: at most 300%.` : `At most ${100 + total}% of the first buy's shares in all, in the same money: the first buy is made smaller to leave room for the adds.`;
+      else if (sizes.some((v) => v !== Math.round(v))) sum.textContent = "Add whole lots only: futures and options trade in lots.";
+      else if (lots && lots + total > 50) sum.textContent = `${lots} lots plus ${total} added is more than 50 lots.`;
+      else sum.textContent = lots ? `At most ${lots + total} lots in all (${lots} first, ${total} added)${box.kind === "structure" && scope.value === "leg" ? ", per bought leg" : ""}.` : `The adds buy ${total} lots.`;
+    };
+    box.setKind = (k) => {
+      box.kind = k;
+      const keep = unit.value;
+      unit.replaceChildren(...ADD_UNITS[k].map(([v, t]) => h("option", { value: v, text: t })));
+      if (ADD_UNITS[k].some(([v]) => v === keep)) unit.value = keep;
+      about.textContent = {
+        stock: "Buy more shares as the price rises from your first buy. Example: 50% more at +3%, 50% more at +6%. Sizes are a % of the first buy's shares, rounded down to whole shares.",
+        futures: "Add lots as the trade moves your way. Example: start with 1 lot, add 1 at +100 points and 1 more at +200.",
+        option: "Buy more lots of the same option as its premium rises. Checked on each candle's closing premium in the backtest.",
+        structure: "Add lots as the strategy profits. Every leg: one lot here is one lot of every leg, the bought legs first, so a sold leg is never added without its hedge. A bought leg on its own: when that leg's premium has risen by the level, more lots of it alone.",
+      }[k];
+      sync();
+    };
+    more.addEventListener("click", () => { line(); sync(); });
+    scope.addEventListener("change", sync);
+    box.read = () => ({ unit: unit.value, stop_after: after.value, scope: box.kind === "structure" ? scope.value : "position",
+      adds: $$(".add-row", rows).map((row) => ({ at: Number($("[data-a=at]", row).value || 0), size: Number($("[data-a=size]", row).value || 0) }))
+        .filter((a) => a.at || a.size) });
+    box.load = (x) => {
+      rows.replaceChildren();
+      if (x && x.unit && ADD_UNITS[box.kind].some(([v]) => v === x.unit)) unit.value = x.unit;
+      after.value = (x && x.stop_after) || "risk";
+      scope.value = (x && x.scope) || "position";
+      ((x && x.adds) || []).forEach((a) => line(a.at, a.size));
+      if (!rows.children.length) line();
+      box.open = Boolean(x && x.adds && x.adds.length);
+      sync();
+    };
+    box.refresh = sync;
+    box.setKind(kind);
+    box.load(null);
+    return box;
+  }
+
+  // Option-buying adds on an option-leg algo: % of the premium stays %, premium points become ₹ a lot.
+  function optionAdds(adds, lotSize) {
+    if (!adds || adds.unit !== "points") return adds;
+    return { ...adds, unit: "rs", adds: adds.adds.map((a) => ({ ...a, at: Math.round(a.at * (lotSize || 1) * 100) / 100 })) };
+  }
+
+  // Mounted right after the steps box ``after``.
+  function mountAdds(id, kind, form, after) {
+    const box = Object.assign(addsBox(kind, () => (form.lots ? form.lots.value : null)), { id });
+    $("#" + after).after(box);
+    if (form.lots) form.lots.addEventListener("input", box.refresh);
+    return box;
+  }
+
+  function addsText(parts) {
+    return parts.map((p) => `${p.date || p.time} ${p.lots != null ? `${p.lots} lot${p.lots === 1 ? "" : "s"}` : `${inr.format(p.quantity)} shares`}`
+      + (p.leg ? ` of ${p.leg}` : "") + (p.price != null && (p.quantity || p.lots) ? ` @ ${inr2.format(p.price)}` : "")
+      + (/skipped/.test(p.why || "") ? ` (${p.why.replace(/^add \d+ /, "")})` : "")).join("; ");
+  }
+
   function stepsText(parts) {
     return parts.map((p) => `${p.date || p.time} ${p.lots ? `${p.lots} lot${p.lots === 1 ? "" : "s"}` : `${inr.format(p.quantity)} shares`}`
       + (p.price != null ? ` @ ${inr2.format(p.price)}` : "") + (p.pnl != null ? ` (${rupees(p.pnl)})` : "")).join("; ");
@@ -535,7 +644,7 @@
     const own = form.strategy.value === OWN_RULES;
     const body = { symbol: form.symbol.value, start: form.start.value, end: form.end.value, interval: form.interval.value,
       capital: Number(form.capital.value), allocation_pct: Number(form.allocation_pct.value), exits: $("#bt-exits").read(),
-      steps: $("#bt-steps").read() };
+      steps: $("#bt-steps").read(), adds: $("#bt-adds").read() };
     if (own) body.rules = $("#bt-rules").read(); else { body.strategy = form.strategy.value; body.strategy_params = params; }
     body.trade_type = form.trade_type.value; body.max_hold_days = holdDays(form);
     if (body.trade_type === "intraday") Object.assign(body, { trade_start: form.trade_start.value, trade_end: form.trade_end.value, square_off: form.square_off.value });
@@ -696,7 +805,7 @@
           await reloadStrategies();
         }
         await stockAlgo({ symbol: body.symbol, strategy, strategy_params: params, interval: body.interval,
-          trade_type: body.trade_type, max_hold_days: body.max_hold_days || 0, exits: body.exits, steps: body.steps });
+          trade_type: body.trade_type, max_hold_days: body.max_hold_days || 0, exits: body.exits, steps: body.steps, adds: body.adds });
       } else if (kind === "optimise") {
         await stockAlgo({ symbol: body.symbol, strategy: body.strategy, strategy_params: optimiserPick(result).params, interval: body.interval,
           trade_type: body.trade_type, max_hold_days: 0, exits: { unit: "pct", stop_loss: Number(body.stop_loss_pct || 0) } });
@@ -709,7 +818,7 @@
           expiry_kind: body.expiry_kind, ...readExpiryPick($("#bt-deploy-expiry")), schedule: body.mode, entry_time: body.entry_time, exit_time: body.exit_time,
           exit_days_before: body.exit_days_before, min_days: body.min_days, strategy: body.strategy, weekdays: body.weekdays, k: body.k, w: body.w,
           legs: body.legs, lots: body.lots, leg_exits: body.leg_exits, leg_scope: body.leg_scope, max_loss: maxLoss, target: Number(body.target_rs || 0),
-          margin_pct: body.margin_pct, mode, steps: body.steps } });
+          margin_pct: body.margin_pct, mode, steps: body.steps, adds: body.adds } });
         made.push(name); await refreshFnoAlgos();
       } else if (kind === "options") {
         // Bought calls lean bullish (on while the strategy is long); bought puts bearish (on once it has turned flat),
@@ -723,14 +832,14 @@
             schedule: "signal", strategy: body.strategy, strategy_params: body.strategy_params, entry_time: "09:20", exit_time: "15:15",
             min_days: body.min_days, lots: body.lots, leg_scope: "bought",
             leg_exits: { unit: "pct", stop_loss: Number(body.stop_pct || 0), target: Number(body.target_pct || 0) }, max_loss: maxLoss, target: 0, mode,
-            steps: optionSteps(body.steps, result.lot_size) } });
+            steps: optionSteps(body.steps, result.lot_size), adds: optionAdds(body.adds, result.lot_size) } });
           made.push(each);
         }
         await refreshFnoAlgos();
       } else if (kind === "futures") {
         await api("/fno-algos", { method: "POST", body: { name, kind: "futures", direction: body.direction, underlying: body.underlying,
           expiry_kind: "monthly", schedule: "signal", strategy: body.strategy, strategy_params: body.strategy_params, lots: body.lots,
-          max_loss: maxLoss, target: 0, margin_pct: body.margin_pct, mode, steps: body.steps } });
+          max_loss: maxLoss, target: 0, margin_pct: body.margin_pct, mode, steps: body.steps, adds: body.adds } });
         made.push(name); await refreshFnoAlgos();
       }
       const tab = ["stock", "optimise", "aiscan"].includes(kind) ? "stocks" : "fno";
@@ -762,6 +871,7 @@
       r.data_source ? tile("Prices from", r.data_source.name, `${r.data_source.first} to ${r.data_source.last}`) : null].filter(Boolean));
     renderChecks(r);
     renderStepsCompare(r);
+    renderAddsCompare(r);
     $("#bt-chart-title").textContent = `Portfolio value · ${r.symbol} · ${r.strategy.name} · ${state.app.intervals[r.interval]} candles · ${r.trade_type === "intraday" ? "Intraday" : "Positional"} · ${r.period.start} to ${r.period.end}`;
     $("#bt-note").textContent = r.data_note || ""; $("#bt-note").hidden = !r.data_note;
     const series = [{ name: r.strategy.name, color: "var(--s1)", points: r.equity },
@@ -797,6 +907,8 @@
       ...(r.trades.some((t) => t.worst_pct != null) ? [{ label: "Lowest / highest", num: true, get: (t) => `${pct(t.worst_pct, false)} / ${pct(t.best_pct)}` }] : []),
       { label: "Days", num: true, get: (t) => t.days }, { label: "Exit reason", get: (t) => t.exit },
       ...(r.trades.some((t) => t.partials) ? [{ label: "Booked in steps", get: (t) => (t.partials ? stepsText(t.partials) : "") }] : []),
+      ...(r.trades.some((t) => t.adds) ? [{ label: "Added", get: (t) => (t.adds ? addsText(t.adds) : "") },
+        { label: "Average entry ₹", num: true, get: (t) => (t.average_price == null ? "–" : inr2.format(t.average_price)) }] : []),
     ], r.trades.slice().reverse(), "The strategy made no trades in this period."));
   }
 
@@ -819,6 +931,28 @@
         h("thead", {}, h("tr", {}, h("th", { text: "" }), h("th", { class: "num", text: "With steps" }), h("th", { class: "num", text: "One exit" }))),
         h("tbody", {}, rows.map(([label, get]) => h("tr", {}, h("td", { text: label }), h("td", { class: "num", text: get(a) }), h("td", { class: "num", text: get(b) })))))),
       h("p", { class: "hint", text: "Same strategy, dates and exit rules; only the steps differ. Booking part early usually raises the win rate and lowers the average win: judge it by the final value and the drawdown." }));
+  }
+
+  // With adds the same backtest is also run without them: did adding to winners help?
+  function renderAddsCompare(r) {
+    const panel = $("#bt-adds-compare"), c = r.adds_compare;
+    panel.hidden = !c;
+    if (!c) { panel.replaceChildren(); return; }
+    const a = c.with_adds, b = c.without_adds;
+    const rows = [["Total return", (x) => pct(x.total_return_pct)], ["Final value", (x) => rupees(x.final_value)],
+      ["Max drawdown", (x) => pct(x.max_drawdown_pct, false)], ["Win rate", (x) => (x.win_rate_pct == null ? "–" : x.win_rate_pct + "%")],
+      ["Average win", (x) => (x.avg_win == null ? "–" : rupees(x.avg_win))], ["Average loss", (x) => (x.avg_loss == null ? "–" : rupees(x.avg_loss))],
+      ["Profit factor", (x) => (x.profit_factor == null ? "–" : x.profit_factor.toFixed(2))], ["Closed trades", (x) => String(x.trades)]];
+    const verdict = c.better === "adds" ? `Adding to winners ended ${rupees(c.difference)} ahead of keeping the first size.`
+      : c.better === "without" ? `Keeping the first size ended ${rupees(-c.difference)} ahead: in this period the adds cost money. Try higher levels, smaller adds, or leave them off.`
+        : "Adding to winners ended level with keeping the first size.";
+    panel.replaceChildren(h("h3", { text: "Add to winners, against keeping the first size" }),
+      h("p", { class: c.better === "without" ? "warnbox" : "hint", text: `${verdict} ${c.adds_made} add${c.adds_made === 1 ? "" : "s"} made` + (c.adds_skipped ? `, ${c.adds_skipped} skipped for want of money.` : ".") }),
+      h("div", { class: "scroll" }, h("table", {},
+        h("thead", {}, h("tr", {}, h("th", { text: "" }), h("th", { class: "num", text: "With adds" }), h("th", { class: "num", text: "Without adds" }))),
+        h("tbody", {}, rows.map(([label, get]) => h("tr", {}, h("td", { text: label }), h("td", { class: "num", text: get(a) }), h("td", { class: "num", text: get(b) })))))),
+      h("p", { class: "hint", text: "Same strategy, dates and exit rules; only the adds differ. Adds raise the average entry, so a winner that reverses can end as a loss: judge them by the final value and the drawdown, not the best trade."
+        + (r.futures || r.structure || r.simulated ? "" : " With adds the first buy of shares is smaller (the same money pays for the adds), so part of the difference comes from that.") }));
   }
 
   function drawChart(host, legend, series) {
@@ -1295,6 +1429,7 @@
     watchTradeType(form);
     $("#algo-exits").replaceWith(Object.assign(exitRulesBox(false), { id: "algo-exits" }));
     mountSteps("algo-steps", "stock", form);
+    mountAdds("algo-adds", "stock", form, "algo-steps");
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const editing = algoEdit.stock;
@@ -1303,7 +1438,7 @@
       $$("#algo-params input").forEach((input) => { strategyParams[input.name.slice(2)] = Number(input.value); });
       const body = { name: form.name.value, symbol: form.symbol.value, strategy: form.strategy.value,
         strategy_params: strategyParams, budget: Number(form.budget.value), mode: form.mode.value, interval: form.interval.value,
-        trade_type: form.trade_type.value, max_hold_days: holdDays(form), exits: $("#algo-exits").read(), steps: $("#algo-steps").read() };
+        trade_type: form.trade_type.value, max_hold_days: holdDays(form), exits: $("#algo-exits").read(), steps: $("#algo-steps").read(), adds: $("#algo-adds").read() };
       let saved = false;
       try {
         if (editing) await api(`/algos/${editing.id}`, { method: "PUT", body });
@@ -1339,7 +1474,7 @@
     $("[data-create-hint]", form).textContent = "The name cannot change: the profit/loss history is filed under it.";
     form.name.value = a.name; form.name.readOnly = true;
     $$("input, select", form).forEach((el) => {
-      const key = el.closest("[data-steps]") ? "steps" : el.closest("[data-x]") ? "exits" : el.closest(cfg.params) ? "params" : el.name === "fwd" ? "weekdays" : el.name;
+      const key = el.closest("[data-adds]") ? "adds" : el.closest("[data-steps]") ? "steps" : el.closest("[data-x]") ? "exits" : el.closest(cfg.params) ? "params" : el.name === "fwd" ? "weekdays" : el.name;
       el.disabled = Boolean(unlocked) && !unlocked.includes(key) && el.name !== "name";
     });
     $(`${cfg.banner} span`).textContent = note;
@@ -1360,6 +1495,7 @@
     $$("input, select", form).forEach((el) => { el.disabled = false; });
     $(cfg.banner).hidden = true;
     $(kind === "stock" ? "#algo-steps" : "#fno-steps").load(null);
+    $(kind === "stock" ? "#algo-adds" : "#fno-adds").load(null);
     if (kind === "fno" && fnoLegs) fnoLegs.lock(false);
   }
 
@@ -1374,12 +1510,13 @@
     form.max_hold_days.value = a.max_hold_days || 0; syncTradeType(form);
     $("#algo-exits").load(a.exits || { unit: "pct", stop_loss: a.stop_loss_pct || 0, target: a.target_pct || 0 });
     $("#algo-steps").load(a.steps);
+    $("#algo-adds").load(a.adds);
     const holding = stockHolding(a), gttAtBroker = a.protect && a.mode === "live";
     const note = !holding ? `Editing “${a.name}”. ${a.enabled ? "It keeps running with the new settings; a new stock, strategy or candle waits for a fresh signal." : "It stays stopped."}`
       + " Changing Paper/Live stops it."
       : gttAtBroker ? `“${a.name}” holds ${a.position} shares with its target and stoploss at your broker (GTT ${a.protect}). Only the budget can change now.`
-        : `“${a.name}” holds a position, so only the budget, the exit rules, the profit steps and the holding limit can change. Close or clear the position to change the rest.`;
-    beginAlgoEdit("stock", a, note, holding ? (gttAtBroker ? ["budget", "max_hold_days"] : ["budget", "exits", "steps", "max_hold_days"]) : null);
+        : `“${a.name}” holds a position, so only the budget, the exit rules, the profit steps, the adds and the holding limit can change. Close or clear the position to change the rest.`;
+    beginAlgoEdit("stock", a, note, holding ? (gttAtBroker ? ["budget", "max_hold_days"] : ["budget", "exits", "steps", "adds", "max_hold_days"]) : null);
   }
 
   function editFnoAlgo(a) {
@@ -1405,9 +1542,10 @@
     $$("input[name=fwd]", form).forEach((c) => { c.checked = (a.weekdays || []).includes(Number(c.value)); });
     $("#fno-exits").load(a.leg_exits || { unit: "pct", stop_loss: a.leg_sl_pct || 0 });
     $("#fno-steps").load(a.steps);
-    const note = a.book ? `“${a.name}” has open legs, so only the maximum loss, the target, each leg's exit rules, the profit steps and the limit buffer can change. Exit, or clear the legs, to change the rest.`
+    $("#fno-adds").load(a.adds);
+    const note = a.book ? `“${a.name}” has open legs, so only the maximum loss, the target, each leg's exit rules, the profit steps, the adds and the limit buffer can change. Exit, or clear the legs, to change the rest.`
       : `Editing “${a.name}”. ${a.enabled ? "It keeps running with the new settings." : "It stays stopped."} Changing Paper/Live stops it.`;
-    beginAlgoEdit("fno", a, note, a.book ? ["max_loss", "target", "limit_buffer_pct", "leg_scope", "exits", "steps"] : null);
+    beginAlgoEdit("fno", a, note, a.book ? ["max_loss", "target", "limit_buffer_pct", "leg_scope", "exits", "steps", "adds"] : null);
     fnoLegs.lock(Boolean(a.book));                     // open legs cannot change; Add leg and Remove are off too
   }
 
@@ -1478,6 +1616,7 @@
         { label: "Opened (IST)", get: (r) => r.opened }, { label: "Closed (IST)", get: (r) => r.closed },
         { label: "Why closed", get: (r) => r.reason }, { label: "P&L after charges", num: true, get: (r) => money(r.pnl), tone: (r) => tone(r.pnl) },
         { label: "Booked in steps", get: (r) => ((r.partials || []).length ? r.partials.map((p) => `${p.time}: ${p.lots} lot${p.lots === 1 ? "" : "s"} (${p.why})`).join("; ") : "–") },
+        { label: "Added", get: (r) => ((r.adds || []).length ? r.adds.map((p) => `${p.time}: ${p.lots} lot${p.lots === 1 ? "" : "s"}${p.leg ? ` of ${p.leg}` : ""}`).join("; ") : "–") },
         { label: "Legs", get: (r) => (r.legs || []).join(", ") }], a.history.slice().reverse(), "")) : null,
       d.orders.length ? h("h3", { text: "Pending orders" }) : null,
       d.orders.length ? h("div", { class: "scroll" }, table([
@@ -1646,7 +1785,7 @@
       exit_days_before: num("exit_days_before"), min_days: num("min_days"), strategy: form.strategy.value, strategy_params: params,
       weekdays: $$("input[name=fwd]", form).filter((c) => c.checked).map((c) => Number(c.value)),
       k: num("k"), w: num("w"), lots: num("lots"), leg_exits: $("#fno-exits").read(), leg_scope: form.leg_scope.value, max_loss: num("max_loss"), target: num("target"),
-      limit_buffer_pct: num("limit_buffer_pct"), margin_pct: num("margin_pct"), mode: form.mode.value, steps: $("#fno-steps").read(),
+      limit_buffer_pct: num("limit_buffer_pct"), margin_pct: num("margin_pct"), mode: form.mode.value, steps: $("#fno-steps").read(), adds: $("#fno-adds").read(),
       ...(form.kind.value === "structure" && fnoLegs ? { legs: fnoLegs.own() || null } : {}),
       ...(form.kind.value === "structure" && form.structure.value === "custom" ? { bias: form.bias.value || null } : {}),
       ...(form.kind.value === "futures" ? { expiry: null, expiry_ahead: 0 } : readExpiryPick(form.expiry_pick)) };
@@ -1656,6 +1795,7 @@
     const form = $("#form-fno"), list = state.app.structures;
     $("#fno-exits").replaceWith(Object.assign(exitRulesBox(true), { id: "fno-exits" }));
     mountSteps("fno-steps", "structure", form);
+    mountAdds("fno-adds", "structure", form, "fno-steps");
     structureOptions(form.structure, list);
     form.structure.value = "iron_condor";
     strategyOptions(form.strategy, (x) => !x.intraday_only && x.key !== "buy_hold"); form.strategy.value = "supertrend";
@@ -1673,6 +1813,7 @@
       const schedule = futures ? "signal" : form.schedule.value;
       $$(".fno-structure", form).forEach((el) => { el.hidden = futures; });
       if ($("#fno-steps").kind !== (futures ? "futures" : "structure")) $("#fno-steps").setKind(futures ? "futures" : "structure");
+      if ($("#fno-adds").kind !== (futures ? "futures" : "structure")) $("#fno-adds").setKind(futures ? "futures" : "structure");
       $$(".fno-futures", form).forEach((el) => { el.hidden = !futures; });
       $$(".fno-signal", form).forEach((el) => { el.hidden = schedule !== "signal"; });
       $$(".fno-positional", form).forEach((el) => { el.hidden = schedule !== "positional"; });
@@ -3296,6 +3437,7 @@
     const form = $("#form-fbt");
     strategyOptions(form.strategy); intervalOptions(form.interval); form.strategy.value = "supertrend";
     mountSteps("fbt-steps", "futures", form);
+    mountAdds("fbt-adds", "futures", form, "fbt-steps");
     const today = state.app.today, from = new Date(today); from.setFullYear(from.getFullYear() - 3);
     form.start.value = from.toISOString().slice(0, 10); form.end.value = today;
     const params = () => {
@@ -3311,7 +3453,8 @@
       const body = { underlying: form.underlying.value, start: form.start.value, end: form.end.value, interval: form.interval.value, strategy: form.strategy.value,
         strategy_params: strategyParams, direction: form.direction.value, lots: Number(form.lots.value), margin_pct: Number(form.margin_pct.value),
         stop_pct: Number(form.stop_pct.value || 0), target_pct: Number(form.target_pct.value || 0), slippage_pct: Number(form.slippage_pct.value),
-        carry_pct: Number(form.carry_pct.value), capital: Number(form.capital.value), steps: $("#fbt-steps").read() };
+        carry_pct: Number(form.carry_pct.value), capital: Number(form.capital.value), steps: $("#fbt-steps").read(),
+        adds: $("#fbt-adds").read() };
       try { const r = await api("/backtest/futures", { method: "POST", body }); $("#bt-futures").append($("#bt-result")); renderBacktest(r); offerDeploy("futures", body, r); }
       catch (err) { showError("#fbt-error", err); }
       busy(button, false);
@@ -3457,6 +3600,7 @@
     const form = $("#form-sbt");
     $("#sbt-exits").replaceWith(Object.assign(exitRulesBox(true), { id: "sbt-exits" }));
     mountSteps("sbt-steps", "structure", $("#form-sbt"));
+    mountAdds("sbt-adds", "structure", $("#form-sbt"), "sbt-steps");
     const list = state.app.structures;
     structureOptions(form.structure, list);
     strategyOptions(form.strategy, (x) => !x.intraday_only); form.strategy.value = "supertrend";
@@ -3502,7 +3646,7 @@
         k: num("k"), w: num("w"), legs: ownLegs(), leg_exits: $("#sbt-exits").read(), leg_scope: form.leg_scope.value, stop_pct: num("stop_pct"), target_pct: num("target_pct"),
         stop_rs: num("stop_rs"), target_rs: num("target_rs"), lots: num("lots"),
         margin_pct: num("margin_pct"), iv_scale: num("iv_scale"), skew: num("skew"), slippage_pct: num("slippage_pct"), capital: num("capital"),
-        premiums: form.premiums.value, steps: $("#sbt-steps").read() };
+        premiums: form.premiums.value, steps: $("#sbt-steps").read(), adds: $("#sbt-adds").read() };
       try { const r = await api("/backtest/structure", { method: "POST", body }); $("#bt-structures").append($("#bt-result")); renderBacktest(r); offerDeploy("structure", body, r); }
       catch (err) { showError("#sbt-error", err); }
       busy(button, false);
@@ -3792,6 +3936,7 @@
     const form = $("#form-obt");
     strategyOptions(form.strategy); intervalOptions(form.interval); form.strategy.value = "supertrend";
     mountSteps("obt-steps", "option", form);
+    mountAdds("obt-adds", "option", form, "obt-steps");
     const today = state.app.today, from = new Date(today); from.setFullYear(from.getFullYear() - 2);
     form.start.value = from.toISOString().slice(0, 10); form.end.value = today;
     const params = () => {
@@ -3809,7 +3954,7 @@
         strategy_params: strategyParams, side: form.side.value, moneyness: Number(form.moneyness.value), lots: Number(form.lots.value),
         min_days: Number(form.min_days.value), expiry_weekday: Number(form.expiry_weekday.value), stop_pct: Number(form.stop_pct.value || 0),
         target_pct: Number(form.target_pct.value || 0), iv_scale: Number(form.iv_scale.value), slippage_pct: Number(form.slippage_pct.value), capital: Number(form.capital.value),
-        steps: $("#obt-steps").read() };
+        steps: $("#obt-steps").read(), adds: $("#obt-adds").read() };
       try { const r = await api("/backtest/options", { method: "POST", body }); $("#bt-options").append($("#bt-result")); renderBacktest(r); offerDeploy("options", body, r); }
       catch (err) { showError("#obt-error", err); }
       busy(button, false);
@@ -4700,6 +4845,9 @@
       { label: "From", get: (t) => sourceLabel(t.source) }, { label: "Side", get: (t) => (t.side === "SHORT" ? "Short" : "Long") },
       { label: "Qty", num: true, get: (t) => t.quantity }, { label: "Entry ₹", num: true, get: (t) => inr2.format(t.entry) },
       { label: "Exit ₹", num: true, get: (t) => (t.exit == null ? "open" : inr2.format(t.exit)) },
+      ...(d.trades.some((t) => (t.entries || []).length > 1) ? [{ label: "Each buy (IST)", get: (t) => ((t.entries || []).length > 1
+        ? h("div", { class: "closes" }, t.entries.map((x) => h("div", { text: `${x.time.slice(0, 16)} · ${inr.format(x.quantity)} @ ₹${inr2.format(x.price)}` })))
+        : "–") }] : []),
       { label: "Each close (IST)", get: (t) => ((t.exits || []).length > 1
         ? h("div", { class: "closes" }, t.exits.map((x) => h("div", { text: `${x.time.slice(0, 16)} · ${inr.format(x.quantity)} @ ₹${inr2.format(x.price)} (${signedInr(x.pnl)})` })))
         : "–") },
@@ -4928,6 +5076,7 @@
     $("#bt-rules").replaceWith(Object.assign(rulesEditor(), { id: "bt-rules", hidden: true }));
     $("#bt-exits").replaceWith(Object.assign(exitRulesBox(false), { id: "bt-exits" }));
     mountSteps("bt-steps", "stock", $("#form-bt"));
+    mountAdds("bt-adds", "stock", $("#form-bt"), "bt-steps");
     ["trade_start", "trade_end", "square_off"].forEach((k) => { bt[k].value = state.app.settings[k]; });
     bt.strategy.addEventListener("change", renderStrategyParams); renderStrategyParams();
     bt.interval.addEventListener("change", () => {       // intraday history is short: start where the data starts

@@ -31,6 +31,7 @@ The screenshots use sample data, not real prices.
 6. [Backtest](#6-backtest)
    - [Exit rules: stoploss, target, trailing, re-entry](#exit-rules-stoploss-target-trailing-re-entry)
    - [Book profit in steps](#book-profit-in-steps)
+   - [Add to winners](#add-to-winners)
   - [Create an algo from the result](#create-an-algo-from-the-result)
    - [Positional (swing) backtests](#positional-swing-backtests)
    - [Optimise a strategy (walk-forward)](#optimise-a-strategy-walk-forward)
@@ -962,6 +963,30 @@ An option strategy closes matched lots: one lot of every leg (times its ratio) p
 Stock algos sell the step at the live price; a positional algo then places its stoploss/target GTT again for the shares left. A step that is not filled is tried again. Algos on day candles watch their steps while the desk runs in market hours.
 
 The backtest result shows **With steps** and **Without steps** side by side. Booking in steps usually lowers the average winning trade, because part of each winner is sold early; it helps when prices often reach the first level and then turn back. Check the comparison before using it live. Each partial close is listed in the trades table and, with its time, in the trade journal (**Each close (IST)**).
+
+### Add to winners
+
+Every backtest (stocks, index futures, options buying, option strategies) and every algo (stock and F&O) has an **Add to winners** box. Use it to buy more of a trade that is going your way, at set profit levels, up to a set size.
+
+**Read this first.** Adding to a winner raises your average buy price. A sharp reversal can wipe out the gains, and the bigger position then loses faster. Adding pays in strong trends; in choppy markets it tends to buy near the top and get stopped out. Check the backtest comparison before using it live.
+
+| Box | What it does |
+|---|---|
+| **When the profit reaches** | The profit level for each add, measured from the **first** entry: % or points (stocks, futures, options buying), or ₹ profit for each lot or % of the premium (option strategies). Each level must be higher than the one before. Up to 5 adds. |
+| **Add** | Stocks: **% of the first buy's shares** (at most 300% in all). Futures and options: a whole number of **lots** (at most 50 lots with the first ones). The adds together are the most the position can grow. |
+| **Add to** (option strategies) | **Every leg**: one more lot of the whole strategy, bought legs first, then the sold legs once the hedges have filled. **Only a bought leg that is gaining**: when a bought leg's own premium has risen by the level, more lots of that leg alone. A sold leg is never added on its own. |
+| **Advanced: after an add, the stoploss of the whole position** | **Moves up so the whole position can lose no more than your first stoploss planned** (the default). Example: 100 shares at ₹100 with a stoploss at ₹95 risk ₹500. After 50 more at ₹110 (average ₹103.33) the stoploss of all 150 moves to ₹100: hit there, they lose the same ₹500. Without a stoploss this is the average buy price. **Moves to the average buy price (breakeven)**. Both are before charges, and a gap past the stoploss can still lose more. |
+
+Rules every add follows:
+
+- **Money first.** Each add is checked against the money available: the cash Kite reports (or the paper cash) for shares, Zerodha's basket margin for F&O when the Kite server has it (else the desk's estimate). An add that cannot be paid for is skipped and logged, never forced. Every add is an order like any other: the kill switch, the trade window, the order value and orders-a-day limits all apply.
+- **Stocks: the budget covers the adds.** With adds, a stock algo's first buy (and a stock backtest's) uses only the part of the budget that leaves room for every add at its level's price. So the first buy is smaller than without adds.
+- **F&O: the maximum loss stays in rupees.** After an add, an F&O algo closes every leg when the P&L falls to minus the **Maximum loss (₹)** (or to ₹0 with **average buy price**, or for a paper algo without a maximum loss). The rupee loss does not grow with the position; it is reached sooner because the position is bigger.
+- **No adds after a profit step.** Once **Book profit in steps** has booked part of the position, the trade is being scaled out, so no more adds. In a backtest, adds and steps reached in one candle are taken in price order.
+- **Positional stock algos** cancel the stoploss/target GTT before the add and place it again for all the shares, at the moved stoploss.
+- An F&O add that does not fill (three tries, or not done by the exit time) is given up; any bought lots that filled stay and close with the position, so a sold leg is never left uncovered.
+
+The backtest result shows **With adds** and **Without adds** side by side, and the trades table lists each add (**Added**) with the **Average entry**. In the trade journal, a trade with adds shows **Each buy (IST)**; the algo's log and an F&O algo's closed trades list every add with its time.
 
 ### Create an algo from the result
 
