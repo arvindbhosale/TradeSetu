@@ -237,6 +237,8 @@ class Ledger:
                     "realized": round(book["realized"], 2),
                     "unrealized": 0.0 if not held else None if open_pnl is None else round(open_pnl, 2),
                     "charges": round(book["charges"], 2), "opened": book["opened"],
+                    "opened_at": book["opened_at"],
+                    "closed_at": None if held or not book["fills"] else book["fills"][-1]["time_ist"],
                     "fills": book["fills"][-100:]})
         rows.sort(key=lambda r: r["fills"][-1]["time_ist"] if r["fills"] else "", reverse=True)
         rows.sort(key=lambda r: r["status"] != "Active")          # held first, then the latest closed

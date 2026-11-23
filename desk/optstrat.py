@@ -190,6 +190,38 @@ def expiry_after(underlying: str, moment: pd.Timestamp, kind: str, min_days: flo
     raise ValueError("no expiry found")
 
 
+MAX_AHEAD = 3          # trade at most this many expiries after the nearest one
+
+
+def check_ahead(ahead) -> int:
+    """``ahead``: which expiry to trade, 0 the nearest, 1 the one after it, up to ``MAX_AHEAD``."""
+    if isinstance(ahead, bool) or not isinstance(ahead, (int, float)) or ahead != int(ahead) or not 0 <= ahead <= MAX_AHEAD:
+        raise ValueError(f"Expiry must be the nearest one or up to {MAX_AHEAD} expiries after it.")
+    return int(ahead)
+
+
+def expiry_shift(raw, ahead=0) -> tuple:
+    """Your own legs (as sent, see ``own_legs``) and the expiry to trade. When every option leg is on the far
+    expiry, they are all on one expiry: the legs move to "near" and ``ahead`` grows by one, so the position is
+    held to that expiry rather than sold back at an earlier one nothing is on."""
+    ahead = check_ahead(ahead)
+    if not isinstance(raw, list):
+        return raw, ahead
+    options = [g for g in raw if isinstance(g, dict) and str(g.get("type", "")).upper() != "FUT"]
+    if options and all(str(g.get("expiry") or "near") == "far" for g in options):
+        return [{**g, "expiry": "near"} if isinstance(g, dict) else g for g in raw], ahead + 1
+    return raw, ahead
+
+
+def expiry_ahead_of(underlying: str, moment: pd.Timestamp, kind: str, min_days: float, ahead: int = 0,
+                    holidays=frozenset()) -> pd.Timestamp:
+    """The expiry ``ahead`` expiries after the first one at least ``min_days`` after ``moment``."""
+    expiry = expiry_after(underlying, moment, kind, min_days, holidays)
+    for _ in range(ahead):
+        expiry = expiry_after(underlying, expiry + pd.Timedelta(minutes=1), kind, 0.0, holidays)
+    return expiry
+
+
 def _offset(text: str, k: int, w: int) -> int:
     """Strikes from the money for a leg: "0", "+k", "-k", "+w", "-w", "+k+w" or "-k-w"."""
     sign = -1 if text.startswith("-") else 1
@@ -444,7 +476,7 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                   signal: pd.Series | None = None, margin_pct: float = 12.0, iv_scale: float = 1.0, skew: float = 0.0,
                   slippage_pct: float = 1.0, holidays=frozenset(), risk_free_rate_pct: float = 6.5,
                   leg_exits: ExitRules | None = None, leg_scope: str = "sold", history=None, legs=None,
-                  stop_rs: float = 0.0, target_rs: float = 0.0) -> dict:
+                  stop_rs: float = 0.0, target_rs: float = 0.0, expiry_ahead: int = 0) -> dict:
     """Backtest one structure. ``leg_exits`` are each option leg's own exit rules (stoploss, target, trailing,
     stoploss to cost, re-entry; ``risk.ExitRules``, distances on the leg's premium) for the legs ``leg_scope``
     names: ``sold``, ``bought`` or ``all``. Without them ``leg_sl_pct`` is a % stoploss on each sold leg.
@@ -455,7 +487,10 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
 
     ``legs``: your own legs in place of the structure's (see ``own_legs``; ``structure`` is then a preset whose
     strikes you changed, or ``custom``). ``stop_rs`` / ``target_rs``: close the whole position when its profit or
-    loss (closed legs plus open ones at the candle's close, before charges) reaches this many rupees."""
+    loss (closed legs plus open ones at the candle's close, before charges) reaches this many rupees.
+    ``expiry_ahead``: trade the expiry this many after the nearest one that suits (0 the nearest); a far leg is on
+    the expiry after that."""
+    legs, ahead = expiry_shift(legs, expiry_ahead)
     specs = legs_for(structure, k, w, legs)
     if mode not in MODES:
         raise ValueError(f"mode must be one of {', '.join(MODES)}")
@@ -537,6 +572,8 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
     def open_book(i, spot, stamp):
         nonlocal cash, total_charges, skipped, book
         expiry = pick_expiry(stamp, stamp, min_days if not intraday else 0.0)
+        for _ in range(ahead):
+            expiry = pick_expiry(stamp, expiry + pd.Timedelta(minutes=1), 0.0)
         far = (pick_expiry(stamp, expiry + pd.Timedelta(minutes=1), 0.0)
                if any(x["series"] == "far" for x in specs) else None)
         atm = round(spot / step) * step
@@ -776,7 +813,7 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
             "legs": [{"side": "BUY" if x["action"] > 0 else "SELL", "type": x["type"], "strikes": x["n"], "lots": x["ratio"],
                       "expiry": x["series"]} for x in specs], "legs_text": legs_text(specs),
             "params": {**params.__dict__, "lots": lots, "lot_size": lot_size, "k": k, "w": w, "expiry_kind": expiry_kind,
-                       "leg_sl_pct": leg_sl_pct, "stop_pct": stop_pct, "target_pct": target_pct, "iv_scale": iv_scale,
+                       "expiry_ahead": ahead, "leg_sl_pct": leg_sl_pct, "stop_pct": stop_pct, "target_pct": target_pct, "iv_scale": iv_scale,
                        "stop_rs": stop_rs, "target_rs": target_rs,
                        "leg_exits": leg_exits.as_dict(), "leg_scope": leg_scope},
             "simulated": pricer.used is None or pricer.used["model"] > 0, "pricing": pricer.used,
@@ -803,6 +840,11 @@ def analyse(underlying: str, structure: str, *, spot: float, iv: float, days: fl
     The expiry payoff is at the near expiry; a later-expiry leg is valued then at ``iv``. Rupee figures are for
     ``lots`` × ``lot_size``. ``legs``: your own legs (see ``own_legs``) in place of the structure's.
     """
+    legs, shifted = expiry_shift(legs, 0)
+    if shifted:
+        # Every option leg on the far expiry: the position is all on that one, so it is the expiry the payoff is at.
+        days = far_days if far_days is not None else days + (7 if days <= 7 else 28)
+        far_days = None
     specs = legs_for(structure, k, w, legs)
     spec = STRUCTURES.get(structure, {"name": strategy_name(structure, legs), "about": legs_text(specs)})
     if not spot > 0:

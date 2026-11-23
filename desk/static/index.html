@@ -300,6 +300,12 @@
   </div>
   <div class="panel">
     <div class="jobhead"><h2>Algos</h2><button id="algo-refresh" type="button">Refresh</button></div>
+    <div class="exit-bar" data-exit-bar="stock">
+      <button type="button" class="danger" data-exit="selected" disabled>Exit selected</button>
+      <button type="button" class="danger" data-exit="paper">Close all paper</button>
+      <button type="button" class="danger" data-exit="live">Close all live</button>
+      <span class="hint" data-exit-note>Tick the algos to exit, or close every open algo position of one account. Stocks and F&amp;O together.</span>
+    </div>
     <div id="algo-list"></div>
   </div>
   <div class="panel note">
@@ -366,6 +372,12 @@
     </div>
     <div class="panel">
       <div class="jobhead"><h2>F&amp;O algos</h2><button id="fno-algo-refresh" type="button">Refresh</button></div>
+      <div class="exit-bar" data-exit-bar="fno">
+        <button type="button" class="danger" data-exit="selected" disabled>Exit selected</button>
+        <button type="button" class="danger" data-exit="paper">Close all paper</button>
+        <button type="button" class="danger" data-exit="live">Close all live</button>
+        <span class="hint" data-exit-note>Tick the algos to exit, or close every open algo position of one account. Stocks and F&amp;O together.</span>
+      </div>
       <div id="fno-list"></div>
     </div>
     <div class="panel note">
@@ -682,6 +694,7 @@
         <p class="hint" id="sbt-desc"></p>
         <div class="row">
           <label>Expiry <select name="expiry_kind"><option value="weekly">Weekly (NIFTY, SENSEX)</option><option value="monthly">Monthly</option></select></label>
+          <label>Which expiry <select name="expiry_ahead"><option value="0">This week</option><option value="1">Next week</option><option value="2">2 weeks ahead</option><option value="3">3 weeks ahead</option></select></label>
           <label class="sbt-intraday">Candle <select name="interval"><option value="5m">5 minutes</option><option value="1m">1 minute</option><option value="2m">2 minutes</option><option value="3m">3 minutes</option><option value="4m">4 minutes</option><option value="15m">15 minutes</option><option value="30m">30 minutes</option></select></label>
           <label class="sbt-intraday">Entry time <input name="entry_time" value="09:20" pattern="\d{1,2}:\d{2}" required></label>
           <label class="sbt-intraday">Exit time <input name="exit_time" value="15:15" pattern="\d{1,2}:\d{2}" required></label>
@@ -731,11 +744,11 @@
           <button type="button" id="sbt-payoff">Payoff now</button>
         </div>
         <details class="advanced"><summary>Advanced: Payoff now on your own market levels</summary>
-        <p class="hint">Payoff now works out the legs above on today's market: strikes, premiums, profit and loss at expiry, breakevens, Greeks and margin. Leave a box empty to use the latest index price, India VIX × the volatility factor, and the next expiry.</p>
+        <p class="hint">Payoff now works out the legs above on today's market: strikes, premiums, profit and loss at expiry, breakevens, Greeks and margin. Leave a box empty to use the latest index price, India VIX × the volatility factor, and the expiry chosen above.</p>
         <div class="row">
           <label>Spot <input name="spot" type="number" min="0" step="0.05" placeholder="latest"></label>
           <label>IV % <input name="iv_pct" type="number" min="1" max="300" step="0.1" placeholder="India VIX"></label>
-          <label>Days to expiry <input name="days" type="number" min="0" max="400" step="0.25" placeholder="next expiry"></label>
+          <label>Days to expiry <input name="days" type="number" min="0" max="400" step="0.25" placeholder="chosen expiry"></label>
           <label class="sbt-far">Days to far expiry <input name="far_days" type="number" min="0" max="400" step="0.25" placeholder="the expiry after"></label>
         </div>
         </details>
@@ -1397,8 +1410,16 @@
   <div id="sd-body"></div>
 </dialog>
 <dialog id="algo-dialog" aria-labelledby="ad-title">
-  <div class="dialog-head"><h2 id="ad-title"></h2><span class="actions"><button type="button" id="ad-edit">Edit</button><button type="button" id="ad-refresh">Refresh</button><button type="button" id="ad-close" aria-label="Close">✕</button></span></div>
+  <div class="dialog-head"><h2 id="ad-title"></h2><span class="actions"><button type="button" id="ad-exit" class="danger" hidden>Exit</button><button type="button" id="ad-edit">Edit</button><button type="button" id="ad-refresh">Refresh</button><button type="button" id="ad-close" aria-label="Close">✕</button></span></div>
   <div id="ad-body"></div>
+</dialog>
+<dialog id="daily-dialog" aria-labelledby="daily-title">
+  <div class="dialog-head"><h2 id="daily-title">Open P&amp;L each day</h2><span class="actions"><button type="button" id="daily-close" aria-label="Close">✕</button></span></div>
+  <div class="dialog-body">
+    <p class="hint" id="daily-trade"></p>
+    <div class="scroll" id="daily-body"></div>
+    <p class="hint">Sampled about once a minute while the desk runs, before the charges of closing. A high reached while the desk was off is not recorded. It is not the booked result: it shows how far the open trade went each day.</p>
+  </div>
 </dialog>
 <dialog id="note-dialog" aria-labelledby="nd-title">
   <div class="dialog-head"><h2 id="nd-title">Trade note</h2><span class="actions"><button type="button" id="nd-close" aria-label="Close">✕</button></span></div>

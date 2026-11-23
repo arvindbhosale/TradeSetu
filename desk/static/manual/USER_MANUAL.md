@@ -406,7 +406,11 @@ How it behaves:
 
 Two panels on the P&L tab turn your own trades into lessons. Both use the account selected at the top.
 
-**Trade journal.** One row per trade: a position from the buy until it is sold again (a trade sold in parts counts once). Press **Write note** to record:
+**Trade journal.** One row per trade: a position from the buy until it is sold again (a trade sold in parts counts once). Each row shows when the trade was **Opened** and **Closed** (date and time, IST; *still open* while you hold it) and whether it is Holding, Part closed or Closed.
+
+**Highest open P&L.** While a position is open, the desk checks its open profit about once a minute and keeps each day's highest and lowest value and the time it was reached. The column shows the best of all days; press it for the day-by-day list. An algo's **Details** shows the same for the whole algo (all F&O legs added up). It is not the booked result: a trade that reached +₹4,000 and was closed at +₹500 tells you the exit gave most of it back. It is recorded only while the desk is running; a high reached while it was off is missed. Figures are before the charges of closing.
+
+Press **Write note** to record:
 
 - **Plan**: the setup (your own name for the pattern, for example *Breakout*), why you took the trade, and the stoploss and target you planned.
 - **Review**, once it closes: whether you followed the plan, the mistakes made (chased the entry, moved the stoploss, exited early, too big, against the trend, revenge trade and others), and the lesson.
@@ -1135,7 +1139,7 @@ Settings: index, dates, candle, signal strategy, **Buy** (calls / puts / both), 
 
 1. **Strategy**: pick one. The list is grouped as *Neutral: sell premium*, *Big move either way: buy premium*, *Bullish*, *Bearish* and *Your own* (build every leg yourself, see [Your own legs](#your-own-legs-and-strikes)). The line under it says what it does and shows the **Markets** badges.
 2. **Index**: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYNXT50, SENSEX, BANKEX or SENSEX50.
-3. **Expiry**: *Weekly* only for NIFTY (Tuesday) and SENSEX (Thursday). Every other index has had only monthly options since November 2024. Choose *Monthly* for them.
+3. **Expiry**: *Weekly* only for NIFTY (Tuesday) and SENSEX (Thursday). Every other index has had only monthly options since November 2024. Choose *Monthly* for them. **Which expiry**: *This week* (or *This month*) trades the nearest expiry, *Next week* the one after it, up to 3 ahead. The backtest picks it afresh on every entry, and Payoff now uses that expiry's premiums from Kite.
 4. **Strikes**. Every strike is counted in strikes from the at-the-money (ATM) strike, the strike nearest the index:
    - **Strikes away from ATM (sold legs) (k)**: how far the sold legs of a strangle, condor, guts, jade lizard, diagonal or collar sit from ATM.
    - **Hedge strikes further out (bought legs) (w)**: how far the hedge legs sit beyond them, or the gap between the legs of a spread, butterfly or ratio spread.
@@ -1147,7 +1151,7 @@ Settings: index, dates, candle, signal strategy, **Buy** (calls / puts / both), 
 
 #### Your own legs and strikes
 
-The **Legs** table shows every leg of the chosen strategy: **Buy or Sell**, **Option** (Call, Put or Futures), **Strike**, **Lots** and **Expiry** (this expiry or the next one). Change any strike, add a leg with **Add leg**, or remove one. The name then reads, for example, *Iron condor (your strikes)*, and **Reset to the strategy's legs** puts the preset back. Pick **Your own strategy (build the legs)** to start from nothing (up to 8 legs).
+The **Legs** table shows every leg of the chosen strategy: **Buy or Sell**, **Option** (Call, Put or Futures), **Strike**, **Lots** and **Expiry** (*Chosen expiry*, from **Which expiry** above, or *The expiry after* it, for calendars and diagonals). When every option leg is on *The expiry after*, the whole position is on that one expiry and is held to it, the same as picking the next one in **Which expiry**. Change any strike, add a leg with **Add leg**, or remove one. The name then reads, for example, *Iron condor (your strikes)*, and **Reset to the strategy's legs** puts the preset back. Pick **Your own strategy (build the legs)** to start from nothing (up to 8 legs).
 
 A strike is counted from the at-the-money strike **when the trade opens**: ATM+2 is two strikes above, ATM−3 three below. The price in brackets is that strike today (from Kite, else the last close). A backtest opens a fresh position on every entry over months or years while the index moves thousands of points, so a fixed price such as 24,000 CE would be deep in or far out of the money on most entries and the result would mean nothing. ATM+2 is the same trade every time. On **Payoff now** the strikes are today's, so ATM+2 is the exact contract you would trade now.
 
@@ -1157,7 +1161,7 @@ Signal mode needs a bullish or bearish preset: your own legs started from a spre
 
 ![Payoff of an iron condor](img/43-option-payoff.png)
 
-Leave **Spot**, **IV %** and **Days to expiry** empty to use the latest index price (Kite, or the last close), India VIX × the *Volatility × VIX* factor, and the next expiry. Type them in to test "what if": the index 2% higher, IV at 20%, two days left. Calendars and diagonals also show **Days to far expiry**.
+Leave **Spot**, **IV %** and **Days to expiry** empty to use the latest index price (Kite, or the last close), India VIX × the *Volatility × VIX* factor, and the expiry chosen in **Which expiry**. Type them in to test "what if": the index 2% higher, IV at 20%, two days left. Calendars and diagonals also show **Days to far expiry**.
 
 The model prices every leg with Black-Scholes at one volatility. For figures on real prices, open **Option chain**, copy each leg's LTP into the **Premium** boxes in the Legs table and press **Recalculate with these premiums**. Spot, IV and days stay as they were.
 
@@ -1466,6 +1470,14 @@ Open **Activity** to see everything the algo did and why.
 - A live order counts as a position only after Zerodha reports it filled.
 - An intraday limit order still unfilled after 3 minutes is cancelled.
 - Deleting or stopping an algo never sells its shares.
+
+### Close algo positions yourself
+
+- **Exit** on an algo (in the list or in its Details) closes what it holds now and stops it. It also works on a stopped algo that still holds shares: it only sells, it does not start trading again.
+- **Exit selected**: tick the algos (stocks and F&O together) and press it. **Close all paper** / **Close all live** closes every algo position of that account. Live exits ask you to type EXIT.
+- The target and stoploss GTT is cancelled before the sell, so it cannot fire later on shares already sold. F&O: the sold legs are bought back first, then the bought legs (hedges) are sold, so you are never left with a naked short.
+- Exits are limit orders through your risk limits, and work with the kill switch on. Outside market hours an exit waits for the open. A live exit is done only when your broker reports the fill.
+- Single legs of an F&O algo cannot be closed on their own (that could leave a sold leg without its hedge). Exit closes the whole strategy.
 
 ### Live intraday algos need live candles
 
