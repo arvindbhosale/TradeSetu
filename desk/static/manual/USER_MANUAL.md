@@ -641,7 +641,7 @@ Kite only, and used only when no Kite Connect key and secret are saved above. Le
 
 ## 4. Charts
 
-The Charts section opens on the **Live chart**. The older chart, with Supertrend, Parabolic SAR, Donchian, pivots, ADX and Stochastic, is one tap away under **Classic chart** and works as before.
+The Charts section opens on the **Live chart**. **Classic chart** is one tap away: NSE/BSE only, with the 2, 3, 4 and 30-minute candles and the optional delayed Yahoo fallback. Both have the same indicators and drawing tools.
 
 ### Live chart
 
@@ -649,8 +649,13 @@ The Charts section opens on the **Live chart**. The older chart, with Supertrend
 
 1. Pick **Crypto**, **NSE / BSE** or **Imported**.
 2. Type or pick a symbol (`BTCUSDT`, `ETHUSDT`; `RELIANCE`, `NIFTY`) and press **Show**.
-3. Pick the candle size: **1m**, **5m**, **15m**, **1h**, **4h**, **1D** or **1W**, and **Candles**, **Line** or **Area**.
-4. Open **Indicators** to add a moving average (simple or exponential), Bollinger Bands, VWAP, RSI or MACD. Add the same one twice for two periods (for example EMA 20 and EMA 50). Periods and widths are under **Advanced: indicator settings**. Tick **Volume bars** to show or hide volume.
+3. Pick the candle size: **1m**, **5m**, **15m**, **1h**, **4h**, **1D** or **1W**, and **Candles**, **Heikin Ashi**, **Line** or **Area**.
+4. Press **Indicators** and pick from 85, grouped as moving averages, bands and levels, trend, momentum, volatility and volume, or type in the search box (`rsi`, `vwap`, `pivot`, `money flow`). Add as many as you like (up to 30), and the same one more than once (EMA 20 and EMA 50). Tick **Volume bars** to show or hide volume.
+5. To change one, press its name in the line above the chart, in its own pane, or **Settings** in the Indicators window. You can change every setting (period, price used, multiplier, pivot kind and so on), each line's colour and the line thickness. **Reset to defaults** puts it back. **◉** hides it without losing its settings, **×** removes it.
+
+![Chart with several indicators and a long position showing stoploss, target and profit or loss](img/44-chart-indicators-position.png)
+
+The indicators include: simple, exponential, weighted, double and triple exponential, Hull, volume-weighted, smoothed, Arnaud Legoux, Kaufman adaptive, zero-lag, triangular and least-squares moving averages, McGinley dynamic, T3, moving average cross, Guppy, Alligator; Bollinger Bands, Keltner, Donchian, envelope, VWAP, pivot points (traditional, Fibonacci, Woodie, Camarilla; daily, weekly or monthly), linear regression channel; Ichimoku, Supertrend, Parabolic SAR, Chandelier exit, volatility stop, ZigZag, fractals, ADX/DMI, Aroon, Vortex, Choppiness, Mass index, Schaff trend cycle; RSI, Stochastic, Stochastic RSI, MACD, CCI, Williams %R, momentum, rate of change, Awesome and Accelerator oscillators, Ultimate oscillator, TRIX, TSI, PPO, DPO, Chande momentum, Connors RSI, Fisher transform, Coppock, KST, Relative vigor, SMI, Bull and bear power, Balance of power, Rank correlation; ATR, standard deviation, historical volatility, Bollinger %B and BandWidth, Ulcer index, Chaikin volatility, Relative volatility index; volume with average, OBV, accumulation/distribution, Chaikin money flow and oscillator, MFI, ease of movement, force index, Klinger, price volume trend, volume oscillator, negative and positive volume index, net volume. They are worked out by the desk from their published formulas; the ones the desk's strategies also use (RSI, MACD, Supertrend, ADX, pivots and others) give the same numbers as the strategies. ZigZag, fractals and the regression channel redraw their newest part as candles come in; the window says so.
 
 Indicators move with every live price, not only when a candle closes. The pill at the top right says where prices come from:
 
@@ -664,7 +669,7 @@ Where prices come from:
 - **Crypto**: Binance's public market data. If Binance does not answer (it has been blocked in India before), the desk uses Coinbase Exchange and says so above the chart. Coinbase quotes US dollars, so a USDT pair shows the coin's USD price (usually within 1%). BNB and TRX are not on Coinbase. No API key is needed.
 - **NSE / BSE**: only your broker (log in on the Trade section). There is no free, legal live feed for Indian stocks, so without a broker the chart says so instead of showing other data. Yahoo is never used here. 4-hour candles are 09:15–13:15 and 13:15–15:30; weekly candles start on Monday.
 
-If prices cannot be loaded you see **Chart not shown** with the reason and **Try again**, never an empty chart or a zero. Your symbol, candle size and indicators are remembered on this device.
+If prices cannot be loaded you see **Chart not shown** with the reason and **Try again**, never an empty chart or a zero. Your symbol, candle size, indicators and their settings are saved by the desk, so the desktop app, your phone and a browser open the same chart.
 
 ### Watchlist, drawings, imported files and crypto paper trading
 
@@ -672,35 +677,60 @@ If prices cannot be loaded you see **Chart not shown** with the reason and **Try
 
 **Watchlist.** Open a chart and press **+ Add this chart**. Each row shows the last price and the change today; tap it to open that chart, **×** to remove it. Crypto prices come from the exchange, NSE/BSE from your broker (logged in), imported files show their last close. A price that cannot be loaded shows **No price**, never a zero. The list (up to 50) is saved by the desk, so it is the same on every device that opens it.
 
-**Drawings.** Press **Trend line** (tap two points), **Horizontal line** (tap one price) or **Fibonacci** (tap a high and a low; the 0, 23.6, 38.2, 50, 61.8, 78.6 and 100% levels are drawn between them). Dragging the chart does not place a point. **Undo** removes the last drawing and **Clear all** removes them all. Drawings are saved for each symbol and come back the next time you open it.
+**Drawings.** Pick a tool and tap the chart; the line under the tools says what to tap next. Dragging the chart does not place a point.
+
+- **Lines:** Trend line (two points), Ray (runs on past the second point), Extended line (runs past both), Horizontal line, Horizontal ray (to the right of where you tap), Vertical line.
+- **Shapes:** Rectangle (two corners), Parallel channel (two points, then a third for the parallel line), Fibonacci (a high and a low; 0, 23.6, 38.2, 50, 61.8, 78.6 and 100%), Measure (price change, % and candles between two points).
+- **Positions:** **Long position** or **Short position**: tap the entry price. A green box runs to the target and a red box to the stoploss (1% risk, 2% target to start). Labels show each price, the % move, the profit or loss in money for your quantity, and risk : reward.
+
+Tap a drawing to pick it: drag a round handle to move that point, or drag the drawing itself to move it all. A bar over the chart lets you change its colour or **Delete** it (or press Delete on a keyboard). For a position it also has **Entry**, **Stoploss**, **Target** and **Quantity** boxes, and shows risk, reward, risk : reward and the profit or loss at the last price. **Undo** removes the last drawing and **Clear all** removes them all. Drawings are saved for each symbol, and NSE/BSE drawings show on both the live and the classic chart. A position drawing is a plan on the chart; it places no order.
 
 **Import a CSV.** Pick **Imported**, choose a file, give it a name and press **Import CSV**. Columns: Date (or Date and Time), Open, High, Low, Close, and Volume if you have it; dates may be `2026-07-24`, `24-07-2026` or `24/07/2026 09:15`, read as India time. Bad rows are skipped and listed; a file with more than 1 in 10 bad rows is refused. The candle size is read from the file, so a daily file cannot be shown as 1h (those buttons are greyed out); weekly is built from it. Imported prices are never live. Use this for NSE/BSE until a broker is connected: when the broker is not logged in, the chart offers **Import a CSV instead**.
 
 **Crypto paper trading.** Under the chart, with practice money only. No real order is ever sent from here.
 
-1. Open the coin's chart. Pick **Buy** or **Sell**, **Market** or **Limit**, enter the quantity (and the limit price) and press **Buy BTC** / **Sell BTC**.
+1. Open the coin's chart. In **Trade from the chart** pick **Buy** or **Sell**, **Market** or **Limit**, enter the quantity (and the limit price), press **Review buy** / **Review sell** and then **Place paper order**. A buy can carry a stoploss and a target (see below).
 2. A market order fills at the last price. A limit order waits under **Waiting orders** and fills when the price reaches it; the desk checks every 5 seconds. A waiting buy holds its cash, a waiting sell holds its coins. You can only sell what you hold (no short selling).
 3. **Positions** shows quantity, average price, last price and profit/loss; **History** every fill with its fee. Your average price and waiting limit orders are drawn on the chart.
 4. The tiles show account value, profit/loss since the start, free cash and fees paid. If a coin's price cannot be loaded, account value shows **–** instead of a wrong number.
 
 Each fill pays a 0.1% fee and the smallest order is 1 USDT. **Advanced: fees, reset** has **Reset paper account**: set a starting balance (default 10,000 USDT) and press twice. It deletes all paper orders, positions and history.
 
+### Trade from the chart: Buy, Sell, Stoploss and Target
+
+Under the live chart, **Trade from the chart** places orders for the share or coin on screen. NSE/BSE shares follow the **Paper / Live** switch at the top of the desk; crypto is always paper.
+
+1. Pick **Buy** or **Sell**, **Market** or **Limit**, and for shares **Intraday** (MIS) or **Delivery** (CNC). Enter the quantity.
+2. For a buy, press **Add stoploss and target on chart**. A red **Stoploss** line (1% under the price) and a green **Target** line (2% over) appear, each labelled with what you would lose or make. Drag them up or down to where you want them, or type the prices. With a limit order, the blue **Limit price** line drags too.
+3. Press **Review buy**. The review shows the order, the price, order value, margin needed (Zerodha's figure when your Kite server has the margin calculator, otherwise an estimate), charges, the loss at the stoploss as a share of your capital, the gain at the target, and how the stoploss and target will be placed. Anything that blocks the order is listed: the kill switch, your trade window, the limit per order, the orders-a-day limit, the risk limit per trade, a stoploss above the price.
+4. Press **Place paper order**. A live order asks you to type the order (for example `BUY 10 RELIANCE`) and press **Place LIVE order**.
+
+How the stoploss and target are placed once the buy fills:
+
+| Order | Stoploss and target |
+|---|---|
+| Paper (shares) | A paper GTT on the paper book, checked about once a minute in market hours. |
+| Live delivery (CNC) | One GTT at Zerodha. Both together are an OCO GTT: when one triggers, the other is cancelled. It works with the desk closed. |
+| Live intraday (MIS) | Zerodha has no GTT for intraday, and two sell orders could both fill. So the desk keeps one sell order at Zerodha: a stoploss order. When the price reaches the target, the desk changes that same order into a limit sell at the target. The stoploss works with the desk closed; the target needs the desk running. Zerodha squares off what is left near 15:20. |
+| Crypto paper | Checked every 5 seconds on the server. The stoploss sells at the last price, the target at the target. |
+
+A live limit buy that has not filled has no stoploss yet: the desk places it when Kite reports the fill (checked every 20 seconds while the desk runs).
+
+**Move a stoploss or target.** Drag the placed order's solid line (labelled *(paper)* or *(live)*). The desk shows the old and new price and the loss or gain at the new one, checks that the price still lies between the stoploss and the target and that a lower stoploss stays inside your risk limit per trade, and asks you to confirm. **Cancel** puts the line back. A live GTT is changed in place; if your Kite server cannot change GTTs, the desk deletes the old one and places a new one and tells you before you confirm.
+
+**Remove.** Each order is listed under **Your stoploss and target orders** with its state. **Remove** takes off the stoploss and target and keeps your shares or coins; for a live buy that has not filled, it cancels the buy too. If Zerodha refuses the stoploss and target, the order shows **NOT protected** in red and you get an alert: move a line to place them again, or sell.
+
+**Sell** from the chart sells what you hold. There is no short selling from the chart.
+
 ### Classic chart
 
-Candlestick charts with the desk's server-side indicators.
+NSE/BSE candles through the desk, with the same indicators and drawing tools as the live chart.
 
-![Daily chart with Bollinger Bands and Supertrend](img/05-chart-daily.png)
+Charts are drawn from Kite's own candle data, so **connect and log in to Kite first** (Trade section). This needs a Kite Connect key on the paid plan; the free Personal API carries no market data. If Kite is signed out or cannot serve a chart, the desk says so instead of quietly showing other data, unless you switched on the delayed Yahoo fallback in Settings.
 
-Charts are drawn from Kite's own candle data, so **connect and log in to Kite first** (Trade section). This needs a Kite Connect key on the paid plan; the free Personal API carries no market data. If Kite is signed out or cannot serve a chart, the desk says so instead of quietly showing other data.
-
-1. Type a symbol: `RELIANCE`, `TCS`, `NIFTY`, `BANKNIFTY`.
+1. Type a symbol: `RELIANCE`, `TCS`, `NIFTY`, `BANKNIFTY`, and press **Show**.
 2. Choose the candle size: **1m**, **2m**, **3m**, **4m**, **5m**, **15m**, **30m**, **1h** or **1D**.
-3. Press **Show chart**.
-4. Tick what you want drawn. The chart redraws at once.
-
-**On the price chart:** SMA 20/50/200, EMA 20, VWAP (intraday only), Bollinger Bands, Supertrend, Parabolic SAR, Donchian channel, Pivots (traditional: daily, weekly, monthly).
-
-**Panels below:** Volume, RSI, MACD, ADX, Stochastic. Tick as many as you like; they share one time axis.
+3. Press **Indicators** to add what you want drawn (the old fixed list, Supertrend, Parabolic SAR, Donchian, pivots, ADX, Stochastic and the rest, are all there, now with settings). Its indicators are kept apart from the live chart's.
 
 Scroll to zoom, drag to move. Hover to read a candle's open, high, low and close.
 
@@ -708,7 +738,7 @@ Scroll to zoom, drag to move. Hover to read a candle's open, high, low and close
 
 ![Five-minute live chart with VWAP and pivot points](img/06-chart-5min-live.png)
 
-With **Live** ticked, the chart refreshes every 15 seconds while the market is open. The pill at the top right tells you where the candles come from:
+The classic chart refreshes every 15 seconds while the market is open. The pill at the top right tells you where the candles come from:
 
 - **Live · Kite**: live candles from Kite.
 - **Live · Yahoo (delayed)**: only if you switched the fallback on in Settings and Kite could not serve the chart.

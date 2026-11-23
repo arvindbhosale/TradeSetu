@@ -71,6 +71,7 @@ JOB_NAMES = {                               # the engines the server drives from
     "Desk.close_paper_mcx": "Paper MCX square-off",
     "create_app.<locals>.settle_paper_options": "Paper option expiry settlement",
     "Recorder.tick": "Option chain recorder",
+    "ChartOrders.tick": "Chart orders (stoploss and target)",
 }
 
 

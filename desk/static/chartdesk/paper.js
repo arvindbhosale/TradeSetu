@@ -1,6 +1,7 @@
 // @ts-check
-// Crypto paper trading under the chart: a virtual USDT balance, market and limit orders, positions,
-// waiting orders and history. Practice only: nothing here reaches an exchange or a broker.
+// Crypto paper trading under the chart: a virtual USDT balance, positions, waiting orders, stoploss and target
+// sets, and history. Orders are placed from the chart's trade ticket (trade.js). Practice only: nothing here
+// reaches an exchange or a broker.
 
 const POLL_MS = 5000;
 
@@ -27,32 +28,21 @@ const when = (t) => new Date(t * 1000).toLocaleString("en-IN", { day: "2-digit",
 
 /**
  * @param {HTMLElement} root
- * @param {{ api: (path: string, opts?: any) => Promise<any>, symbol: () => string, lastPrice: () => number|null,
- *   onBook: (book: any) => void }} deps
+ * @param {{ api: (path: string, opts?: any) => Promise<any>, onBook: (book: any) => void }} deps
  */
-export function mountPaper(root, { api, symbol, lastPrice, onBook }) {
-  const st = { side: "BUY", type: "MARKET", tab: "positions", book: /** @type {any} */ (null), timer: /** @type {any} */ (null), armed: false };
-  const qtyIn = /** @type {HTMLInputElement} */ (h("input", { type: "number", min: "0", step: "any", inputmode: "decimal", placeholder: "0.01", "aria-label": "Quantity" }));
-  const priceIn = /** @type {HTMLInputElement} */ (h("input", { type: "number", min: "0", step: "any", inputmode: "decimal", "aria-label": "Limit price" }));
+export function mountPaper(root, { api, onBook }) {
+  const st = { tab: "positions", book: /** @type {any} */ (null), timer: /** @type {any} */ (null), armed: false };
   const balanceIn = /** @type {HTMLInputElement} */ (h("input", { type: "number", min: "100", step: "100", value: "10000", "aria-label": "Starting balance" }));
-  const worth = h("span", { class: "hint" });
   const msg = h("div", { class: "cd-paper-msg", role: "status", hidden: true });
   const summary = h("div", { class: "cd-paper-summary" });
   const tabs = h("div", { class: "seg", role: "group", "aria-label": "Paper book" });
   const body = h("div", { class: "cd-paper-body" });
-  const sideSeg = h("div", { class: "seg cd-side", role: "group", "aria-label": "Buy or sell" });
-  const typeSeg = h("div", { class: "seg", role: "group", "aria-label": "Order type" });
-  const priceLabel = h("label", {}, "Limit price (USDT)", priceIn);
-  const submit = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "primary" }));
   const resetBtn = /** @type {HTMLButtonElement} */ (h("button", { type: "button", class: "cd-reset", onclick: () => reset() }));
 
   root.replaceChildren(
     h("div", { class: "cd-paper-headline" }, h("strong", { text: "Paper trading" }),
       h("span", { class: "pill", text: "Practice money · no real orders" })),
-    summary,
-    h("form", { class: "cd-ticket", onsubmit: (e) => { e.preventDefault(); place(); } },
-      sideSeg, typeSeg, h("label", {}, "Quantity", qtyIn), priceLabel, submit, worth),
-    msg, tabs, body,
+    summary, msg, tabs, body,
     h("details", { class: "cd-adv" }, h("summary", { text: "Advanced: fees, reset" }),
       h("p", { class: "hint", id: "cd-paper-rules" }),
       h("div", { class: "cd-reset-row" }, h("label", {}, "Starting balance (USDT)", balanceIn), resetBtn)));
@@ -62,37 +52,15 @@ export function mountPaper(root, { api, symbol, lastPrice, onBook }) {
   }
 
   function renderTicket() {
-    seg(sideSeg, { BUY: "Buy", SELL: "Sell" }, st.side, (k) => { st.side = k; renderTicket(); });
-    seg(typeSeg, { MARKET: "Market", LIMIT: "Limit" }, st.type, (k) => {
-      st.type = k; if (k === "LIMIT" && !priceIn.value && lastPrice()) priceIn.value = String(lastPrice()); renderTicket();
-    });
-    priceLabel.hidden = st.type !== "LIMIT";
-    sideSeg.dataset.side = st.side;
-    const coin = symbol().replace(/USDT$/, "");
-    submit.textContent = `${st.side === "BUY" ? "Buy" : "Sell"} ${coin}`;
-    submit.className = "primary " + (st.side === "BUY" ? "cd-buy" : "cd-sell");
-    qtyIn.placeholder = `${coin} amount`;
-    const p = st.type === "LIMIT" ? Number(priceIn.value) : lastPrice();
-    const q = Number(qtyIn.value);
-    worth.textContent = q > 0 && p ? `≈ ${usd(q * p)} USDT` : "";
     resetBtn.textContent = st.armed ? "Press again to delete all paper data" : "Reset paper account";
     resetBtn.classList.toggle("danger", st.armed);
   }
-  qtyIn.addEventListener("input", renderTicket); priceIn.addEventListener("input", renderTicket);
 
   function show(text, bad) { msg.textContent = text; msg.className = "cd-paper-msg " + (bad ? "error" : "ok"); msg.hidden = !text; }
 
-  async function place() {
-    submit.disabled = true;
-    try {
-      const body = { symbol: symbol(), side: st.side, type: st.type, quantity: Number(qtyIn.value) };
-      if (st.type === "LIMIT") body.price = Number(priceIn.value);
-      const r = await api("/cpaper/order", { method: "POST", body });
-      show(r.filled ? `${r.trade.side === "BUY" ? "Bought" : "Sold"} ${qty(r.trade.quantity)} ${r.trade.symbol.replace(/USDT$/, "")} at ${usd(r.trade.price, 4)} (fee ${usd(r.trade.fee, 4)} USDT).`
-        : `Limit order placed: ${r.order.side === "BUY" ? "buy" : "sell"} ${qty(r.order.quantity)} at ${usd(r.order.price, 4)}. It fills when the price gets there.`, false);
-      update(r.book);
-    } catch (err) { show(err.message, true); }
-    submit.disabled = false;
+  async function removeGuard(id) {
+    try { update(await api(`/cpaper/bracket/${id}`, { method: "DELETE" })); show("Stoploss and target removed.", false); }
+    catch (err) { show(err.message, true); }
   }
 
   async function cancel(id) {
@@ -122,18 +90,22 @@ export function mountPaper(root, { api, symbol, lastPrice, onBook }) {
       tile("Cash free", `${usd(b.free_cash)} USDT`),
       tile("Fees paid", `${usd(b.fees)} USDT`),
       missing || b.check_error ? h("p", { class: "error cd-paper-warn", text: [missing, b.check_error && `Waiting orders could not be checked: ${b.check_error}`].filter(Boolean).join(" ") }) : null));
-    seg(tabs, { positions: `Positions (${b.positions.length})`, orders: `Waiting orders (${b.orders.length})`, history: `History (${b.trade_count})` }, st.tab, (k) => { st.tab = k; render(); });
+    const guards = b.brackets || [];
+    seg(tabs, { positions: `Positions (${b.positions.length})`, orders: `Waiting orders (${b.orders.length + guards.length})`, history: `History (${b.trade_count})` }, st.tab, (k) => { st.tab = k; render(); });
     const rules = root.querySelector("#cd-paper-rules");
     if (rules) rules.textContent = `Each fill pays a ${b.fee_pct}% fee. The smallest order is ${b.min_order} USDT. Waiting limit orders are checked against the last price every ${b.check_seconds} seconds on the server, so they fill even with this page closed. History keeps the last ${b.max_trades.toLocaleString("en-US")} fills. Reset deletes all paper orders, positions and history.`;
     if (st.tab === "positions") {
       body.replaceChildren(b.positions.length ? table(["Coin", "Quantity", "Average cost", "Last", "Value", "Profit / loss"],
         b.positions.map((p) => [p.coin, qty(p.quantity), usd(p.avg, 4), p.last == null ? h("span", { class: "cd-watch-err", title: p.error || "", text: "No price" }) : usd(p.last, 4),
           p.value == null ? "–" : usd(p.value), p.unrealized == null ? "–" : h("span", { class: p.unrealized >= 0 ? "up" : "down", text: `${signed(p.unrealized)} (${p.unrealized_pct.toFixed(2)}%)` })]))
-        : h("p", { class: "hint", text: "No positions. Buy a coin above to start." }));
+        : h("p", { class: "hint", text: "No positions. Buy a coin with the trade ticket above to start." }));
     } else if (st.tab === "orders") {
-      body.replaceChildren(b.orders.length ? table(["Placed", "Order", "Limit price", ""],
-        b.orders.map((o) => [when(o.created), `${o.side === "BUY" ? "Buy" : "Sell"} ${qty(o.quantity)} ${o.symbol.replace(/USDT$/, "")}`, usd(o.price, 4),
-          h("button", { type: "button", class: "cd-cancel", text: "Cancel", onclick: () => cancel(o.id) })]))
+      const level = (v) => (v == null ? "–" : usd(v, 4));
+      body.replaceChildren(b.orders.length || guards.length ? table(["Placed", "Order", "Limit price", "Stoploss", "Target", ""], [
+        ...b.orders.map((o) => [when(o.created), `${o.side === "BUY" ? "Buy" : "Sell"} ${qty(o.quantity)} ${o.symbol.replace(/USDT$/, "")}`, usd(o.price, 4),
+          level(o.stop), level(o.target), h("button", { type: "button", class: "cd-cancel", text: "Cancel", onclick: () => cancel(o.id) })]),
+        ...guards.map((g) => [when(g.created), `Sell ${qty(g.quantity)} ${g.symbol.replace(/USDT$/, "")} at the stoploss or target`, "–",
+          level(g.stop), level(g.target), h("button", { type: "button", class: "cd-cancel", text: "Remove", onclick: () => removeGuard(g.id) })])])
         : h("p", { class: "hint", text: "No waiting orders." }));
     } else {
       body.replaceChildren(b.trades.length ? table(["Time", "Trade", "Price", "Fee", "Realised profit"],
@@ -159,7 +131,8 @@ export function mountPaper(root, { api, symbol, lastPrice, onBook }) {
   return {
     show() { root.hidden = false; renderTicket(); if (!st.timer) { refresh(); st.timer = setInterval(refresh, POLL_MS); } },
     hide() { root.hidden = true; if (st.timer) { clearInterval(st.timer); st.timer = null; } },
-    symbolChanged() { priceIn.value = ""; qtyIn.value = ""; show("", false); renderTicket(); },
-    priceChanged() { renderTicket(); },
+    symbolChanged() { show("", false); },
+    /** A book the trade ticket got back from an order: shown now rather than at the next poll. */
+    setBook(book) { st.book = book; onBook(book); render(); },
   };
 }

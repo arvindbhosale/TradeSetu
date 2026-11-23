@@ -160,29 +160,40 @@
     showChartDesk(name === "charts");
   }
 
-  // The live chart lives in its own files, loaded the first time the Charts tab opens.
-  const chartDesk = { view: "live", mod: null, loading: null };
-  function showChartDesk(onTab) {
-    const want = onTab && chartDesk.view === "live";
-    if (!want) { if (chartDesk.mod) chartDesk.mod.hide(); return; }
-    if (chartDesk.mod) { chartDesk.mod.show(); return; }
-    if (chartDesk.loading) return;
-    const link = document.createElement("link");
-    link.rel = "stylesheet"; link.href = "/static/chartdesk/chartdesk.css"; document.head.append(link);
-    chartDesk.loading = import("/static/chartdesk/chartdesk.js").then((m) => {
-      chartDesk.mod = m.mount($("#chartdesk"), { api });
-      if (!$("#tab-charts").hidden && chartDesk.view === "live") chartDesk.mod.show();
-    }).catch((err) => {
-      $("#chartdesk").replaceChildren(h("div", { class: "error", role: "alert", text: "The chart could not load: " + err.message + ". Reload the page." }));
-    }).finally(() => { chartDesk.loading = null; });
+  // The charts live in their own files, loaded the first time the Charts tab opens. The live and the
+  // classic chart are two views of the same chart code; the classic one reads the desk's /api/chart.
+  const chartDesk = { view: "live", mods: {}, module: null };
+  const chartHost = (view) => $(view === "live" ? "#chartdesk" : "#chart-classic");
+  function chartModule() {
+    if (!chartDesk.module) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet"; link.href = "/static/chartdesk/chartdesk.css"; document.head.append(link);
+      chartDesk.module = import("/static/chartdesk/chartdesk.js");
+      chartDesk.module.catch(() => { chartDesk.module = null; link.parentNode && link.parentNode.removeChild(link); });
+    }
+    return chartDesk.module;
   }
-  $$("#chart-view button").forEach((b) => b.addEventListener("click", () => {
-    chartDesk.view = b.dataset.view;
-    $$("#chart-view button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
-    $("#chartdesk").hidden = chartDesk.view !== "live";
-    $("#chart-classic").hidden = chartDesk.view !== "classic";
-    showChartDesk(true);
-  }));
+  async function chartView(view) {
+    if (!chartDesk.mods[view]) {
+      const m = await chartModule();
+      if (!chartDesk.mods[view]) chartDesk.mods[view] = m.mount(chartHost(view), { api, preset: view, intervals: state.app.intervals, mode: () => state.mode });
+    }
+    return chartDesk.mods[view];
+  }
+  function showChartDesk(onTab) {
+    Object.entries(chartDesk.mods).forEach(([v, mod]) => { if (!onTab || v !== chartDesk.view) mod.hide(); });
+    if (!onTab) return;
+    const view = chartDesk.view;
+    chartView(view).then((mod) => { if (!$("#tab-charts").hidden && chartDesk.view === view) mod.show(); })
+      .catch((err) => { chartHost(view).replaceChildren(h("div", { class: "error", role: "alert", text: "The chart could not load: " + err.message + ". Reload the page." })); });
+  }
+  function setChartView(view) {
+    chartDesk.view = view;
+    $$("#chart-view button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.view === view)));
+    $("#chartdesk").hidden = view !== "live";
+    $("#chart-classic").hidden = view !== "classic";
+  }
+  $$("#chart-view button").forEach((b) => b.addEventListener("click", () => { setChartView(b.dataset.view); showChartDesk(true); }));
   $$(".tabs button").forEach((b) => b.addEventListener("click", () => selectTab(b.dataset.tab)));
 
   function setMode(mode) {
@@ -193,6 +204,7 @@
     pill.className = "pill " + (mode === "live" ? "bad" : "");
     clearReview();
     renderBanner();
+    Object.values(chartDesk.mods).forEach((mod) => { if (mod.modeChanged) mod.modeChanged(); });
   }
   $$("#mode button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
 
@@ -1015,166 +1027,24 @@
 
   // -- charts ----------------------------------------------------------------------
 
-  const LINE_COLORS = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)"];
-
   function applyChartsSetting() {
     const on = state.app.settings.charts_enabled;
     $("#tabbtn-charts").hidden = !on;
     if (!on && !$("#tab-charts").hidden) selectTab("markets");
   }
 
-  const chartState = { interval: "1d", charts: [], timer: null, request: 0 };
-
   function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
-  function startCharts() {
-    const form = $("#form-chart");
-    $("#chart-interval").replaceChildren(...Object.entries(state.app.intervals).map(([key, label]) =>
-      h("button", { type: "button", "data-interval": key, "aria-pressed": String(key === chartState.interval), title: label,
-        text: key === "1d" ? "1D" : key, onclick: () => { chartState.interval = key;
-          $$("#chart-interval button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.interval === key)));
-          if (form.symbol.value.trim()) loadChart(true); } })));
-    $("#chart-overlays").replaceChildren(...Object.entries(state.app.chart_overlays).map(([key, name]) =>
-      h("label", { class: "check" }, h("input", { type: "checkbox", name: "overlay", value: key, checked: key === "sma50" }), name)));
-    $("#chart-panels").replaceChildren(...Object.entries(state.app.chart_panels).map(([key, name]) =>
-      h("label", { class: "check" }, h("input", { type: "checkbox", name: "panel", value: key, checked: key === "rsi" || key === "volume" }), name)));
-    applyChartsSetting();
-    form.addEventListener("submit", (event) => { event.preventDefault(); loadChart(true); });
-    form.addEventListener("change", (event) => { if (event.target.name !== "symbol" && !$("#chart-result").hidden) loadChart(true); });
-    new MutationObserver(() => { if (!$("#chart-result").hidden) loadChart(true); })
-      .observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-  }
-
-  async function loadChart(rebuild) {
-    const form = $("#form-chart"), button = $("button[type=submit]", form), request = ++chartState.request;
-    if (!form.symbol.value.trim()) return;
-    if (rebuild) { showError("#chart-error", null); busy(button, true, "Loading…"); }
-    const overlays = $$("input[name=overlay]:checked", form).map((b) => b.value)
-      .filter((key) => key !== "vwap" || chartState.interval !== "1d").join(",");
-    const panels = $$("input[name=panel]:checked", form).map((b) => b.value).join(",");
-    try {
-      const query = new URLSearchParams({ symbol: form.symbol.value, interval: chartState.interval, overlays, panels });
-      const data = await api("/chart?" + query);
-      if (request !== chartState.request) return;          // a newer request has replaced this one
-      if (rebuild || !chartState.series) drawPriceChart(data); else refreshPriceChart(data);
-    } catch (err) {
-      if (rebuild) { showError("#chart-error", err); $("#chart-result").hidden = true; stopChartTimer(); }
-    }
-    if (rebuild) busy(button, false);
-  }
-
-  function stopChartTimer() { if (chartState.timer) { clearInterval(chartState.timer); chartState.timer = null; } }
+  function startCharts() { applyChartsSetting(); }
 
   function chartOptions(height) {
     return { height, autoSize: true,
       layout: { background: { color: cssVar("--surface") }, textColor: cssVar("--text2"), fontSize: 12 },
       grid: { vertLines: { color: cssVar("--line") }, horzLines: { color: cssVar("--line") } },
       rightPriceScale: { borderColor: cssVar("--line"), minimumWidth: 84 },
-      timeScale: { borderColor: cssVar("--line"), timeVisible: chartState.interval !== "1d", secondsVisible: false, rightOffset: 4 },
+      timeScale: { borderColor: cssVar("--line"), timeVisible: false, secondsVisible: false, rightOffset: 4 },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
       localization: { priceFormatter: (p) => inr2.format(p) } };
-  }
-
-  function lineOptions(line, color) {
-    const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, color };
-    if (line.dots) return { ...quiet, lineVisible: false, pointMarkersVisible: true, pointMarkersRadius: 2 };
-    return { ...quiet, lineWidth: line.thin || line.step ? 1 : 2,
-      lineStyle: line.dashed ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid,
-      lineType: line.step ? LightweightCharts.LineType.WithSteps : LightweightCharts.LineType.Simple };
-  }
-
-  function drawPriceChart(r) {
-    $("#chart-result").hidden = false;
-    chartState.charts.forEach((c) => c.remove());
-    chartState.charts = []; chartState.lines = []; chartState.panelSeries = [];
-    const colors = [1, 2, 3, 4, 5, 6].map((i) => cssVar("--s" + i));
-    const up = cssVar("--good"), down = cssVar("--bad");
-    const main = LightweightCharts.createChart($("#chart-main"), chartOptions(440));
-    chartState.charts.push(main);
-    chartState.series = main.addCandlestickSeries({ upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down });
-    chartState.series.setData(r.candles);
-    const keys = [...new Set(r.lines.map((l) => l.key))];
-    r.lines.forEach((line) => {
-      const series = main.addLineSeries(lineOptions(line, colors[keys.indexOf(line.key) % colors.length]));
-      series.setData(line.points); chartState.lines.push(series);
-    });
-    $("#chart-legend").replaceChildren(...keys.map((key) => h("span", {}, h("i", { style: `background:${colors[keys.indexOf(key) % colors.length]}` }),
-      state.app.chart_overlays[key] + (key.startsWith("pivots") ? ": P solid, R/S dashed" : ""))));
-    const host = $("#chart-panels-out"); host.replaceChildren();
-    r.panels.forEach((panel) => {
-      const box = h("div", { class: "tvpanel" });
-      host.append(h("h3", { text: panel.name }), box);
-      const chart = LightweightCharts.createChart(box, chartOptions(150));
-      chartState.charts.push(chart);
-      const entry = { key: panel.key, series: [] };
-      if (panel.kind === "bars") {
-        const bars = chart.addHistogramSeries({ priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false });
-        bars.setData(panel.points.map((p) => ({ time: p.time, value: p.value, color: p.up ? up : down })));
-        entry.series.push(bars);
-      } else {
-        if (panel.histogram) {
-          const hist = chart.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false });
-          hist.setData(panel.histogram.map((p) => ({ ...p, color: p.value >= 0 ? up : down }))); entry.series.push(hist);
-        }
-        panel.lines.forEach((line, i) => {
-          const series = chart.addLineSeries({ ...lineOptions(line, colors[i]), lastValueVisible: true, title: line.name });
-          series.setData(line.points); entry.series.push(series);
-          if (i === 0) (panel.guides || []).forEach((g) => series.createPriceLine({ price: g, color: cssVar("--muted"), lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true }));
-        });
-      }
-      chartState.panelSeries.push(entry);
-    });
-    // One time axis: scrolling or zooming any chart moves them all.
-    let syncing = false;
-    chartState.charts.forEach((chart) => chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-      if (syncing || !range) return; syncing = true;
-      chartState.charts.forEach((other) => { if (other !== chart) other.timeScale().setVisibleLogicalRange(range); });
-      syncing = false;
-    }));
-    const show = Math.min(r.candles.length, 160);
-    main.timeScale().setVisibleLogicalRange({ from: r.candles.length - show, to: r.candles.length + 3 });
-    const ohlc = $("#chart-ohlc");
-    const describe = (c) => { ohlc.textContent = c ? `O ${inr2.format(c.open)}   H ${inr2.format(c.high)}   L ${inr2.format(c.low)}   C ${inr2.format(c.close)}   ${pct((c.close / c.open - 1) * 100)}` : ""; };
-    main.subscribeCrosshairMove((param) => { const c = param.seriesData && param.seriesData.get(chartState.series); describe(c || chartState.lastCandle); });
-    chartState.describe = describe;
-    refreshPriceChart(r, true);
-    stopChartTimer();
-    chartState.timer = setInterval(() => {
-      if ($("#tab-charts").hidden || $("#chart-result").hidden || !$("#form-chart").live.checked) return;
-      if (state.app.session.open) loadChart(false);
-    }, 15000);
-  }
-
-  function refreshPriceChart(r, first) {
-    const candles = r.candles.slice();
-    const last = { ...candles[candles.length - 1] };
-    if (r.live_price && r.session.open) {       // the forming candle follows Kite's live price
-      last.close = r.live_price; last.high = Math.max(last.high, r.live_price); last.low = Math.min(last.low, r.live_price);
-      candles[candles.length - 1] = last;
-    }
-    if (!first) {
-      chartState.series.setData(candles);
-      r.lines.forEach((line, i) => { if (chartState.lines[i]) chartState.lines[i].setData(line.points); });
-    } else if (r.live_price && r.session.open) chartState.series.update(last);
-    chartState.lastCandle = last; chartState.describe(last);
-    const label = state.app.intervals[r.interval];
-    $("#chart-title").textContent = `${r.symbol} · ${label} candles · last ${rupees(last.close, 2)} · ${r.last}`;
-    const note = [r.note, r.truncated ? "Showing the most recent 1,500 candles." : null].filter(Boolean).join(" ");
-    $("#chart-note").textContent = note; $("#chart-note").hidden = !note;
-    const pill = $("#chart-live"), live = $("#form-chart").live.checked;
-    if (!r.session.open) { pill.textContent = `Market closed · ${r.source} data`; pill.className = "pill"; }
-    else if (!live) { pill.textContent = "Live refresh off"; pill.className = "pill"; }
-    else { pill.textContent = `Live · ${r.source} · updated ${r.session.time_ist.slice(11)} IST`; pill.className = "pill " + (r.source === "Kite" ? "good" : "warn"); }
-    const pivots = $("#chart-pivots");
-    pivots.hidden = !r.pivots;
-    if (r.pivots) {
-      const order = ["R3", "R2", "R1", "P", "S1", "S2", "S3"];
-      pivots.replaceChildren(h("h3", { text: "Pivot levels (traditional)" }),
-        h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "For" }), order.map((k) => h("th", { class: "num", text: k })))),
-          h("tbody", {}, r.pivots.map((t) => h("tr", {}, h("td", { text: `${t.timeframe[0].toUpperCase() + t.timeframe.slice(1)}: ${t.for}` }),
-            order.map((k) => h("td", { class: "num", text: rupees(t.levels[k], 2) })))))),
-        h("p", { class: "hint", text: "Traditional (floor) pivots from the previous day, week or month's high, low and close: P = (H + L + C) / 3, R1 = 2P − L, S1 = 2P − H, R2 = P + (H − L), S2 = P − (H − L), R3 = H + 2(P − L), S3 = L − 2(H − P). Kite does not publish pivots; the desk computes them." }));
-    }
   }
 
   // -- algos -------------------------------------------------------------------------
@@ -2667,7 +2537,10 @@
 
   $("#sd-close").addEventListener("click", () => $("#stock-dialog").close());
   $("#stock-dialog").addEventListener("click", (event) => { if (event.target.id === "stock-dialog") event.target.close(); });
-  $("#sd-chart").addEventListener("click", () => { $("#stock-dialog").close(); $("#form-chart").symbol.value = sd.symbol.replace(/\.NS$/, ""); selectTab("charts"); loadChart(true); });
+  $("#sd-chart").addEventListener("click", () => {
+    $("#stock-dialog").close(); setChartView("classic"); selectTab("charts");
+    chartView("classic").then((mod) => mod.openSymbol(sd.symbol.replace(/\.NS$/, ""))).catch(() => { /* shown in the chart's place */ });
+  });
   $("#sd-trade").addEventListener("click", () => { $("#stock-dialog").close(); $("#form-order").symbol.value = sd.symbol.replace(/\.NS$/, ""); selectTab("trade"); });
 
   // -- AI scan: every stock of an index against every strategy ------------------------------------------------
