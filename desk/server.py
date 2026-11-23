@@ -70,6 +70,7 @@ from .marketdata.crypto import PAIRS as CRYPTO_PAIRS, CryptoFeed, tickers as cry
 from .marketdata.csvfeed import Imports as ChartImports
 from .markettools import MarketTools, finite
 from .nse import NseClient, exchange_proxy as nse_proxy
+from .openpeaks import OpenPeaks
 from .optimiser import OBJECTIVES, optimise
 from .passkeys import PasskeyError, Passkeys, relying_party
 from .scanner import Scanner
@@ -109,6 +110,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     notes = TradeNotes(desk.ledger.path.parent / "trade_notes.json", now=desk._now)
     library = CustomStrategies()
     algos = AlgoEngine(desk, fetch=fetch, library=library)
+    peaks = OpenPeaks(desk, desk.ledger.path.parent / "open_peaks.json", now=desk._now)
+    algos.extra_ticks.append(peaks.tick)
     scanner = Scanner(desk, fetch=fetch)
     algos.extra_ticks.append(scanner.tick)
     sectors = Sectors(kite, fetch=fetch, settings=settings)
@@ -1269,6 +1272,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         unrealized = round(sum(priced), 2) if len(priced) == len(held) else None     # a held leg without a price
         realized = round(sum(g["realized"] for g in legs), 2)
         return {"algo": algo, "legs": legs, "orders": orders, "can_edit": not (algo["enabled"] and algo["mode"] == "live"),
+                "daily": peaks.source(algo["mode"], source),
                 "totals": {"realized": realized, "unrealized": unrealized,
                            "total": None if unrealized is None else round(realized + unrealized, 2),
                            "charges": round(sum(g["charges"] for g in legs), 2), "held": len(held),
@@ -1317,6 +1321,35 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     @app.post("/api/algos/{algo_id}/exit")
     def algo_exit(algo_id: str):
         return algos.request_exit(algo_id)
+
+    @app.post("/api/algo-exits")
+    def algo_exit_many(payload: dict):
+        """Exit several algos at once: the ids given (``stock`` and ``fno`` lists), or every algo of ``mode``
+        (paper, live or all) that holds something. Each is closed as its own Exit button would; one that cannot be
+        closed now does not stop the others."""
+        body = body_of(payload)
+        mode = str(body.get("mode") or "")
+        if mode and mode not in ("paper", "live", "all"):
+            raise ValueError("mode must be paper, live or all")
+        if mode:
+            stock = [a["id"] for a in algos.list() if (mode == "all" or a["mode"] == mode)
+                     and (a["position"] or a["pending"]) and not a.get("exit_requested")]
+            fno = [a["id"] for a in fno_algos.list() if (mode == "all" or a["mode"] == mode)
+                   and a["book"] and not a.get("exit_requested")]
+        else:
+            stock = [str(i) for i in body.get("stock") or []]
+            fno = [str(i) for i in body.get("fno") or []]
+        if len(stock) + len(fno) > 100:
+            raise ValueError("too many algos in one request")
+        out = []
+        for kind, ids, engine in (("fno", fno, fno_algos), ("stock", stock, algos)):
+            for algo_id in ids:
+                try:
+                    algo = engine.request_exit(algo_id, "Exit pressed (several at once)")
+                    out.append({"kind": kind, "id": algo_id, "name": algo["name"], "ok": True, "status": algo["status"]})
+                except (AlgoError, ValueError, KiteError, OrderRejected) as exc:
+                    out.append({"kind": kind, "id": algo_id, "ok": False, "error": str(exc)})
+        return {"results": out}
 
     @app.post("/api/algos/{algo_id}/release")
     def algo_release(algo_id: str):
@@ -2630,7 +2663,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         closed, open_rows = desk.ledger.closed_trades(mode), report["open"]
         linked = notes.attach([{"key": r["key"], "mode": mode, "source": r["source"], "exchange": r["exchange"],
                                 "symbol": r["symbol"], "opened_at": r["opened_at"]} for r in [*closed, *open_rows]])
-        return results.positions(closed, open_rows, linked)
+        return peaks.attach(results.positions(closed, open_rows, linked))
 
     @app.get("/api/journal")
     def journal(mode: str = "paper"):

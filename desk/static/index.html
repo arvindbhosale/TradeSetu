@@ -300,6 +300,12 @@
   </div>
   <div class="panel">
     <div class="jobhead"><h2>Algos</h2><button id="algo-refresh" type="button">Refresh</button></div>
+    <div class="exit-bar" data-exit-bar="stock">
+      <button type="button" class="danger" data-exit="selected" disabled>Exit selected</button>
+      <button type="button" class="danger" data-exit="paper">Close all paper</button>
+      <button type="button" class="danger" data-exit="live">Close all live</button>
+      <span class="hint" data-exit-note>Tick the algos to exit, or close every open algo position of one account. Stocks and F&amp;O together.</span>
+    </div>
     <div id="algo-list"></div>
   </div>
   <div class="panel note">
@@ -366,6 +372,12 @@
     </div>
     <div class="panel">
       <div class="jobhead"><h2>F&amp;O algos</h2><button id="fno-algo-refresh" type="button">Refresh</button></div>
+      <div class="exit-bar" data-exit-bar="fno">
+        <button type="button" class="danger" data-exit="selected" disabled>Exit selected</button>
+        <button type="button" class="danger" data-exit="paper">Close all paper</button>
+        <button type="button" class="danger" data-exit="live">Close all live</button>
+        <span class="hint" data-exit-note>Tick the algos to exit, or close every open algo position of one account. Stocks and F&amp;O together.</span>
+      </div>
       <div id="fno-list"></div>
     </div>
     <div class="panel note">
@@ -1398,8 +1410,16 @@
   <div id="sd-body"></div>
 </dialog>
 <dialog id="algo-dialog" aria-labelledby="ad-title">
-  <div class="dialog-head"><h2 id="ad-title"></h2><span class="actions"><button type="button" id="ad-edit">Edit</button><button type="button" id="ad-refresh">Refresh</button><button type="button" id="ad-close" aria-label="Close">✕</button></span></div>
+  <div class="dialog-head"><h2 id="ad-title"></h2><span class="actions"><button type="button" id="ad-exit" class="danger" hidden>Exit</button><button type="button" id="ad-edit">Edit</button><button type="button" id="ad-refresh">Refresh</button><button type="button" id="ad-close" aria-label="Close">✕</button></span></div>
   <div id="ad-body"></div>
+</dialog>
+<dialog id="daily-dialog" aria-labelledby="daily-title">
+  <div class="dialog-head"><h2 id="daily-title">Open P&amp;L each day</h2><span class="actions"><button type="button" id="daily-close" aria-label="Close">✕</button></span></div>
+  <div class="dialog-body">
+    <p class="hint" id="daily-trade"></p>
+    <div class="scroll" id="daily-body"></div>
+    <p class="hint">Sampled about once a minute while the desk runs, before the charges of closing. A high reached while the desk was off is not recorded. It is not the booked result: it shows how far the open trade went each day.</p>
+  </div>
 </dialog>
 <dialog id="note-dialog" aria-labelledby="nd-title">
   <div class="dialog-head"><h2 id="nd-title">Trade note</h2><span class="actions"><button type="button" id="nd-close" aria-label="Close">✕</button></span></div>
