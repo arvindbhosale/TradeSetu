@@ -130,3 +130,19 @@ def test_your_own_legs_on_a_signal_need_a_direction(tmp_path, change, fragment):
     engine, _, _ = setup(tmp_path, Clock("2026-11-17 09:00"))
     with pytest.raises(AlgoError, match=fragment):
         engine.create({**BOUGHT_CALL, **change})
+
+
+def test_legs_all_on_the_far_expiry_trade_one_expiry_further_out(tmp_path):
+    clock = Clock("2026-11-17 09:35")
+    engine, _, _ = setup(tmp_path, clock)
+    legs = [{"side": "SELL", "type": "CE", "strikes": 2, "lots": 1, "expiry": "far"},
+            {"side": "SELL", "type": "PE", "strikes": -2, "lots": 1, "expiry": "far"},
+            {"side": "BUY", "type": "CE", "strikes": 6, "lots": 1, "expiry": "far"},
+            {"side": "BUY", "type": "PE", "strikes": -6, "lots": 1, "expiry": "far"}]
+    algo = engine.create({**CONDOR, "name": "Next week own", "structure": "custom", "legs": legs})
+    assert algo["expiry_ahead"] == 1 and {g["expiry"] for g in algo["legs"]} == {"near"}
+    engine.set_enabled(algo["id"], True)
+    book = engine.evaluate(algo["id"])["algo"]["book"]
+    assert {g["expiry"] for g in book["legs"]} == {NEXT}
+    with pytest.raises(AlgoError, match="one expiry fewer"):
+        engine.create({**CONDOR, "name": "Too far own", "structure": "custom", "legs": legs, "expiry_ahead": 3})

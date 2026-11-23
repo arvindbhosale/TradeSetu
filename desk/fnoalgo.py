@@ -212,6 +212,13 @@ class FnoAlgoEngine:
         if kind == "structure":
             structure = str(raw.get("structure", ""))
             own = raw.get("legs") or None
+            ahead = number("expiry_ahead", 0, 0, MAX_AHEAD, "Expiries ahead", True)
+            if own:
+                # Every option leg on the far expiry is one expiry: the legs become near ones, one expiry further out.
+                own, ahead = optstrat.expiry_shift(own, ahead)
+                if ahead > MAX_AHEAD:
+                    raise AlgoError(f"Expiries ahead must be between 0 and {MAX_AHEAD:g}: with every leg on the far "
+                                    f"expiry, choose one expiry fewer.")
             if structure == optstrat.CUSTOM and not own:
                 raise AlgoError("Your own strategy is made from a backtest: build its legs under Backtest > Option "
                                 "strategies, run it, then press Make an algo.")
@@ -267,7 +274,7 @@ class FnoAlgoEngine:
         out["weekdays"] = sorted(set(weekdays))
         out["min_days"] = number("min_days", 0, 0, 30, "Minimum days to expiry")
         out["exit_days_before"] = number("exit_days_before", 0, 0, 10, "Exit days before expiry", True)
-        out["expiry_ahead"] = number("expiry_ahead", 0, 0, MAX_AHEAD, "Expiries ahead", True) if kind == "structure" else 0
+        out["expiry_ahead"] = ahead if kind == "structure" else 0
         expiry = str(raw.get("expiry") or "").strip()
         if expiry:
             try:
