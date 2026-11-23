@@ -3114,7 +3114,7 @@
   // A leg's strike in words, counted from the money: ATM, ATM+2, ATM−3.
   function strikeWords(n) { return !n ? "ATM" : `ATM${n > 0 ? "+" : "−"}${Math.abs(n)}`; }
   function legsWords(legs) {
-    return legs.map((g) => `${g.side === "BUY" ? "Buy" : "Sell"} ${g.lots > 1 ? g.lots + "× " : ""}${g.type === "FUT" ? "Futures" : `${strikeWords(g.strikes)} ${g.type}`}${g.expiry === "far" && g.type !== "FUT" ? " (next expiry)" : ""}`).join(", ");
+    return legs.map((g) => `${g.side === "BUY" ? "Buy" : "Sell"} ${g.lots > 1 ? g.lots + "× " : ""}${g.type === "FUT" ? "Futures" : `${strikeWords(g.strikes)} ${g.type}`}${g.expiry === "far" && g.type !== "FUT" ? " (expiry after)" : ""}`).join(", ");
   }
   // Option strategy picker: presets grouped by market view, then "Your own strategy".
   function structureOptions(select, list) {
@@ -3149,7 +3149,7 @@
         h("td", {}, select("leg_type", leg.type, [["CE", "Call (CE)"], ["PE", "Put (PE)"], ["FUT", "Futures"]])),
         h("td", {}, select("leg_strikes", leg.strikes, strikes)),
         h("td", {}, h("input", { name: "leg_lots", type: "number", min: "1", max: "10", step: "1", value: leg.lots, style: "width:4.5em", "aria-label": "lots" })),
-        h("td", {}, select("leg_expiry", leg.expiry, [["near", "This expiry"], ["far", "Next expiry"]])),
+        h("td", {}, select("leg_expiry", leg.expiry, [["near", "Chosen expiry"], ["far", "The expiry after"]])),
         h("td", {}, h("button", { type: "button", text: "Remove", onclick: () => { row.remove(); legsChanged(); } })));
       const futures = () => { $("select[name=leg_strikes]", row).disabled = $("select[name=leg_type]", row).value === "FUT"; $("select[name=leg_expiry]", row).disabled = $("select[name=leg_type]", row).value === "FUT"; };
       row.addEventListener("change", () => { futures(); legsChanged(); });
@@ -3196,15 +3196,22 @@
       form.w.value = x.w; resetLegs();
     });
     form.mode.addEventListener("change", sync);
-    form.underlying.addEventListener("change", () => { if (!["NIFTY", "SENSEX"].includes(form.underlying.value)) form.expiry_kind.value = "monthly"; loadSpot(); });
-    resetLegs(); loadSpot();
+    // Which expiry: worded for weekly or monthly. A leg on "the expiry after" is one later than this.
+    const aheadWords = () => {
+      const weekly = form.expiry_kind.value === "weekly";
+      const words = weekly ? ["This week", "Next week", "2 weeks ahead", "3 weeks ahead"] : ["This month", "Next month", "2 months ahead", "3 months ahead"];
+      [...form.expiry_ahead.options].forEach((o, n) => { o.textContent = words[n]; });
+    };
+    form.expiry_kind.addEventListener("change", aheadWords);
+    form.underlying.addEventListener("change", () => { if (!["NIFTY", "SENSEX"].includes(form.underlying.value)) form.expiry_kind.value = "monthly"; aheadWords(); loadSpot(); });
+    resetLegs(); aheadWords(); loadSpot();
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const button = $("button[type=submit]", form); showError("#sbt-error", null); syncSharedDates(); busy(button, true, "Running…");
       const weekdays = $$("input[name=wd]", form).filter((c) => c.checked).map((c) => Number(c.value));
       const num = (name) => Number(form[name].value || 0);
       const body = { structure: form.structure.value, underlying: form.underlying.value, mode: form.mode.value, start: form.start.value, end: form.end.value,
-        expiry_kind: form.expiry_kind.value, interval: form.interval.value, entry_time: form.entry_time.value, exit_time: form.exit_time.value,
+        expiry_kind: form.expiry_kind.value, expiry_ahead: Number(form.expiry_ahead.value || 0), interval: form.interval.value, entry_time: form.entry_time.value, exit_time: form.exit_time.value,
         min_days: num("min_days"), exit_days_before: num("exit_days_before"), strategy: form.strategy.value, weekdays,
         k: num("k"), w: num("w"), legs: ownLegs(), leg_exits: $("#sbt-exits").read(), leg_scope: form.leg_scope.value, stop_pct: num("stop_pct"), target_pct: num("target_pct"),
         stop_rs: num("stop_rs"), target_rs: num("target_rs"), lots: num("lots"),
@@ -3219,7 +3226,7 @@
       showError("#sbt-error", null); busy(button, true, "Working…");
       const opt = (name) => (form[name].value === "" ? null : Number(form[name].value));
       const body = { structure: form.structure.value, underlying: form.underlying.value, expiry_kind: form.expiry_kind.value,
-        k: Number(form.k.value || 0), w: Number(form.w.value || 1), legs: ownLegs(), lots: Number(form.lots.value || 1), margin_pct: Number(form.margin_pct.value || 12),
+        expiry_ahead: Number(form.expiry_ahead.value || 0), k: Number(form.k.value || 0), w: Number(form.w.value || 1), legs: ownLegs(), lots: Number(form.lots.value || 1), margin_pct: Number(form.margin_pct.value || 12),
         iv_scale: Number(form.iv_scale.value || 1), spot: opt("spot"), iv_pct: opt("iv_pct"), days: opt("days"), far_days: opt("far_days"), premiums, labels };
       if (premiums && lastPayoff) Object.assign(body, { spot: lastPayoff.spot, iv_pct: lastPayoff.iv_pct, days: lastPayoff.days, far_days: lastPayoff.far_days });
       try { lastPayoff = await api("/options/payoff", { method: "POST", body }); renderPayoff(lastPayoff); }
