@@ -461,47 +461,133 @@
   });
 
   // -- from a backtest to an algo, with the same settings ----------------------------------
+  // Every backtest that has an engine to run it live: a stock strategy, the optimiser's and the AI scan's chosen
+  // settings (stock algos), an option strategy, bought index options and index futures (F&O algos). New algos are
+  // created stopped; the mode defaults to paper.
 
   const deploy = { kind: null, body: null, result: null };
+  const WEEKLY_INDICES = ["NIFTY", "SENSEX"];
+  const ORDINALS = ["next", "second", "third", "fourth"];
+  const dayText = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  const algoName = (text, room = 40) => text.replace(/[^\w &.-]/g, " ").replace(/\s+/g, " ").trim().slice(0, room).trim();
+  const optionsExpiryKind = (u) => (WEEKLY_INDICES.includes(u) ? "weekly" : "monthly");
+
+  // The expiry pickers. Value "" rolls to the next expiry each time; "ahead:N" to the N-th one after it; a date
+  // trades only that expiry, and the algo turns itself off once that expiry is over.
+  async function fillExpiryPick(select, underlying, kind, { ahead = 0, want = "", minDays = 0 } = {}) {
+    const rolling = [0, 1, 2, 3].map((n) => h("option", { value: n ? `ahead:${n}` : "", text: `Each time, the ${ORDINALS[n]} ${kind} expiry (keeps running)` }));
+    select.replaceChildren(...rolling);
+    select.value = ahead ? `ahead:${ahead}` : "";
+    select.title = "";
+    const token = (select.loadToken = (select.loadToken || 0) + 1);
+    let dates = [];
+    try { dates = (await api(`/fno-algos/expiries?underlying=${encodeURIComponent(underlying)}&expiry_kind=${kind}&min_days=${Number(minDays) || 0}`)).expiries; } catch { dates = []; }
+    if (token !== select.loadToken) return;                    // a newer fill started meanwhile
+    if (dates.length) {
+      select.append(h("optgroup", { label: "Only one expiry, then the algo turns off" },
+        dates.map((d) => h("option", { value: d, text: `Only ${dayText(d)}` }))));
+    } else select.title = "To pick one exact expiry, log in to Kite and refresh the contract list on the F&O tab.";
+    if (want && [...select.options].some((o) => o.value === want)) select.value = want;
+  }
+  function readExpiryPick(select) {
+    const v = select.value || "";
+    if (v.startsWith("ahead:")) return { expiry: null, expiry_ahead: Number(v.slice(6)) };
+    return { expiry: v || null, expiry_ahead: 0 };
+  }
+
+  // Where the panel shows: under the stock / F&O result, or under the optimiser's or the AI scan's.
+  function placeDeploy(host) { const panel = $("#bt-deploy"); if (panel.parentElement !== host) host.prepend(panel); return panel; }
+
+  function deployBlocked(text) {
+    const panel = $("#bt-deploy");
+    panel.hidden = false; $("#bt-deploy-go").disabled = true;
+    ["#bt-deploy-symbol-label", "#bt-deploy-expiry-label"].forEach((id) => { $(id).hidden = true; });
+    $("#bt-deploy-what").textContent = text;
+  }
+
+  // The optimiser's pick: the setting its latest walk-forward window chose (what it would trade now), else the best
+  // on the whole period.
+  function optimiserPick(r) {
+    const chosen = (r.windows || []).filter((w) => w.params).pop();
+    if (chosen) return { params: chosen.params, from: `the setting the latest walk-forward window chose (${chosen.train[0]} to ${chosen.train[1]})` };
+    if (r.grid && r.grid[0] && r.grid[0].params) return { params: r.grid[0].params, from: "the best setting on the whole period" };
+    return null;
+  }
 
   function offerDeploy(kind, body, result) {
     Object.assign(deploy, { kind, body, result });
-    const panel = $("#bt-deploy"), name = $("#bt-deploy-name");
+    const host = { optimise: "#opt-result", aiscan: "#scan-result" }[kind] || "#bt-result";
+    const panel = placeDeploy($(host)), name = $("#bt-deploy-name");
     $("#bt-deploy-msg").textContent = ""; showError("#bt-deploy-error", null);
     const daily = !body.interval || body.interval === "1d";
-    if (kind === "futures" && !daily) {
-      panel.hidden = false; $("#bt-deploy-go").disabled = true;
-      $("#bt-deploy-what").textContent = "Futures algos read day candles. Run this backtest on 1-day candles to make an algo from it.";
-      return;
+    if ((kind === "futures" || kind === "options") && !daily) {
+      deployBlocked(`F&O algos read day candles. Run this backtest on 1-day candles to make an algo from it.`); return;
     }
+    if (kind === "optimise" && !optimiserPick(result)) { deployBlocked("No setting was chosen, so there is nothing to make an algo from."); return; }
+    if (kind === "aiscan" && !result.winner) { deployBlocked("No strategy passed the checks on unseen data, so there is nothing to make an algo from."); return; }
     $("#bt-deploy-go").disabled = false;
-    panel.hidden = !["stock", "structure", "futures"].includes(kind);
+    panel.hidden = !["stock", "structure", "futures", "options", "optimise", "aiscan"].includes(kind);
     if (panel.hidden) return;
-    const label = kind === "stock" ? `${result.symbol.replace(/\.(NS|BO)$/, "")} ${result.strategy.name}` : result.strategy.name.split(" · ")[0] + " " + (body.underlying || "");
-    name.value = label.replace(/[^\w &.-]/g, " ").replace(/\s+/g, " ").trim().slice(0, 40);
-    $("#bt-deploy-budget-label").hidden = kind !== "stock"; $("#bt-deploy-loss-label").hidden = kind === "stock";
-    if (kind === "stock") $("#bt-deploy-budget").value = Math.min(Number(body.capital) * Number(body.allocation_pct) / 100, 100000);
+    const stockKind = ["stock", "optimise", "aiscan"].includes(kind), fnoOptions = kind === "structure" || kind === "options";
+    const strategyName = (key) => ((state.app.strategies.find((x) => x.key === key) || {}).name || key);
+    const label = kind === "stock" ? `${result.symbol.replace(/\.(NS|BO)$/, "")} ${result.strategy.name}`
+      : kind === "optimise" ? `${body.symbol.replace(/\.(NS|BO)$/, "")} ${strategyName(body.strategy)}`
+      : kind === "aiscan" ? `${result.winner.name}`
+      : kind === "options" ? `${body.underlying} ${{ calls: "calls", puts: "puts", both: "options" }[body.side]} ${strategyName(body.strategy)}`
+      : result.strategy.name.split(" · ")[0] + " " + (body.underlying || "");
+    name.value = algoName(label, kind === "options" && body.side === "both" ? 34 : 40);
+    $("#bt-deploy-budget-label").hidden = !stockKind; $("#bt-deploy-loss-label").hidden = stockKind;
+    $("#bt-deploy-symbol-label").hidden = kind !== "aiscan";
+    $("#bt-deploy-expiry-label").hidden = !fnoOptions;
+    if (stockKind) {
+      const capital = Number(body.capital || $("#bt-capital").value || 100000);
+      $("#bt-deploy-budget").value = Math.round(Math.min(kind === "stock" ? capital * Number(body.allocation_pct) / 100 : capital, 100000));
+    }
     if (kind === "structure" && Number(body.stop_rs) > 0) $("#bt-deploy-loss").value = body.stop_rs;
+    if (kind === "aiscan") {
+      const rows = (result.per_stock || []).slice().sort((a, b) => (b.winner_oos_return_pct ?? -1e9) - (a.winner_oos_return_pct ?? -1e9));
+      $("#bt-deploy-symbol").replaceChildren(...rows.map((x) => h("option", { value: x.symbol,
+        text: `${x.symbol}${x.winner_oos_return_pct == null ? "" : ` · unseen ${pct(x.winner_oos_return_pct)}`}` })));
+      const sync = () => { name.value = algoName(`${$("#bt-deploy-symbol").value} ${result.winner.name}`); };
+      $("#bt-deploy-symbol").onchange = sync; sync();
+    }
+    if (fnoOptions) {
+      const u = body.underlying, ek = kind === "options" ? optionsExpiryKind(u) : (body.expiry_kind || "weekly"), pick = $("#bt-deploy-expiry");
+      fillExpiryPick(pick, u, ek, { ahead: Number(body.expiry_ahead || 0), minDays: body.min_days });
+    }
     const positional = body.trade_type === "positional" || daily;
+    const tail = " It is created stopped, in the mode you choose here (paper unless you pick live): start it from the Algos tab.";
+    const expiryNote = " Expiry: “Each time” keeps trading the next expiry after each one ends; “Only” trades that one expiry and turns the algo off once it is over (after its exit on expiry day, or earlier if its exit days or minimum days rule it out).";
+    const stockNote = (b) => (b.trade_type === "positional" || !b.interval || b.interval === "1d"
+      ? "It is positional: delivery (CNC), held overnight, with any target and stoploss also placed at your broker as a GTT."
+        + (!b.interval || b.interval === "1d" ? " It buys when the trade window in Settings opens." : " It buys during market hours (inside the trade window in Settings only if Settings enforces it).")
+      : "It trades inside the trade window in Settings (" + `${state.app.settings.trade_start}–${state.app.settings.trade_end}, sell everything at ${state.app.settings.square_off}).`);
     const notes = {
-      stock: positional
-        ? "The algo uses this strategy, candle size, these exit rules" + (body.max_hold_days ? " and the holding limit" : "")
-          + ". It is positional: delivery (CNC), held overnight, with any target and stoploss also placed at your broker as a GTT."
-          + (daily ? " It buys when the trade window in Settings opens." : " It buys during market hours (inside the trade window in Settings only if Settings enforces it).")
+      stock: (positional
+        ? "The algo uses this strategy, candle size, these exit rules" + (body.max_hold_days ? " and the holding limit" : "") + ". " + stockNote(body)
         : "The algo uses this strategy, candle size and these exit rules. It trades inside the trade window in Settings"
         + ((body.trade_start !== state.app.settings.trade_start || body.trade_end !== state.app.settings.trade_end || body.square_off !== state.app.settings.square_off)
-          ? ` (${state.app.settings.trade_start}–${state.app.settings.trade_end}, sell everything at ${state.app.settings.square_off}), not the times above: change them in Settings to match.` : "."),
-      structure: "The algo uses this option strategy, these times and days, strikes, lots and each leg's exit rules. The whole position closes at the maximum loss you set here (filled from the backtest's Stoploss in ₹ when you set one) and at the backtest's Target in ₹; the % stoploss and target for the whole position are not carried over.",
+          ? ` (${state.app.settings.trade_start}–${state.app.settings.trade_end}, sell everything at ${state.app.settings.square_off}), not the times above: change them in Settings to match.` : ".")),
+      optimise: kind === "optimise" ? `The algo trades ${body.symbol} with ${strategyName(body.strategy)} at ${Object.entries(optimiserPick(result).params).map(([k, v]) => `${k} ${v}`).join(", ")}: ${optimiserPick(result).from}, on the same candle size`
+        + (Number(body.stop_loss_pct) ? ` and a ${body.stop_loss_pct}% stoploss` : "") + ". " + stockNote(body) : "",
+      aiscan: kind === "aiscan" ? `The algo trades the stock you pick with the winner, ${result.winner.name} (${result.winner.settings}; ${result.winner.exits_text.toLowerCase()}), on day candles. ` + stockNote({ interval: "1d" })
+        + " The scan judged it across the whole index: one stock alone can do worse." : "",
+      structure: "The algo uses this option strategy, these times and days, strikes, lots and each leg's exit rules. The whole position closes at the maximum loss you set here (filled from the backtest's Stoploss in ₹ when you set one) and at the backtest's Target in ₹; the % stoploss and target for the whole position are not carried over." + expiryNote,
+      options: kind === "options" ? `The algo buys ${body.side === "both" ? "calls while the strategy says buy and puts once it says sell: that is two algos, one for calls and one for puts" : body.side}`
+        + ` on ${body.underlying}, ${Number(body.moneyness) ? `${Math.abs(body.moneyness)} strike(s) ${body.moneyness > 0 ? "in" : "out of"} the money` : "at the money"}, ${body.lots} lot(s), when ${strategyName(body.strategy)} on the index's day candles says so (read at 09:20), with this stoploss and target on the premium. The algo sells at the exit time on expiry day at the latest. It closes everything at the maximum loss you set here.` + expiryNote : "",
       futures: "The algo holds the near-month future while this strategy says so, on day candles. It closes everything at the maximum loss you set here.",
     };
-    $("#bt-deploy-what").textContent = notes[kind] + " It is created stopped: start it from the Algos tab.";
+    $("#bt-deploy-what").textContent = notes[kind] + tail;
   }
 
   async function createDeployedAlgo() {
     const button = $("#bt-deploy-go"), name = $("#bt-deploy-name").value, mode = $("#bt-deploy-mode").value;
-    const { kind, body } = deploy;
+    const { kind, body, result } = deploy;
+    const made = [];
     showError("#bt-deploy-error", null); busy(button, true, "Creating…");
     try {
+      const stockAlgo = async (fields) => { await api("/algos", { method: "POST", body: { name, budget: Number($("#bt-deploy-budget").value), mode, ...fields } }); made.push(name); await refreshAlgos(); };
+      const maxLoss = Number($("#bt-deploy-loss").value || 0);
       if (kind === "stock") {
         let strategy = body.strategy, params = body.strategy_params || {};
         if (body.rules) {                // rules typed on the screen: saved as a strategy so the algo can run them
@@ -511,32 +597,57 @@
           strategy = saved.key; params = {};
           await reloadStrategies();
         }
-        await api("/algos", { method: "POST", body: { name, symbol: body.symbol, strategy, strategy_params: params, interval: body.interval,
-          trade_type: body.trade_type, max_hold_days: body.max_hold_days || 0, budget: Number($("#bt-deploy-budget").value), mode, exits: body.exits } });
-        await refreshAlgos();
+        await stockAlgo({ symbol: body.symbol, strategy, strategy_params: params, interval: body.interval,
+          trade_type: body.trade_type, max_hold_days: body.max_hold_days || 0, exits: body.exits });
+      } else if (kind === "optimise") {
+        await stockAlgo({ symbol: body.symbol, strategy: body.strategy, strategy_params: optimiserPick(result).params, interval: body.interval,
+          trade_type: body.trade_type, max_hold_days: 0, exits: { unit: "pct", stop_loss: Number(body.stop_loss_pct || 0) } });
+      } else if (kind === "aiscan") {
+        const w = result.winner;
+        await stockAlgo({ symbol: $("#bt-deploy-symbol").value + ".NS", strategy: w.strategy, strategy_params: w.params, interval: "1d",
+          trade_type: "positional", max_hold_days: 0, exits: { unit: "pct", stop_loss: Number(w.exits[0] || 0), target: Number(w.exits[1] || 0) } });
       } else if (kind === "structure") {
         await api("/fno-algos", { method: "POST", body: { name, kind: "structure", structure: body.structure, underlying: body.underlying,
-          expiry_kind: body.expiry_kind, schedule: body.mode, entry_time: body.entry_time, exit_time: body.exit_time, exit_days_before: body.exit_days_before,
-          min_days: body.min_days, strategy: body.strategy, weekdays: body.weekdays, k: body.k, w: body.w, legs: body.legs, lots: body.lots,
-          leg_exits: body.leg_exits, leg_scope: body.leg_scope, max_loss: Number($("#bt-deploy-loss").value || 0), target: Number(body.target_rs || 0),
+          expiry_kind: body.expiry_kind, ...readExpiryPick($("#bt-deploy-expiry")), schedule: body.mode, entry_time: body.entry_time, exit_time: body.exit_time,
+          exit_days_before: body.exit_days_before, min_days: body.min_days, strategy: body.strategy, weekdays: body.weekdays, k: body.k, w: body.w,
+          legs: body.legs, lots: body.lots, leg_exits: body.leg_exits, leg_scope: body.leg_scope, max_loss: maxLoss, target: Number(body.target_rs || 0),
           margin_pct: body.margin_pct, mode } });
+        made.push(name); await refreshFnoAlgos();
+      } else if (kind === "options") {
+        // Bought calls lean bullish (on while the strategy is long); bought puts bearish (on once it has turned flat),
+        // as the backtest buys them. Positive moneyness is in the money: a lower call strike, a higher put strike.
+        const sides = body.side === "both" ? ["calls", "puts"] : [body.side], m = Math.round(Number(body.moneyness || 0));
+        for (const side of sides) {
+          const call = side === "calls", each = sides.length > 1 ? `${name} ${side}` : name;
+          await api("/fno-algos", { method: "POST", body: { name: each, kind: "structure", structure: "custom", bias: call ? "bull" : "bear",
+            legs: [{ side: "BUY", type: call ? "CE" : "PE", strikes: call ? -m : m, lots: 1, expiry: "near" }],
+            underlying: body.underlying, expiry_kind: optionsExpiryKind(body.underlying), ...readExpiryPick($("#bt-deploy-expiry")),
+            schedule: "signal", strategy: body.strategy, strategy_params: body.strategy_params, entry_time: "09:20", exit_time: "15:15",
+            min_days: body.min_days, lots: body.lots, leg_scope: "bought",
+            leg_exits: { unit: "pct", stop_loss: Number(body.stop_pct || 0), target: Number(body.target_pct || 0) }, max_loss: maxLoss, target: 0, mode } });
+          made.push(each);
+        }
         await refreshFnoAlgos();
       } else if (kind === "futures") {
         await api("/fno-algos", { method: "POST", body: { name, kind: "futures", direction: body.direction, underlying: body.underlying,
           expiry_kind: "monthly", schedule: "signal", strategy: body.strategy, strategy_params: body.strategy_params, lots: body.lots,
-          max_loss: Number($("#bt-deploy-loss").value || 0), target: 0, margin_pct: body.margin_pct, mode } });
-        await refreshFnoAlgos();
+          max_loss: maxLoss, target: 0, margin_pct: body.margin_pct, mode } });
+        made.push(name); await refreshFnoAlgos();
       }
-      $("#bt-deploy-msg").replaceChildren(`Created “${name}” (${mode}), stopped. `,
-        h("button", { type: "button", text: "Open Algos", onclick: () => { selectTab("algos"); $(`#algo-kind button[data-kind=${kind === "stock" ? "stocks" : "fno"}]`).click(); } }));
-    } catch (err) { showError("#bt-deploy-error", err); }
+      const tab = ["stock", "optimise", "aiscan"].includes(kind) ? "stocks" : "fno";
+      $("#bt-deploy-msg").replaceChildren(`Created ${made.map((x) => `“${x}”`).join(" and ")} (${mode === "live" ? "live" : "paper"}), stopped. `,
+        h("button", { type: "button", text: "Open Algos", onclick: () => { selectTab("algos"); $(`#algo-kind button[data-kind=${tab}]`).click(); } }));
+    } catch (err) {
+      showError("#bt-deploy-error", made.length ? new Error(`Created “${made.join("”, “")}”, then: ${err.message}`) : err);
+      if (made.length) await refreshFnoAlgos();
+    }
     busy(button, false);
   }
   $("#bt-deploy-go").addEventListener("click", createDeployedAlgo);
 
   function renderBacktest(r) {
     $("#bt-result").hidden = false;
-    $("#bt-deploy").hidden = true;
+    placeDeploy($("#bt-result")).hidden = true;
     const m = r.metrics;
     const tile = (k, v, s) => h("div", { class: "tile" }, h("div", { class: "k", text: k }), h("div", { class: "v", text: v }), s ? h("div", { class: "s", text: s }) : null);
     $("#bt-tiles").replaceChildren(...[
@@ -1153,6 +1264,8 @@
     if (a.direction) form.direction.value = a.direction;
     form.underlying.value = a.underlying; fire(form.underlying);
     form.expiry_kind.value = a.expiry_kind;
+    form.expiry_pick.dataset.want = a.expiry || (a.expiry_ahead ? `ahead:${a.expiry_ahead}` : "");
+    form.expiry_pick.reload();
     if (a.kind === "structure") { form.schedule.value = a.schedule; fire(form.schedule); }
     if (a.strategy) { form.strategy.value = a.strategy; fire(form.strategy); }
     Object.entries(a.params || {}).forEach(([k, v]) => { const input = form.elements["p_" + k]; if (input) input.value = v; });
@@ -1330,7 +1443,8 @@
       exit_days_before: num("exit_days_before"), min_days: num("min_days"), strategy: form.strategy.value, strategy_params: params,
       weekdays: $$("input[name=fwd]", form).filter((c) => c.checked).map((c) => Number(c.value)),
       k: num("k"), w: num("w"), lots: num("lots"), leg_exits: $("#fno-exits").read(), leg_scope: form.leg_scope.value, max_loss: num("max_loss"), target: num("target"),
-      limit_buffer_pct: num("limit_buffer_pct"), margin_pct: num("margin_pct"), mode: form.mode.value };
+      limit_buffer_pct: num("limit_buffer_pct"), margin_pct: num("margin_pct"), mode: form.mode.value,
+      ...(form.kind.value === "futures" ? { expiry: null, expiry_ahead: 0 } : readExpiryPick(form.expiry_pick)) };
   }
 
   function startFnoAlgos() {
@@ -1374,7 +1488,16 @@
       if (metal && form.exit_time.value === "15:10") form.exit_time.value = "23:00";
       if (!metal && form.exit_time.value > "15:29") form.exit_time.value = "15:10";
     };
+    const syncExpiry = () => {
+      const pick = form.expiry_pick, u = form.underlying.value, k = form.expiry_kind.value;
+      const want = pick.dataset.want || pick.value;
+      pick.dataset.want = "";
+      fillExpiryPick(pick, u, k, { ahead: want.startsWith("ahead:") ? Number(want.slice(6)) : 0, want, minDays: form.min_days.value });
+    };
+    form.expiry_pick.reload = syncExpiry;
     form.underlying.addEventListener("change", syncUnderlying); syncUnderlying();
+    form.underlying.addEventListener("change", syncExpiry); form.expiry_kind.addEventListener("change", syncExpiry);
+    form.min_days.addEventListener("change", syncExpiry); syncExpiry();
     sync();
     $("#fno-preview").addEventListener("click", async (event) => {
       const button = event.target, box = $("#fno-preview-result");
@@ -1484,7 +1607,7 @@
             a.enabled ? act("Run now", "run") : null, book ? act("Exit", "exit", "danger") : null,
             !a.enabled && book ? act("Clear legs", "clear") : null, !a.enabled && !book ? act("Delete", "delete") : null)),
         h("dl", { class: "kv" },
-          h("dt", { text: "Trades" }), h("dd", { text: `${a.kind === "futures" ? `${a.underlying} near-month futures, ${{ long: "buy only", short: "sell only", both: "buy and sell" }[a.direction] || a.direction}` : `${a.structure_name}${a.legs_text ? ` (${a.legs_text})` : ""} · ${a.underlying} ${a.expiry_kind}`} · ${a.lots} lot(s) · ${how}` }),
+          h("dt", { text: "Trades" }), h("dd", { text: `${a.kind === "futures" ? `${a.underlying} near-month futures, ${{ long: "buy only", short: "sell only", both: "buy and sell" }[a.direction] || a.direction}` : `${a.structure_name}${a.legs_text ? ` (${a.legs_text})` : ""} · ${a.underlying} ${a.expiry_text || a.expiry_kind}`} · ${a.lots} lot(s) · ${how}` }),
           h("dt", { text: "Exit rules" }), h("dd", { text: risk }),
           h("dt", { text: "Position" }), h("dd", { text: book ? `${book.phase}${book.pnl != null ? ` · P&L ${fnoRupees(book.pnl)}` : ""} · margin about ${rupees(book.margin)} · since ${book.opened}` : "flat" }),
           h("dt", { text: "Realised" }), h("dd", { text: `${fnoRupees(a.realized)} over ${a.trades} trade(s), after charges` })),
@@ -2617,7 +2740,7 @@
     const timer = setInterval(tick, 1500);
     watchJob(jobId, ui, (done) => {
       clearInterval(timer); busy(button, false); $("#scan-stop").hidden = true;
-      if (done.status === "done") { bar.value = bar.max; renderScan(done.result); }
+      if (done.status === "done") { bar.value = bar.max; renderScan(done.result); offerDeploy("aiscan", { interval: "1d", capital: Math.min(Number(done.result.money_per_stock || 0) || 100000, 100000) }, done.result); }
     });
   }
 
@@ -2720,12 +2843,13 @@
       event.preventDefault();
       const button = $("button[type=submit]", form); showError("#opt-error", null); busy(button, true, "Starting…");
       try {
-        const { job } = await api("/optimise", { method: "POST", body: { symbol: form.symbol.value, start: form.start.value, end: form.end.value,
+        const body = { symbol: form.symbol.value, start: form.start.value, end: form.end.value,
           interval: form.interval.value, trade_type: form.trade_type.value, strategy: form.strategy.value, ranges: readRanges(), objective: form.objective.value,
           folds: Number(form.folds.value), train_pct: Number(form.train_pct.value), min_trades: Number(form.min_trades.value),
-          stop_loss_pct: Number(form.stop_loss_pct.value || 0) } });
+          stop_loss_pct: Number(form.stop_loss_pct.value || 0) };
+        const { job } = await api("/optimise", { method: "POST", body });
         $("#opt-job").hidden = false; $("#opt-result").hidden = true;
-        watchJob(job.id, { title: $("#opt-title"), status: $("#opt-status"), log: $("#opt-log") }, (done) => { busy(button, false); if (done.status === "done") renderOptimiser(done.result); });
+        watchJob(job.id, { title: $("#opt-title"), status: $("#opt-status"), log: $("#opt-log") }, (done) => { busy(button, false); if (done.status === "done") { renderOptimiser(done.result); offerDeploy("optimise", body, done.result); } });
       } catch (err) { showError("#opt-error", err); busy(button, false); }
     });
   }
@@ -3444,7 +3568,7 @@
         strategy_params: strategyParams, side: form.side.value, moneyness: Number(form.moneyness.value), lots: Number(form.lots.value),
         min_days: Number(form.min_days.value), expiry_weekday: Number(form.expiry_weekday.value), stop_pct: Number(form.stop_pct.value || 0),
         target_pct: Number(form.target_pct.value || 0), iv_scale: Number(form.iv_scale.value), slippage_pct: Number(form.slippage_pct.value), capital: Number(form.capital.value) };
-      try { const r = await api("/backtest/options", { method: "POST", body }); $("#bt-options").append($("#bt-result")); renderBacktest(r); }
+      try { const r = await api("/backtest/options", { method: "POST", body }); $("#bt-options").append($("#bt-result")); renderBacktest(r); offerDeploy("options", body, r); }
       catch (err) { showError("#obt-error", err); }
       busy(button, false);
     });

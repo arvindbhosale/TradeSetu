@@ -933,9 +933,18 @@ If both the stoploss and the target are inside one candle, the stoploss is assum
 
 ### Create an algo from the result
 
-Under every stock, option strategy and index futures result there is a **Create algo** panel. Give it a name, a **Budget** (stocks) or **Maximum loss a day** (options and futures), choose **Paper** or **Live**, and press **Create algo**. It copies the stock, candle, rules and exit rules you just tested. With **My own rules**, the rules are saved as a strategy under the algo's name. The algo is created stopped; start it on the Algos tab.
+Under every stock, option strategy, buy-index-options, index futures, **Find the best settings** and **AI scan** result there is a **Create algo** panel. Give it a name, a **Budget** (stocks) or **Maximum loss a day** (options and futures), choose **Paper** or **Live**, and press **Create algo**. It copies the stock, candle, rules and exit rules you just tested. With **My own rules**, the rules are saved as a strategy under the algo's name. The algo is created stopped; start it on the Algos tab.
 
-The algo also gets the trade type (intraday or positional) and the holding limit. Two differences from the backtest: an intraday algo uses the trade window in **Settings**, not the times typed for the test (a positional algo on minute or hourly candles buys any time in market hours, or inside the Settings window when Settings enforces it), and an option strategy algo stops on **Maximum loss (₹)** instead of the whole-position % stoploss. Buy-index-options backtests have no algo.
+The algo also gets the trade type (intraday or positional) and the holding limit. Two differences from the backtest: an intraday algo uses the trade window in **Settings**, not the times typed for the test (a positional algo on minute or hourly candles buys any time in market hours, or inside the Settings window when Settings enforces it), and an option strategy algo stops on **Maximum loss (₹)** instead of the whole-position % stoploss.
+
+- **Find the best settings**: the algo uses the setting the latest walk-forward window chose (the best on the whole period if no window chose one), with the same stock, candle and stoploss.
+- **AI scan**: pick one stock of the index; the algo runs the winning strategy, its settings and its stoploss and target on day candles. The scan judged the winner across the whole index, so one stock alone can do worse.
+- **Buy index options**: the algo buys the same call or put (same strikes in or out of the money, lots, stoploss and target on the premium) when the strategy on the index's day candles says so, read at 09:20. **Calls and puts** makes two algos, one for each. It needs a backtest on 1-day candles.
+- Pair trading, stock-picking signals, ETF portfolios and AI agents' ratings have no algo to run them, so they show no panel.
+
+**Expiry** (option strategies and bought options): **Each time, the next expiry** keeps trading, moving to the next expiry after each one ends; **the second / third / fourth expiry** does the same further out. **Only 1 Dec 2026** (any listed date) trades just that expiry and the algo turns itself off once that expiry is over: after its exit on expiry day, or earlier when its exit days before expiry or minimum days to expiry rule that expiry out. An algo still holding legs closes them by its own exit rules first. A finished algo shows **Finished** on the Algos tab; edit it to pick a later expiry before starting it again. Dates come from the contract list: log in to Kite and refresh it on the F&O tab if the list is empty. The F&O algo form on the Algos tab has the same **Which expiry** choice.
+
+Every algo made here is created stopped, and the mode is **Paper** unless you choose Live.
 
 ### Reading the result
 

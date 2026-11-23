@@ -1360,6 +1360,10 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     def fno_algo_create(payload: dict):
         return fno_algos.create(body_of(payload))
 
+    @app.get("/api/fno-algos/expiries")
+    def fno_algo_expiries(underlying: str = "NIFTY", expiry_kind: str = "weekly", min_days: float = 0):
+        return {"expiries": fno_algos.listed_expiries(underlying, expiry_kind, min_days)}
+
     @app.post("/api/fno-algos/preview")
     def fno_algo_preview(payload: dict):
         return fno_algos.preview(body_of(payload))

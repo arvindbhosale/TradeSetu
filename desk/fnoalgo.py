@@ -68,7 +68,24 @@ SCHEDULES = ("intraday", "positional", "signal")
 DIRECTIONS = ("long", "short", "both")
 WEEKLY = ("NIFTY", "SENSEX")             # the only index weeklies left after SEBI's November 2024 rules
 _TIME = re.compile(r"([01]?\d|2[0-3]):[0-5]\d")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+MAX_AHEAD = 3                            # expiry_ahead: the nearest usable expiry (0) up to the fourth one (3)
+BIASES = ("bull", "bear")
+_ORDINAL = ("nearest", "second", "third", "fourth")
 MCX_LAST = "23:25"                       # MCX closes at 23:30 in the US summer (23:55 in winter): the latest exit time
+
+
+def _day(date: str) -> str:
+    """2026-11-27 as 27 Nov 2026."""
+    return datetime.strptime(date, "%Y-%m-%d").strftime("%d %b %Y").lstrip("0")
+
+
+def expiry_text(algo: dict) -> str:
+    """Which expiry an algo trades, in words: "weekly", "second monthly", "27 Nov 2026 only"."""
+    if algo.get("expiry"):
+        return f"{_day(algo['expiry'])} expiry only"
+    ahead = int(algo.get("expiry_ahead") or 0)
+    return f"{_ORDINAL[ahead]} {algo['expiry_kind']}" if ahead else algo["expiry_kind"]
 
 
 def arm_phrase(name: str) -> str:
@@ -122,6 +139,7 @@ class FnoAlgoEngine:
         for algo in out:
             rules = self.leg_rules(algo)
             algo["leg_exits_text"] = rules.text() if algo["kind"] == "structure" and (rules.active or rules.trail_every) else ""
+            algo["expiry_text"] = expiry_text(algo) if algo["kind"] == "structure" else "near month"
         return out
 
     def get(self, algo_id: str) -> dict:
@@ -204,13 +222,19 @@ class FnoAlgoEngine:
             except ValueError as exc:
                 raise AlgoError(str(exc).rstrip(".") + ".") from None
             spec = optstrat.STRUCTURES.get(structure, {"name": optstrat.strategy_name(structure, own)})
+            bias = spec.get("bias")
+            if structure == optstrat.CUSTOM and raw.get("bias") not in (None, ""):
+                bias = str(raw["bias"])                 # your own legs: you say which way they lean (bought calls: bull)
+                if bias not in BIASES:
+                    raise AlgoError("The direction of your own legs must be bull or bear.")
             schedule = str(raw.get("schedule", "intraday"))
             if schedule not in SCHEDULES:
                 raise AlgoError(f"Schedule must be one of {', '.join(SCHEDULES)}.")
-            if schedule == "signal" and not spec.get("bias"):
+            if schedule == "signal" and not bias:
                 raise AlgoError("Signal mode is for directional structures (spreads, protective put, covered call). "
                                 "Run straddles, strangles, condors and flies on a schedule (intraday or positional).")
             out.update(structure=structure, structure_name=optstrat.strategy_name(structure, own), schedule=schedule, direction=None,
+                       bias=bias,
                        legs=None if own is None else [{"side": "BUY" if x["action"] > 0 else "SELL", "type": x["type"],
                                                        "strikes": x["n"], "lots": x["ratio"], "expiry": x["series"]}
                                                       for x in specs],
@@ -231,8 +255,10 @@ class FnoAlgoEngine:
             direction = str(raw.get("direction", "long"))
             if direction not in DIRECTIONS:
                 raise AlgoError("Direction must be long, short or both.")
+            if raw.get("expiry") or raw.get("expiry_ahead"):
+                raise AlgoError("A futures algo always holds the near-month future. Choosing an expiry is for option strategies.")
             out.update(structure=None, structure_name=f"{underlying} futures, {direction}", schedule="signal",
-                       direction=direction, k=0, w=0, leg_sl_pct=0.0, naked=False, legs=None,
+                       direction=direction, bias=None, k=0, w=0, leg_sl_pct=0.0, naked=False, legs=None,
                        leg_exits=risk.NONE.as_dict(), leg_scope="sold")
         weekdays = raw.get("weekdays", [0, 1, 2, 3, 4])
         if (not isinstance(weekdays, list) or not weekdays
@@ -241,6 +267,22 @@ class FnoAlgoEngine:
         out["weekdays"] = sorted(set(weekdays))
         out["min_days"] = number("min_days", 0, 0, 30, "Minimum days to expiry")
         out["exit_days_before"] = number("exit_days_before", 0, 0, 10, "Exit days before expiry", True)
+        out["expiry_ahead"] = number("expiry_ahead", 0, 0, MAX_AHEAD, "Expiries ahead", True) if kind == "structure" else 0
+        expiry = str(raw.get("expiry") or "").strip()
+        if expiry:
+            try:
+                ok = bool(_DATE.fullmatch(expiry)) and datetime.strptime(expiry, "%Y-%m-%d") is not None
+            except ValueError:
+                ok = False
+            if not ok:
+                raise AlgoError("The expiry must be a date like 2026-11-27.")
+            if expiry < self._now().strftime("%Y-%m-%d"):
+                raise AlgoError(f"The {_day(expiry)} expiry has passed. Choose a later one.")
+            listed = {c["expiry"] for c in self._options(out)}
+            if listed and expiry not in listed:
+                raise AlgoError(f"{underlying} has no option expiry on {_day(expiry)}. Choose one from the list.")
+            out["expiry_ahead"] = 0                      # one exact expiry: nothing to count ahead
+        out["expiry"] = expiry or None
         if out["schedule"] == "signal":
             try:
                 strategy = self.library.strategy(str(raw.get("strategy", "")))
@@ -263,6 +305,8 @@ class FnoAlgoEngine:
                 raise AlgoError(f"The desk runs at most {MAX_ALGOS} F&O algos.")
             if any(a["name"].lower() == config["name"].lower() for a in self._algos.values()):
                 raise AlgoError("An F&O algo with that name already exists.")
+            if self._expiry_over(config):
+                raise AlgoError(self._expiry_over_text(config))
             algo = {**_copy(_BLANK), **config, "id": uuid.uuid4().hex[:10],
                     "created": self._now().strftime("%Y-%m-%d %H:%M:%S")}
             self._log(algo, f"Created: {self._describe(algo)}, {algo['lots']} lot(s), {algo['mode']}.")
@@ -286,6 +330,11 @@ class FnoAlgoEngine:
                 raise AlgoError("This algo is closing its legs. Edit it once it is flat.")
             keep = ({"legs": algo.get("legs")} if "legs" not in raw and algo.get("legs")
                     and str(raw.get("structure", algo.get("structure"))) == algo.get("structure") else {})
+            if "bias" not in raw and algo.get("bias") and keep.get("legs"):
+                keep["bias"] = algo["bias"]
+            for key in ("expiry", "expiry_ahead"):               # an edit that does not mention them keeps them
+                if key not in raw and algo.get(key) and str(raw.get("kind", algo["kind"])) == "structure":
+                    keep[key] = algo[key]
             config = self.validate({**raw, **keep, "name": algo["name"]})
             changed = [k for k in config if k not in self._DERIVED and config[k] != algo.get(k)]
             if algo.get("leg_exits") is None and "leg_exits" in changed \
@@ -317,7 +366,7 @@ class FnoAlgoEngine:
         how = {"intraday": f"intraday {algo['entry_time']}-{algo['exit_time']}",
                "positional": f"positional, out {algo['exit_days_before']} day(s) before expiry",
                "signal": f"on {algo.get('strategy_name')} signals"}[algo["schedule"]]
-        return f"{what} on {algo['underlying']} ({algo['expiry_kind']}), {how}"
+        return f"{what} on {algo['underlying']} ({expiry_text(algo)}), {how}"
 
     def set_enabled(self, algo_id: str, enabled: bool, phrase: str = "", force: bool = False) -> dict:
         with self._lock:
@@ -337,6 +386,8 @@ class FnoAlgoEngine:
                     if not self.desk.kite.can_trade:
                         raise AlgoError("The connected Kite server cannot place orders. Connect a self-hosted "
                                         "kite-mcp-server with your Kite Connect key.")
+                if self._expiry_over(algo):
+                    raise AlgoError(self._expiry_over_text(algo) + " Edit the algo to choose another expiry.")
                 if algo["schedule"] == "signal":
                     try:
                         self.library.strategy(algo["strategy"])
@@ -469,6 +520,56 @@ class FnoAlgoEngine:
         before = algo["exit_days_before"] if algo["schedule"] == "positional" else 0
         return days < before or (days <= before and now.strftime("%H:%M") >= algo["exit_time"])
 
+    def _expiry_over(self, algo: dict) -> bool:
+        """Whether an algo made for one exact expiry can open nothing more: the date has passed, or its exit rule
+        or its minimum days to expiry already rule that expiry out."""
+        fixed = algo.get("expiry")
+        if not fixed:
+            return False
+        if fixed < self._now().strftime("%Y-%m-%d"):
+            return True
+        return self._exit_due(algo, fixed) or self._days_left(fixed, self._metal(algo)) < algo["min_days"]
+
+    def _expiry_over_text(self, algo: dict) -> str:
+        fixed = algo["expiry"]
+        if fixed < self._now().strftime("%Y-%m-%d"):
+            why = "it has passed"
+        elif self._days_left(fixed, self._metal(algo)) < algo["min_days"]:
+            why = f"it is less than the algo's minimum of {algo['min_days']:g} days away"
+        else:
+            why = "the algo's exit rule (exit time, or days before expiry) already closes it"
+        return f"This algo trades only the {_day(fixed)} expiry, and no new entry can be made on it: {why}."
+
+    def _expire(self, algo: dict) -> None:
+        """An exact-expiry algo that is flat and can open nothing more turns itself off."""
+        algo.update(enabled=False, exit_requested=False, status=f"Finished: {_day(algo['expiry'])} expiry over")
+        self._log(algo, f"Its expiry, {_day(algo['expiry'])}, is over: the algo turned itself off.")
+        self.desk.notifier.notify(f"F&O algo “{algo['name']}” finished", f"It traded only the {_day(algo['expiry'])} "
+                                  f"expiry, which is over, so it turned itself off.", "info",
+                                  key=f"fno-finished:{algo['id']}")
+
+    def finish_expired(self) -> list[str]:
+        """Turn off every running exact-expiry algo that is flat and whose expiry is over, market open or not.
+        One holding legs is left to close them by its own exit rules first."""
+        done = []
+        with self._lock:
+            for algo in self._algos.values():
+                if algo["enabled"] and not algo["book"] and not algo["exit_requested"] and self._expiry_over(algo):
+                    self._expire(algo)
+                    done.append(algo["id"])
+            if done:
+                self._save()
+        return done
+
+    def listed_expiries(self, underlying: str, expiry_kind: str = "weekly", min_days: float = 0) -> list[str]:
+        """The option expiries in the contract list from today on, for the expiry pickers (monthly: the last of each
+        month), leaving out those less than ``min_days`` away. Empty when the contract list is not loaded."""
+        underlying = str(underlying).upper()
+        if underlying not in INDICES and underlying not in mcx.METALS:
+            raise AlgoError("Unknown index.")
+        dates = self._expiries({"underlying": underlying, "expiry_kind": "monthly" if expiry_kind == "monthly" else "weekly"})
+        return [d for d in dates if self._days_left(d, underlying in mcx.METALS) >= max(0.0, float(min_days))]
+
     def _days_left(self, expiry: str, metal: bool = False) -> float:
         end = datetime.strptime(expiry, "%Y-%m-%d").replace(hour=15, minute=30, tzinfo=market.IST)
         if metal:
@@ -509,11 +610,22 @@ class FnoAlgoEngine:
             expiries = self._expiries(algo)
             if not expiries:
                 raise AlgoError(f"No {u} option contracts are loaded. Open F&O and refresh the contract list from Kite.")
-            usable = [d for d in expiries if self._days_left(d, metal) >= algo["min_days"] and not self._exit_due(algo, d)]
-            if not usable:
-                raise AlgoError(f"No {algo['expiry_kind']} {u} expiry is at least {algo['min_days']:g} days away and "
-                                f"outside the exit rule.")
-            near = usable[0]
+            fixed, ahead = algo.get("expiry"), int(algo.get("expiry_ahead") or 0)
+            if fixed:
+                if fixed not in {c["expiry"] for c in self._options(algo)}:
+                    raise AlgoError(f"The {_day(fixed)} {u} expiry is not in the contract list. Refresh the contract "
+                                    f"list on the F&O tab, or edit the algo to choose another expiry.")
+                if self._expiry_over(algo):
+                    raise AlgoError(self._expiry_over_text(algo))
+                near = fixed
+            else:
+                usable = [d for d in expiries if self._days_left(d, metal) >= algo["min_days"] and not self._exit_due(algo, d)]
+                if len(usable) <= ahead:
+                    raise AlgoError(f"No {algo['expiry_kind']} {u} expiry is at least {algo['min_days']:g} days away and "
+                                    f"outside the exit rule." if not usable else
+                                    f"This algo trades the {_ORDINAL[ahead]} {algo['expiry_kind']} {u} expiry, and only "
+                                    f"{len(usable)} usable one(s) are listed. Refresh the contract list on the F&O tab.")
+                near = usable[ahead]
             if any(s["series"] == "far" for s in specs):
                 later = [d for d in expiries if d > near]
                 if not later:
@@ -712,6 +824,9 @@ class FnoAlgoEngine:
             algo.update(enabled=False, exit_requested=False)
             self._log(algo, "Flat after Exit: stopped.")
             return "Stopped", True
+        if self._expiry_over(algo):
+            self._expire(algo)
+            return algo["status"], True
         if self.desk.flatten_day == today or algo["blocked_day"] == today:
             return "Running: done for today", True
         if self.desk.settings.get("kill_switch"):
@@ -753,7 +868,8 @@ class FnoAlgoEngine:
         except ValueError as exc:
             raise AlgoError(f"Strategy error: {exc}") from None
         long, started = int(positions.iloc[-1]) > 0, bool((positions > 0).any())
-        bias = (optstrat.STRUCTURES.get(algo["structure"], {}).get("bias") if algo["kind"] == "structure" else None)
+        bias = (algo.get("bias") or optstrat.STRUCTURES.get(algo["structure"], {}).get("bias")
+                if algo["kind"] == "structure" else None)
         if algo["kind"] == "futures":
             want = {"long": 1 if long else 0, "short": -1 if not long and started else 0,
                     "both": 1 if long else (-1 if started else 0)}[algo["direction"]]
@@ -1168,6 +1284,7 @@ class FnoAlgoEngine:
             return [a["name"] for a in self._algos.values() if a["enabled"] and a["mode"] == "live"]
 
     def tick(self) -> None:
+        self.finish_expired()
         for algo_id in self.due():
             try:
                 outcome = self.evaluate(algo_id)
@@ -1187,5 +1304,5 @@ class FnoAlgoEngine:
 _BLANK = {
     "enabled": False, "exit_requested": False, "status": "Stopped", "log": [], "book": None,
     "last_entry_day": None, "blocked_day": None, "last_signal": None, "ready": False,
-    "realized": 0.0, "trades": 0, "history": [], "hold_until": None,
+    "realized": 0.0, "trades": 0, "history": [], "hold_until": None, "expiry": None, "expiry_ahead": 0, "bias": None,
 }
