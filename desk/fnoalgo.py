@@ -234,8 +234,8 @@ class FnoAlgoEngine:
                     raise AlgoError(f"Expiries ahead must be between 0 and {MAX_AHEAD:g}: with every leg on the far "
                                     f"expiry, choose one expiry fewer.")
             if structure == optstrat.CUSTOM and not own:
-                raise AlgoError("Your own strategy is made from a backtest: build its legs under Backtest > Option "
-                                "strategies, run it, then press Make an algo.")
+                raise AlgoError("Your own strategy needs its legs: add at least one under Legs (Buy or Sell, Call "
+                                "or Put, strike).")
             if structure not in optstrat.STRUCTURES and structure != optstrat.CUSTOM:
                 raise AlgoError("Unknown option strategy.")
             try:

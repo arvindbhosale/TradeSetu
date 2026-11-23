@@ -1496,6 +1496,7 @@
     $(cfg.banner).hidden = true;
     $(kind === "stock" ? "#algo-steps" : "#fno-steps").load(null);
     $(kind === "stock" ? "#algo-adds" : "#fno-adds").load(null);
+    if (kind === "fno" && fnoLegs) fnoLegs.lock(false);
   }
 
   function editStockAlgo(a) {
@@ -1523,6 +1524,11 @@
     const form = $("#form-fno"), fire = (el) => el.dispatchEvent(new Event("change"));
     form.kind.value = a.kind; fire(form.kind);
     if (a.structure) { form.structure.value = a.structure; fire(form.structure); }
+    if (a.kind === "structure") {
+      ["k", "w"].forEach((key) => { if (a[key] != null) form.elements[key].value = a[key]; });
+      form.bias.value = a.structure === "custom" ? (a.bias || "") : "";
+      fnoLegs.load(a.legs);                            // a strategy's own legs are worked out from k and w
+    }
     if (a.direction) form.direction.value = a.direction;
     form.underlying.value = a.underlying; fire(form.underlying);
     form.expiry_kind.value = a.expiry_kind;
@@ -1537,10 +1543,10 @@
     $("#fno-exits").load(a.leg_exits || { unit: "pct", stop_loss: a.leg_sl_pct || 0 });
     $("#fno-steps").load(a.steps);
     $("#fno-adds").load(a.adds);
-    if (a.legs_text) $("#fno-desc").append(h("span", { text: ` Legs: ${a.legs_text}. They are kept while the option strategy stays the same.` }));
     const note = a.book ? `“${a.name}” has open legs, so only the maximum loss, the target, each leg's exit rules, the profit steps, the adds and the limit buffer can change. Exit, or clear the legs, to change the rest.`
       : `Editing “${a.name}”. ${a.enabled ? "It keeps running with the new settings." : "It stays stopped."} Changing Paper/Live stops it.`;
     beginAlgoEdit("fno", a, note, a.book ? ["max_loss", "target", "limit_buffer_pct", "leg_scope", "exits", "steps", "adds"] : null);
+    fnoLegs.lock(Boolean(a.book));                     // open legs cannot change; Add leg and Remove are off too
   }
 
   // -- one algo in detail: every leg's buy and sell price, booked and open P&L, pending orders ---------------------
@@ -1768,6 +1774,7 @@
     if (b.dataset.kind === "supervisor") refreshSupervisor();
   }));
 
+  let fnoLegs = null;                                  // the F&O algo form's leg editor, made in startFnoAlgos
   function fnoBody(form) {
     const num = (name) => Number(form[name].value || 0);
     const params = {};
@@ -1779,6 +1786,8 @@
       weekdays: $$("input[name=fwd]", form).filter((c) => c.checked).map((c) => Number(c.value)),
       k: num("k"), w: num("w"), lots: num("lots"), leg_exits: $("#fno-exits").read(), leg_scope: form.leg_scope.value, max_loss: num("max_loss"), target: num("target"),
       limit_buffer_pct: num("limit_buffer_pct"), margin_pct: num("margin_pct"), mode: form.mode.value, steps: $("#fno-steps").read(), adds: $("#fno-adds").read(),
+      ...(form.kind.value === "structure" && fnoLegs ? { legs: fnoLegs.own() || null } : {}),
+      ...(form.kind.value === "structure" && form.structure.value === "custom" ? { bias: form.bias.value || null } : {}),
       ...(form.kind.value === "futures" ? { expiry: null, expiry_ahead: 0 } : readExpiryPick(form.expiry_pick)) };
   }
 
@@ -1790,6 +1799,7 @@
     structureOptions(form.structure, list);
     form.structure.value = "iron_condor";
     strategyOptions(form.strategy, (x) => !x.intraday_only && x.key !== "buy_hold"); form.strategy.value = "supertrend";
+    fnoLegs = legEditor({ form, list, body: $("#fno-legs tbody"), add: $("#fno-leg-add"), reset: $("#fno-leg-reset"), spot: $("#fno-legs-spot"), changed: () => sync() });
     const params = () => {
       const strategy = state.app.strategies.find((x) => x.key === form.strategy.value);
       $("#fno-params").replaceChildren(...(strategy && !$("#fno-params").hidden ? strategy.params : []).map((p) => h("label", {}, p.label,
@@ -1797,8 +1807,9 @@
     };
     const sync = () => {
       const futures = form.kind.value === "futures", x = list.find((y) => y.key === form.structure.value);
-      if (!futures && form.schedule.value === "signal" && !x.bias) form.schedule.value = "positional";
-      [...form.schedule.options].find((o) => o.value === "signal").disabled = !x.bias;
+      const edited = fnoLegs.edited(), bias = x.custom ? form.bias.value : x.bias;
+      if (!futures && form.schedule.value === "signal" && !bias) form.schedule.value = "positional";
+      [...form.schedule.options].find((o) => o.value === "signal").disabled = !bias;
       const schedule = futures ? "signal" : form.schedule.value;
       $$(".fno-structure", form).forEach((el) => { el.hidden = futures; });
       if ($("#fno-steps").kind !== (futures ? "futures" : "structure")) $("#fno-steps").setKind(futures ? "futures" : "structure");
@@ -1808,16 +1819,19 @@
       $$(".fno-positional", form).forEach((el) => { el.hidden = schedule !== "positional"; });
       $$(".fno-days", form).forEach((el) => { el.hidden = schedule === "signal"; });
       $("#fno-params").hidden = schedule !== "signal";
-      $$(".fno-k", form).forEach((el) => { el.hidden = futures || !x.uses_k; });
-      $$(".fno-w", form).forEach((el) => { el.hidden = futures || !x.uses_w; });
+      $$(".fno-k", form).forEach((el) => { el.hidden = futures || !x.uses_k || edited || x.custom; });
+      $$(".fno-w", form).forEach((el) => { el.hidden = futures || !x.uses_w || edited || x.custom; });
+      $$(".fno-own", form).forEach((el) => { el.hidden = futures || !x.custom; });
+      $("#fno-leg-reset").hidden = x.custom || !edited;
       form.k.min = x.min_k || 0; if (Number(form.k.value) < (x.min_k || 0)) form.k.value = x.min_k;
       $("#fno-desc").replaceChildren(futures
         ? h("span", { text: "Holds the near-month future while the strategy (on the index's day candles, checked at the entry time) says buy, sell, or either; moves to the next month's contract at the exit time on expiry day." })
-        : h("span", {}, x.about, " ", marketBadges(x.markets)));
+        : h("span", {}, x.about, edited && !x.custom ? ` Your strikes: ${legsWords(fnoLegs.read())}.` : "", " ", x.custom ? "" : marketBadges(x.markets)));
       params();
     };
     form.kind.addEventListener("change", sync); form.schedule.addEventListener("change", sync); form.strategy.addEventListener("change", params);
-    form.structure.addEventListener("change", () => { const x = list.find((y) => y.key === form.structure.value); form.w.value = x.w; sync(); });
+    form.bias.addEventListener("change", sync);
+    form.structure.addEventListener("change", fnoLegs.structureChanged);
     const syncUnderlying = () => {
       const option = form.underlying.selectedOptions[0];
       const metal = Boolean(option && option.parentElement.label && option.parentElement.label.startsWith("MCX"));
@@ -1835,9 +1849,10 @@
     };
     form.expiry_pick.reload = syncExpiry;
     form.underlying.addEventListener("change", syncUnderlying); syncUnderlying();
+    form.underlying.addEventListener("change", fnoLegs.loadSpot);
     form.underlying.addEventListener("change", syncExpiry); form.expiry_kind.addEventListener("change", syncExpiry);
     form.min_days.addEventListener("change", syncExpiry); syncExpiry();
-    sync();
+    fnoLegs.reset(); fnoLegs.loadSpot();
     $("#fno-preview").addEventListener("click", async (event) => {
       const button = event.target, box = $("#fno-preview-result");
       showError("#fno-algo-error", null); busy(button, true, "Working…");
@@ -3520,21 +3535,12 @@
         : key === "sideways" ? !x.bias && x.markets.includes("sideways") : x.bias === key)).map((x) => h("option", { value: x.key, text: x.name })))));
   }
 
-  function startStructures() {
-    startChainHistory();
-    const form = $("#form-sbt");
-    $("#sbt-exits").replaceWith(Object.assign(exitRulesBox(true), { id: "sbt-exits" }));
-    mountSteps("sbt-steps", "structure", $("#form-sbt"));
-    mountAdds("sbt-adds", "structure", $("#form-sbt"), "sbt-steps");
-    const list = state.app.structures;
-    structureOptions(form.structure, list);
-    strategyOptions(form.strategy, (x) => !x.intraday_only); form.strategy.value = "supertrend";
-    const today = state.app.today, from = new Date(today); from.setFullYear(from.getFullYear() - 2);
-    form.start.value = from.toISOString().slice(0, 10); form.end.value = today;
-    // -- leg editor: every preset's legs, editable; "custom" starts from whatever legs are on screen --
-    const legBody = $("#sbt-legs tbody");
+  // The leg editor of an option strategy (Backtest → Option strategy, and the F&O algo form): every preset's legs,
+  // editable, plus Add leg; "Your own strategy" starts from whatever legs are on screen. Strikes count from the money.
+  function legEditor({ form, list, body, add, reset, spot, changed }) {
     let edited = false, spotNow = null;
     const isCustom = () => form.structure.value === "custom";
+    const current = () => list.find((y) => y.key === form.structure.value);
     const offsetOf = (text) => { const k = Number(form.k.value || 0), w = Number(form.w.value || 1);
       return (text.startsWith("-") ? -1 : 1) * ((text.includes("k") ? k : 0) + (text.includes("w") ? w : 0)); };
     const presetLegs = (x) => x.legs.map(([action, type, off, ratio, series]) => ({ side: action > 0 ? "BUY" : "SELL", type, strikes: type === "FUT" ? 0 : offsetOf(off), lots: ratio || 1, expiry: series || "near" }));
@@ -3555,27 +3561,56 @@
       futures();
       return row;
     };
-    const readLegs = () => $$("tr", legBody).map((row) => {
+    const readLegs = () => $$("tr", body).map((row) => {
       const type = $("select[name=leg_type]", row).value;
       return { side: $("select[name=leg_side]", row).value, type, strikes: type === "FUT" ? 0 : Number($("select[name=leg_strikes]", row).value),
         lots: Number($("input[name=leg_lots]", row).value || 1), expiry: type === "FUT" ? "near" : $("select[name=leg_expiry]", row).value };
     });
-    const fillLegs = (legs) => legBody.replaceChildren(...legs.map(legRow));
-    const ownLegs = () => (edited || isCustom() ? readLegs() : undefined);
-    function legsChanged() { edited = true; sync(); }
-    const resetLegs = () => { const x = list.find((y) => y.key === form.structure.value); edited = false; if (!x.custom) fillLegs(presetLegs(x)); sync(); };
+    const fillLegs = (legs) => body.replaceChildren(...legs.map(legRow));
+    function legsChanged() { edited = true; changed(); }
+    const resetLegs = () => { const x = current(); edited = false; if (!x.custom) fillLegs(presetLegs(x)); changed(); };
+    // Locked while an algo holds the legs: nothing in the table can change, and Add leg / Reset are off.
+    function lock(on) {
+      if (!on) fillLegs(readLegs());                   // rebuilt rows grey out a Futures leg's strike and expiry again
+      else $$("select, input, button", body).forEach((el) => { el.disabled = true; });
+      add.disabled = reset.disabled = on;
+    }
     const loadSpot = async () => {
       spotNow = null;
       try { spotNow = await api(`/options/spot?underlying=${encodeURIComponent(form.underlying.value)}`); } catch { /* labels stay relative */ }
-      const keep = readLegs(); fillLegs(keep);
-      $("#sbt-legs-spot").textContent = spotNow && spotNow.spot ? `${form.underlying.value} ${inr2.format(spotNow.spot)} now, ATM ${inr.format(spotNow.atm)} (${spotNow.source}).` : "Log in to Kite to see today's strike prices.";
+      const locked = add.disabled; fillLegs(readLegs()); if (locked) lock(true);
+      spot.textContent = spotNow && spotNow.spot ? `${form.underlying.value} ${inr2.format(spotNow.spot)} now, ATM ${inr.format(spotNow.atm)} (${spotNow.source}).` : "Log in to Kite to see today's strike prices.";
     };
-    $("#sbt-leg-add").addEventListener("click", () => { legBody.append(legRow({ side: "SELL", type: "CE", strikes: 0, lots: 1, expiry: "near" })); legsChanged(); });
-    $("#sbt-leg-reset").addEventListener("click", resetLegs);
+    add.addEventListener("click", () => { body.append(legRow({ side: "SELL", type: "CE", strikes: 0, lots: 1, expiry: "near" })); legsChanged(); });
+    reset.addEventListener("click", resetLegs);
     form.k.addEventListener("input", () => { if (!edited) resetLegs(); });
     form.w.addEventListener("input", () => { if (!edited) resetLegs(); });
+    const structureChanged = () => {
+      const x = current();
+      if (x.custom) { if (!body.children.length) fillLegs([{ side: "SELL", type: "CE", strikes: 2, lots: 1, expiry: "near" }, { side: "SELL", type: "PE", strikes: -2, lots: 1, expiry: "near" }]); changed(); return; }
+      form.w.value = x.w; resetLegs();
+    };
+    return { read: readLegs, edited: () => edited, own: () => (edited || isCustom() ? readLegs() : undefined), reset: resetLegs, loadSpot, structureChanged, lock,
+      // An algo's saved legs (its own strikes), or the strategy's own legs when it has none.
+      load: (legs) => { if (legs && legs.length) { fillLegs(legs); edited = true; changed(); } else resetLegs(); } };
+  }
+
+  function startStructures() {
+    startChainHistory();
+    const form = $("#form-sbt");
+    $("#sbt-exits").replaceWith(Object.assign(exitRulesBox(true), { id: "sbt-exits" }));
+    mountSteps("sbt-steps", "structure", $("#form-sbt"));
+    mountAdds("sbt-adds", "structure", $("#form-sbt"), "sbt-steps");
+    const list = state.app.structures;
+    structureOptions(form.structure, list);
+    strategyOptions(form.strategy, (x) => !x.intraday_only); form.strategy.value = "supertrend";
+    const today = state.app.today, from = new Date(today); from.setFullYear(from.getFullYear() - 2);
+    form.start.value = from.toISOString().slice(0, 10); form.end.value = today;
+    // -- leg editor: every preset's legs, editable; "custom" starts from whatever legs are on screen --
+    const legEd = legEditor({ form, list, body: $("#sbt-legs tbody"), add: $("#sbt-leg-add"), reset: $("#sbt-leg-reset"), spot: $("#sbt-legs-spot"), changed: () => sync() });
+    const ownLegs = legEd.own;
     const sync = () => {
-      const x = list.find((y) => y.key === form.structure.value), mode = form.mode.value, legs = readLegs();
+      const x = list.find((y) => y.key === form.structure.value), mode = form.mode.value, legs = legEd.read(), edited = legEd.edited();
       const yours = (edited && !x.custom) ? h("span", { text: " Your strikes: " + legsWords(legs) + "." }) : null;
       $("#sbt-desc").replaceChildren(...[h("span", { text: x.about }), yours, x.custom ? null : marketBadges(x.markets)].filter(Boolean));
       $$(".sbt-intraday", form).forEach((el) => { el.hidden = mode !== "intraday"; });
@@ -3589,11 +3624,7 @@
       $$(".sbt-far", form).forEach((el) => { el.hidden = !legs.some((g) => g.expiry === "far" && g.type !== "FUT"); });
       $("#sbt-leg-reset").hidden = x.custom || !edited;
     };
-    form.structure.addEventListener("change", () => {
-      const x = list.find((y) => y.key === form.structure.value);
-      if (x.custom) { if (!legBody.children.length) fillLegs([{ side: "SELL", type: "CE", strikes: 2, lots: 1, expiry: "near" }, { side: "SELL", type: "PE", strikes: -2, lots: 1, expiry: "near" }]); sync(); return; }
-      form.w.value = x.w; resetLegs();
-    });
+    form.structure.addEventListener("change", legEd.structureChanged);
     form.mode.addEventListener("change", sync);
     // Which expiry: worded for weekly or monthly. A leg on "the expiry after" is one later than this.
     const aheadWords = () => {
@@ -3602,8 +3633,8 @@
       [...form.expiry_ahead.options].forEach((o, n) => { o.textContent = words[n]; });
     };
     form.expiry_kind.addEventListener("change", aheadWords);
-    form.underlying.addEventListener("change", () => { if (!["NIFTY", "SENSEX"].includes(form.underlying.value)) form.expiry_kind.value = "monthly"; aheadWords(); loadSpot(); });
-    resetLegs(); aheadWords(); loadSpot();
+    form.underlying.addEventListener("change", () => { if (!["NIFTY", "SENSEX"].includes(form.underlying.value)) form.expiry_kind.value = "monthly"; aheadWords(); legEd.loadSpot(); });
+    legEd.reset(); aheadWords(); legEd.loadSpot();
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const button = $("button[type=submit]", form); showError("#sbt-error", null); syncSharedDates(); busy(button, true, "Running…");

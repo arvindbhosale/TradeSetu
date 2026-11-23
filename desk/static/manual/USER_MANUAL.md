@@ -1577,7 +1577,7 @@ The stock algo list also has **Exit**: sell what the algo holds now and stop it.
 | **Option strategy, on a signal** | Directional structures only | When a strategy on the index's day candles turns on (bearish structures: turns off) | When the signal changes, or at expiry (then it re-enters in the next expiry) |
 | **Index futures** | Long, short, or long and short | On the signal from the index's day candles, read at the entry time | When the signal changes; rolls to the next month at the exit time on expiry day |
 
-Strikes are counted from the at-the-money strike when the algo enters: **k** for the sold legs, **w** for the wings, exactly as in the backtest. Press **Preview entry now** to see the contracts, premiums, the order they would be sent in, and the margin (Zerodha's, or the desk's estimate) against your funds.
+Strikes are counted from the at-the-money strike when the algo enters: **k** for the sold legs, **w** for the wings, exactly as in the backtest. The **Legs** table works as in the backtest ([Your own legs](#your-own-legs-and-strikes)): set each leg to **Buy** or **Sell**, Call, Put or Futures, its strike and lots, add one with **Add leg** or remove one. Pick **Your own strategy (build the legs)** to make the whole position yourself; set **Which way your legs lean** to *Bullish* or *Bearish* to let it run on a signal. Editing an algo shows its saved legs; while it holds them they cannot change. Press **Preview entry now** to see the contracts, premiums, the order they would be sent in, and the margin (Zerodha's, or the desk's estimate) against your funds.
 
 **How it enters and exits**
 
