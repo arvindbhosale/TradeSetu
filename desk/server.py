@@ -90,6 +90,7 @@ from .sectors import Sectors
 from .settings import Settings, home
 from .stockinfo import stock_view
 from .supervisor import Supervisor
+from .ticker import Ticker
 from .tradenotes import MISTAKES, TradeNotes
 
 logger = logging.getLogger(__name__)
@@ -139,6 +140,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     tools = MarketTools(sectors, indices, fundamentals, fetch=fetch, get_json=offline_json,
                         download=(lambda url: (_ for _ in ()).throw(OSError("offline"))) if fetch is not None else None,
                         results=financials.results, nse=financials.client)
+    ticker = Ticker(indices, lambda: settings.get("ticker_indices"))
     sectors.extra = []                      # filled from index lists so contributor prices stay warm
     first_oi: dict = {"day": None, "values": {}}
     algos.extra_ticks.append(derivatives.tick)
@@ -202,6 +204,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     app.state.chain_history = chain_history
     app.state.algos, app.state.auth, app.state.scanner = algos, auth, scanner
     app.state.sectors, app.state.indices, app.state.fundamentals = sectors, indices, fundamentals
+    app.state.ticker = ticker
     app.state.derivatives = derivatives
     app.state.tools = tools
     app.state.financials = financials
@@ -1952,6 +1955,17 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         return scanner.forget(str(body_of(payload).get("key", "")))
 
     # -- indices, stock details, fundamentals ------------------------------------
+
+    @app.get("/api/ticker")
+    def ticker_strip():
+        """The index strip along the top of every page."""
+        if not settings.get("ticker_show"):
+            return {"state": "hidden", "items": [], "every": 300}
+        return {**ticker.snapshot(), "broker": chart_broker()}
+
+    @app.get("/api/ticker/choices")
+    def ticker_choices():
+        return {"choices": ticker.choices(), "chosen": settings.get("ticker_indices")}
 
     @app.get("/api/indices")
     def index_cards():

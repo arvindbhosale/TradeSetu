@@ -1275,6 +1275,7 @@
     $$("input[name=analyst]", form).forEach((box) => { box.checked = s.analysts.includes(box.value); });
     form.kill_switch.checked = s.kill_switch; form.live_enabled.checked = s.live_enabled; form.fno_naked_live.checked = s.fno_naked_live; form.require_stoploss.checked = s.require_stoploss;
     form.charts_enabled.checked = s.charts_enabled; form.enforce_trade_window.checked = s.enforce_trade_window;
+    form.ticker_show.checked = s.ticker_show; fillTickerPicker();
     form.chart_yahoo.checked = s.chart_source === "kite_then_yahoo";
     form.alerts_enabled.checked = s.alerts_enabled; form.telegram_chat_id.value = s.telegram_chat_id; form.telegram_token.value = "";
     $("#tg-saved").textContent = s.api_keys.TELEGRAM_BOT_TOKEN ? `(saved ${s.api_keys.TELEGRAM_BOT_TOKEN})` : "(not set)";
@@ -1347,6 +1348,9 @@
     NUMERIC.forEach((k) => { changes[k] = Number(form[k].value); });
     TEXT.forEach((k) => { changes[k] = form[k].value; });
     TIMES.forEach((k) => { changes[k] = form[k].value; });
+    changes.ticker_show = form.ticker_show.checked;
+    const strip = chosenTickerIndices();
+    if (strip) changes.ticker_indices = strip;
     changes.broker = form.broker.value;
     changes.kite_connect = { api_key: form.kc_api_key.value.trim() };
     if (form.kc_api_secret.value.trim()) changes.kite_connect.api_secret = form.kc_api_secret.value.trim();
@@ -1363,7 +1367,7 @@
     busy(button, true, "Saving…");
     try {
       await api("/settings", { method: "PUT", body: changes });
-      await loadState(); fillSettings(); applyChartsSetting();
+      await loadState(); fillSettings(); applyChartsSetting(); tkLoad();
       $("#settings-msg").textContent = state.app.llm_problem ? "Saved. " + state.app.llm_problem : "Saved.";
     } catch (err) { showError("#settings-error", err); }
     busy(button, false);
@@ -5069,6 +5073,98 @@
       h("p", { class: "hint", text: "Random orders: the closed trades are drawn again at random, with repeats, keeping each trade's rupee result. It shows how much of the result depends on the order the trades happened to come in. It cannot show what the strategy would do in a market unlike this period." }));
   }
 
+  // -- index strip along the top of every page ----------------------------------------------------------------
+
+  const tk = { ids: "", timer: null, busy: false };
+  const tkNum = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const TK_LABEL = { live: "Live", stale: "Delayed", closed: "Market closed", offline: "Offline · connect your broker" };
+  const tkTitle = (st, broker) => ({
+    live: `Live index values from ${broker}.`,
+    stale: `${broker} has not answered for a while. These values may be old.`,
+    closed: "The market is closed. These are the last values.",
+    offline: "Your broker is not connected. These are the last daily closes. Connect it on the Trade page for live values.",
+  })[st] || "";
+  function tkSetHeight() {
+    const bar = $("#ticker");
+    document.body.style.setProperty("--tk-h", bar.hidden ? "0px" : bar.offsetHeight + "px");
+  }
+  function tkOpen(item) {
+    if (!item.chart || !state.app.settings.charts_enabled) return;
+    setChartView("live"); selectTab("charts");
+    chartView("live").then((mod) => mod.openSymbol(item.chart)).catch(() => { /* shown in the chart's place */ });
+  }
+  function tkItem(item) {
+    const el = h("button", { type: "button", class: "tk-item", "data-id": item.id }, h("b", { text: item.label }), h("span", { class: "v" }), h("span", { class: "c" }));
+    el.addEventListener("click", () => tkOpen(item));
+    return el;
+  }
+  function tkFill(el, item) {
+    const known = item.change != null, up = known && item.change >= 0;
+    el.classList.toggle("up", known && up); el.classList.toggle("down", known && !up);
+    el.classList.toggle("old", !item.kite);
+    el.querySelector(".v").textContent = item.value == null ? "–" : tkNum.format(item.value);
+    el.querySelector(".c").textContent = known ? `${up ? "▲" : "▼"} ${tkNum.format(Math.abs(item.change))} (${Math.abs(item.change_pct).toFixed(2)}%)` : "";
+    el.title = `${item.label}: open its chart`;
+  }
+  function tkRender(d) {
+    const bar = $("#ticker"), run = $("#tk-run");
+    const show = d.state !== "hidden" && d.items.length > 0;
+    bar.hidden = !show; document.body.classList.toggle("has-ticker", show);
+    if (!show) { tk.ids = ""; tkSetHeight(); return; }
+    bar.dataset.state = d.state;
+    $("#tk-label").textContent = TK_LABEL[d.state] + (d.state === "stale" && d.as_of ? " · " + d.as_of : "");
+    $("#tk-state").title = tkTitle(d.state, d.broker || "your broker");
+    const ids = d.items.map((i) => i.id).join(",");
+    if (ids !== tk.ids) {           // a new list: build it twice so the scroll loops without a gap
+      tk.ids = ids;
+      run.replaceChildren(...d.items.map(tkItem), ...d.items.map((i) => { const el = tkItem(i); el.tabIndex = -1; el.setAttribute("aria-hidden", "true"); el.classList.add("copy"); return el; }));
+    }
+    const byId = Object.fromEntries(d.items.map((i) => [i.id, i]));
+    $$(".tk-item", run).forEach((el) => tkFill(el, byId[el.dataset.id]));
+    // When everything fits there is nothing to scroll. Otherwise it moves about 45 pixels a second.
+    $$(".tk-item.copy", run).forEach((el) => { el.hidden = false; });
+    const half = run.scrollWidth / 2, still = half <= $(".tk-track", bar).clientWidth;
+    run.classList.toggle("still", still);
+    $$(".tk-item.copy", run).forEach((el) => { el.hidden = still; });
+    run.style.setProperty("--tk-dur", Math.max(20, Math.round(half / 45)) + "s");
+    tkSetHeight();
+  }
+  async function tkLoad() {
+    clearTimeout(tk.timer);
+    let every = 60;
+    if (!document.hidden && !tk.busy) {
+      tk.busy = true;
+      try { const d = await api("/ticker"); tkRender(d); every = d.every || 60; }
+      catch { /* the strip keeps its last values and tries again */ }
+      tk.busy = false;
+    }
+    tk.timer = setTimeout(tkLoad, every * 1000);
+  }
+  function startTicker() {
+    tkLoad();
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) tkLoad(); });
+    let wait = null;
+    window.addEventListener("resize", () => { clearTimeout(wait); wait = setTimeout(() => { if (tk.ids) { tk.ids = ""; tkLoad(); } }, 300); });
+  }
+  async function fillTickerPicker() {
+    const box = $("#tk-pick");
+    try {
+      const d = await api("/ticker/choices");
+      const chosen = new Set(d.chosen), groups = {};
+      d.choices.forEach((c) => { (groups[c.group] = groups[c.group] || []).push(c); });
+      box.dataset.order = d.chosen.join(",");
+      box.replaceChildren(...Object.entries(groups).flatMap(([group, list]) => [h("h4", { text: group }),
+        ...list.map((c) => h("label", { class: "check" }, h("input", { type: "checkbox", value: c.id, checked: chosen.has(c.id) }), " " + c.label))]));
+    } catch (err) { box.replaceChildren(h("div", { class: "error", text: err.message })); }
+  }
+  function chosenTickerIndices() {
+    const box = $("#tk-pick");
+    if (!$("input", box)) return null;                 // the list did not load: leave the setting as it is
+    const ticked = $$("input:checked", box).map((b) => b.value);
+    const before = (box.dataset.order || "").split(",").filter((id) => ticked.includes(id));
+    return [...before, ...ticked.filter((id) => !before.includes(id))];      // newly ticked go at the end
+  }
+
   // -- start -------------------------------------------------------------------
 
   (async () => {
@@ -5100,7 +5196,7 @@
     bta.start.value = iso(month); bta.end.value = today; bta.end.max = today;
     $("#form-order").product.value = state.app.settings.product;
     $("#form-order").risk_pct.value = state.app.settings.risk_per_trade_pct;
-    fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startPairs(); startSignalTest(); startPriceAlerts(); startAiScan(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startMarginCalc(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); startMarketTools(); renderTheme();
+    fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startPairs(); startSignalTest(); startPriceAlerts(); startAiScan(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startMarginCalc(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); startMarketTools(); renderTheme(); startTicker();
     syncSharedDates(); showBacktestPane($("#bt-what").value);
     if (state.app.hosted) { $("#logout").hidden = false; $("#logout-2").hidden = false; $("#logout").title = "Signed in as " + state.app.user; }
     const wanted = location.hash.slice(1);        // an app shortcut or a reload opens the same section
