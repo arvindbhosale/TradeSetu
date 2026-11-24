@@ -90,6 +90,7 @@ from .sectors import Sectors
 from .settings import Settings, home
 from .stockinfo import stock_view
 from .supervisor import Supervisor
+from .ticker import Ticker
 from .tradenotes import MISTAKES, TradeNotes
 
 logger = logging.getLogger(__name__)
@@ -139,6 +140,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     tools = MarketTools(sectors, indices, fundamentals, fetch=fetch, get_json=offline_json,
                         download=(lambda url: (_ for _ in ()).throw(OSError("offline"))) if fetch is not None else None,
                         results=financials.results, nse=financials.client)
+    ticker = Ticker(indices, lambda: settings.get("ticker_indices"))
     sectors.extra = []                      # filled from index lists so contributor prices stay warm
     first_oi: dict = {"day": None, "values": {}}
     algos.extra_ticks.append(derivatives.tick)
@@ -202,6 +204,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     app.state.chain_history = chain_history
     app.state.algos, app.state.auth, app.state.scanner = algos, auth, scanner
     app.state.sectors, app.state.indices, app.state.fundamentals = sectors, indices, fundamentals
+    app.state.ticker = ticker
     app.state.derivatives = derivatives
     app.state.tools = tools
     app.state.financials = financials
@@ -1953,6 +1956,17 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
 
     # -- indices, stock details, fundamentals ------------------------------------
 
+    @app.get("/api/ticker")
+    def ticker_strip():
+        """The index strip along the top of every page."""
+        if not settings.get("ticker_show"):
+            return {"state": "hidden", "items": [], "every": 300}
+        return {**ticker.snapshot(), "broker": chart_broker()}
+
+    @app.get("/api/ticker/choices")
+    def ticker_choices():
+        return {"choices": ticker.choices(), "chosen": settings.get("ticker_indices")}
+
     @app.get("/api/indices")
     def index_cards():
         return indices.cards(settings.get("trend_rule"))
@@ -2476,6 +2490,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             moneyness=int(_number(payload, "moneyness", 0)), min_days=_number(payload, "min_days", 2),
             expiry_weekday=int(_number(payload, "expiry_weekday", 3 if underlying in BSE_INDICES else 1)),
             stop_pct=_number(payload, "stop_pct", 0), target_pct=_number(payload, "target_pct", 0),
+            stop_rs=_number(payload, "stop_rs", 0), target_rs=_number(payload, "target_rs", 0),
             iv_scale=_number(payload, "iv_scale", 1.0), slippage_pct=_number(payload, "slippage_pct", 1.0),
             intraday=interval != "1d", square_off=cfg["square_off"], strategy_name=strategy.name, steps=s, adds=a),
             scaleout.from_payload(payload.get("steps"), "option", lots), scalein.from_payload(payload.get("adds"), "option", lots))
@@ -2533,6 +2548,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             capital=_number(payload, "capital", cfg["paper_capital"]), direction=str(payload.get("direction", "long")),
             margin_pct=_number(payload, "margin_pct", 12.0), stop_pct=_number(payload, "stop_pct", 0),
             target_pct=_number(payload, "target_pct", 0), slippage_pct=_number(payload, "slippage_pct", 0.02),
+            stop_rs=_number(payload, "stop_rs", 0), target_rs=_number(payload, "target_rs", 0),
             intraday=interval != "1d", trade_start=cfg["trade_start"], trade_end=cfg["trade_end"], square_off=cfg["square_off"],
             continuous=continuous, carry_pct=_number(payload, "carry_pct", 7.0), holidays=frozenset(market.HOLIDAYS),
             exchange=exchange, strategy_name=strategy.name), scaleout.from_payload(payload.get("steps"), "futures", lots),

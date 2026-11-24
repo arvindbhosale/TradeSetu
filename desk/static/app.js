@@ -750,7 +750,8 @@
       const capital = Number(body.capital || $("#bt-capital").value || 100000);
       $("#bt-deploy-budget").value = Math.round(Math.min(kind === "stock" ? capital * Number(body.allocation_pct) / 100 : capital, 100000));
     }
-    if (kind === "structure" && Number(body.stop_rs) > 0) $("#bt-deploy-loss").value = body.stop_rs;
+    // The backtest's maximum loss in ₹ becomes the algo's (a live F&O algo needs one).
+    if (["structure", "futures", "options"].includes(kind) && Number(body.stop_rs) > 0) $("#bt-deploy-loss").value = body.stop_rs;
     if (kind === "aiscan") {
       const rows = (result.per_stock || []).slice().sort((a, b) => (b.winner_oos_return_pct ?? -1e9) - (a.winner_oos_return_pct ?? -1e9));
       $("#bt-deploy-symbol").replaceChildren(...rows.map((x) => h("option", { value: x.symbol,
@@ -779,10 +780,10 @@
         + (Number(body.stop_loss_pct) ? ` and a ${body.stop_loss_pct}% stoploss` : "") + ". " + stockNote(body) : "",
       aiscan: kind === "aiscan" ? `The algo trades the stock you pick with the winner, ${result.winner.name} (${result.winner.settings}; ${result.winner.exits_text.toLowerCase()}), on day candles. ` + stockNote({ interval: "1d" })
         + " The scan judged it across the whole index: one stock alone can do worse." : "",
-      structure: "The algo uses this option strategy, these times and days, strikes, lots and each leg's exit rules. The whole position closes at the maximum loss you set here (filled from the backtest's Stoploss in ₹ when you set one) and at the backtest's Target in ₹; the % stoploss and target for the whole position are not carried over." + expiryNote,
+      structure: "The algo uses this option strategy, these times and days, strikes, lots, each leg's exit rules and the whole position's stoploss and target (₹ and %). The whole position closes at the maximum loss you set here (filled from the backtest's Stoploss in ₹ when you set one)." + expiryNote,
       options: kind === "options" ? `The algo buys ${body.side === "both" ? "calls while the strategy says buy and puts once it says sell: that is two algos, one for calls and one for puts" : body.side}`
-        + ` on ${body.underlying}, ${Number(body.moneyness) ? `${Math.abs(body.moneyness)} strike(s) ${body.moneyness > 0 ? "in" : "out of"} the money` : "at the money"}, ${body.lots} lot(s), when ${strategyName(body.strategy)} on the index's day candles says so (read at 09:20), with this stoploss and target on the premium. The algo sells at the exit time on expiry day at the latest. It closes everything at the maximum loss you set here.` + expiryNote : "",
-      futures: "The algo holds the near-month future while this strategy says so, on day candles. It closes everything at the maximum loss you set here.",
+        + ` on ${body.underlying}, ${Number(body.moneyness) ? `${Math.abs(body.moneyness)} strike(s) ${body.moneyness > 0 ? "in" : "out of"} the money` : "at the money"}, ${body.lots} lot(s), when ${strategyName(body.strategy)} on the index's day candles says so (read at 09:20), with this stoploss and target on the premium, and the backtest's target in ₹. The algo sells at the exit time on expiry day at the latest. It closes everything at the maximum loss you set here (filled from the backtest's maximum loss in ₹ when you set one).` + expiryNote : "",
+      futures: "The algo holds the near-month future while this strategy says so, on day candles, with this stoploss and target in % of the price and the backtest's target in ₹. It closes everything at the maximum loss you set here (filled from the backtest's maximum loss in ₹ when you set one).",
     };
     $("#bt-deploy-what").textContent = notes[kind] + tail;
   }
@@ -818,7 +819,7 @@
           expiry_kind: body.expiry_kind, ...readExpiryPick($("#bt-deploy-expiry")), schedule: body.mode, entry_time: body.entry_time, exit_time: body.exit_time,
           exit_days_before: body.exit_days_before, min_days: body.min_days, strategy: body.strategy, weekdays: body.weekdays, k: body.k, w: body.w,
           legs: body.legs, lots: body.lots, leg_exits: body.leg_exits, leg_scope: body.leg_scope, max_loss: maxLoss, target: Number(body.target_rs || 0),
-          margin_pct: body.margin_pct, mode, steps: body.steps, adds: body.adds } });
+          stop_pct: Number(body.stop_pct || 0), target_pct: Number(body.target_pct || 0), margin_pct: body.margin_pct, mode, steps: body.steps, adds: body.adds } });
         made.push(name); await refreshFnoAlgos();
       } else if (kind === "options") {
         // Bought calls lean bullish (on while the strategy is long); bought puts bearish (on once it has turned flat),
@@ -831,7 +832,8 @@
             underlying: body.underlying, expiry_kind: optionsExpiryKind(body.underlying), ...readExpiryPick($("#bt-deploy-expiry")),
             schedule: "signal", strategy: body.strategy, strategy_params: body.strategy_params, entry_time: "09:20", exit_time: "15:15",
             min_days: body.min_days, lots: body.lots, leg_scope: "bought",
-            leg_exits: { unit: "pct", stop_loss: Number(body.stop_pct || 0), target: Number(body.target_pct || 0) }, max_loss: maxLoss, target: 0, mode,
+            leg_exits: { unit: "pct", stop_loss: Number(body.stop_pct || 0), target: Number(body.target_pct || 0) }, max_loss: maxLoss,
+            target: Number(body.target_rs || 0), mode,
             steps: optionSteps(body.steps, result.lot_size), adds: optionAdds(body.adds, result.lot_size) } });
           made.push(each);
         }
@@ -839,7 +841,8 @@
       } else if (kind === "futures") {
         await api("/fno-algos", { method: "POST", body: { name, kind: "futures", direction: body.direction, underlying: body.underlying,
           expiry_kind: "monthly", schedule: "signal", strategy: body.strategy, strategy_params: body.strategy_params, lots: body.lots,
-          max_loss: maxLoss, target: 0, margin_pct: body.margin_pct, mode, steps: body.steps, adds: body.adds } });
+          max_loss: maxLoss, target: Number(body.target_rs || 0), stop_pct: Number(body.stop_pct || 0), target_pct: Number(body.target_pct || 0),
+          margin_pct: body.margin_pct, mode, steps: body.steps, adds: body.adds } });
         made.push(name); await refreshFnoAlgos();
       }
       const tab = ["stock", "optimise", "aiscan"].includes(kind) ? "stocks" : "fno";
@@ -1275,6 +1278,7 @@
     $$("input[name=analyst]", form).forEach((box) => { box.checked = s.analysts.includes(box.value); });
     form.kill_switch.checked = s.kill_switch; form.live_enabled.checked = s.live_enabled; form.fno_naked_live.checked = s.fno_naked_live; form.require_stoploss.checked = s.require_stoploss;
     form.charts_enabled.checked = s.charts_enabled; form.enforce_trade_window.checked = s.enforce_trade_window;
+    form.ticker_show.checked = s.ticker_show; fillTickerPicker();
     form.chart_yahoo.checked = s.chart_source === "kite_then_yahoo";
     form.alerts_enabled.checked = s.alerts_enabled; form.telegram_chat_id.value = s.telegram_chat_id; form.telegram_token.value = "";
     $("#tg-saved").textContent = s.api_keys.TELEGRAM_BOT_TOKEN ? `(saved ${s.api_keys.TELEGRAM_BOT_TOKEN})` : "(not set)";
@@ -1347,6 +1351,9 @@
     NUMERIC.forEach((k) => { changes[k] = Number(form[k].value); });
     TEXT.forEach((k) => { changes[k] = form[k].value; });
     TIMES.forEach((k) => { changes[k] = form[k].value; });
+    changes.ticker_show = form.ticker_show.checked;
+    const strip = chosenTickerIndices();
+    if (strip) changes.ticker_indices = strip;
     changes.broker = form.broker.value;
     changes.kite_connect = { api_key: form.kc_api_key.value.trim() };
     if (form.kc_api_secret.value.trim()) changes.kite_connect.api_secret = form.kc_api_secret.value.trim();
@@ -1363,7 +1370,7 @@
     busy(button, true, "Saving…");
     try {
       await api("/settings", { method: "PUT", body: changes });
-      await loadState(); fillSettings(); applyChartsSetting();
+      await loadState(); fillSettings(); applyChartsSetting(); tkLoad();
       $("#settings-msg").textContent = state.app.llm_problem ? "Saved. " + state.app.llm_problem : "Saved.";
     } catch (err) { showError("#settings-error", err); }
     busy(button, false);
@@ -1537,15 +1544,16 @@
     if (a.kind === "structure") { form.schedule.value = a.schedule; fire(form.schedule); }
     if (a.strategy) { form.strategy.value = a.strategy; fire(form.strategy); }
     Object.entries(a.params || {}).forEach(([k, v]) => { const input = form.elements["p_" + k]; if (input) input.value = v; });
-    ["entry_time", "exit_time", "exit_days_before", "min_days", "k", "w", "lots", "max_loss", "target", "mode", "limit_buffer_pct", "margin_pct", "leg_scope"]
+    ["entry_time", "exit_time", "exit_days_before", "min_days", "k", "w", "lots", "max_loss", "target", "stop_pct", "target_pct", "mode", "limit_buffer_pct", "margin_pct", "leg_scope"]
       .forEach((key) => { if (a[key] != null && form.elements[key]) form.elements[key].value = a[key]; });
     $$("input[name=fwd]", form).forEach((c) => { c.checked = (a.weekdays || []).includes(Number(c.value)); });
     $("#fno-exits").load(a.leg_exits || { unit: "pct", stop_loss: a.leg_sl_pct || 0 });
     $("#fno-steps").load(a.steps);
     $("#fno-adds").load(a.adds);
-    const note = a.book ? `“${a.name}” has open legs, so only the maximum loss, the target, each leg's exit rules, the profit steps, the adds and the limit buffer can change. Exit, or clear the legs, to change the rest.`
+    ["stop_pct", "target_pct"].forEach((key) => { form.elements[key].value = a[key] || 0; });
+    const note = a.book ? `“${a.name}” has open legs, so only the whole position's stoploss and target, each leg's exit rules, the profit steps, the adds and the limit buffer can change. Exit, or clear the legs, to change the rest.`
       : `Editing “${a.name}”. ${a.enabled ? "It keeps running with the new settings." : "It stays stopped."} Changing Paper/Live stops it.`;
-    beginAlgoEdit("fno", a, note, a.book ? ["max_loss", "target", "limit_buffer_pct", "leg_scope", "exits", "steps", "adds"] : null);
+    beginAlgoEdit("fno", a, note, a.book ? ["max_loss", "target", "stop_pct", "target_pct", "limit_buffer_pct", "leg_scope", "exits", "steps", "adds"] : null);
     fnoLegs.lock(Boolean(a.book));                     // open legs cannot change; Add leg and Remove are off too
   }
 
@@ -1785,7 +1793,7 @@
       exit_days_before: num("exit_days_before"), min_days: num("min_days"), strategy: form.strategy.value, strategy_params: params,
       weekdays: $$("input[name=fwd]", form).filter((c) => c.checked).map((c) => Number(c.value)),
       k: num("k"), w: num("w"), lots: num("lots"), leg_exits: $("#fno-exits").read(), leg_scope: form.leg_scope.value, max_loss: num("max_loss"), target: num("target"),
-      limit_buffer_pct: num("limit_buffer_pct"), margin_pct: num("margin_pct"), mode: form.mode.value, steps: $("#fno-steps").read(), adds: $("#fno-adds").read(),
+      stop_pct: num("stop_pct"), target_pct: num("target_pct"), limit_buffer_pct: num("limit_buffer_pct"), margin_pct: num("margin_pct"), mode: form.mode.value, steps: $("#fno-steps").read(), adds: $("#fno-adds").read(),
       ...(form.kind.value === "structure" && fnoLegs ? { legs: fnoLegs.own() || null } : {}),
       ...(form.kind.value === "structure" && form.structure.value === "custom" ? { bias: form.bias.value || null } : {}),
       ...(form.kind.value === "futures" ? { expiry: null, expiry_ahead: 0 } : readExpiryPick(form.expiry_pick)) };
@@ -1815,6 +1823,8 @@
       if ($("#fno-steps").kind !== (futures ? "futures" : "structure")) $("#fno-steps").setKind(futures ? "futures" : "structure");
       if ($("#fno-adds").kind !== (futures ? "futures" : "structure")) $("#fno-adds").setKind(futures ? "futures" : "structure");
       $$(".fno-futures", form).forEach((el) => { el.hidden = !futures; });
+      $$("[data-pct-of]", form).forEach((el) => { el.textContent = futures ? "% of price" : "% of premium"; });
+      form.stop_pct.max = futures ? 50 : 1000; form.stop_pct.step = futures ? 0.1 : 5; form.target_pct.step = futures ? 0.1 : 5;
       $$(".fno-signal", form).forEach((el) => { el.hidden = schedule !== "signal"; });
       $$(".fno-positional", form).forEach((el) => { el.hidden = schedule !== "positional"; });
       $$(".fno-days", form).forEach((el) => { el.hidden = schedule === "signal"; });
@@ -3453,7 +3463,7 @@
       const body = { underlying: form.underlying.value, start: form.start.value, end: form.end.value, interval: form.interval.value, strategy: form.strategy.value,
         strategy_params: strategyParams, direction: form.direction.value, lots: Number(form.lots.value), margin_pct: Number(form.margin_pct.value),
         stop_pct: Number(form.stop_pct.value || 0), target_pct: Number(form.target_pct.value || 0), slippage_pct: Number(form.slippage_pct.value),
-        carry_pct: Number(form.carry_pct.value), capital: Number(form.capital.value), steps: $("#fbt-steps").read(),
+        stop_rs: Number(form.stop_rs.value || 0), target_rs: Number(form.target_rs.value || 0), carry_pct: Number(form.carry_pct.value), capital: Number(form.capital.value), steps: $("#fbt-steps").read(),
         adds: $("#fbt-adds").read() };
       try { const r = await api("/backtest/futures", { method: "POST", body }); $("#bt-futures").append($("#bt-result")); renderBacktest(r); offerDeploy("futures", body, r); }
       catch (err) { showError("#fbt-error", err); }
@@ -3954,7 +3964,7 @@
         strategy_params: strategyParams, side: form.side.value, moneyness: Number(form.moneyness.value), lots: Number(form.lots.value),
         min_days: Number(form.min_days.value), expiry_weekday: Number(form.expiry_weekday.value), stop_pct: Number(form.stop_pct.value || 0),
         target_pct: Number(form.target_pct.value || 0), iv_scale: Number(form.iv_scale.value), slippage_pct: Number(form.slippage_pct.value), capital: Number(form.capital.value),
-        steps: $("#obt-steps").read(), adds: $("#obt-adds").read() };
+        stop_rs: Number(form.stop_rs.value || 0), target_rs: Number(form.target_rs.value || 0), steps: $("#obt-steps").read(), adds: $("#obt-adds").read() };
       try { const r = await api("/backtest/options", { method: "POST", body }); $("#bt-options").append($("#bt-result")); renderBacktest(r); offerDeploy("options", body, r); }
       catch (err) { showError("#obt-error", err); }
       busy(button, false);
@@ -5069,6 +5079,98 @@
       h("p", { class: "hint", text: "Random orders: the closed trades are drawn again at random, with repeats, keeping each trade's rupee result. It shows how much of the result depends on the order the trades happened to come in. It cannot show what the strategy would do in a market unlike this period." }));
   }
 
+  // -- index strip along the top of every page ----------------------------------------------------------------
+
+  const tk = { ids: "", timer: null, busy: false };
+  const tkNum = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const TK_LABEL = { live: "Live", stale: "Delayed", closed: "Market closed", offline: "Offline · connect your broker" };
+  const tkTitle = (st, broker) => ({
+    live: `Live index values from ${broker}.`,
+    stale: `${broker} has not answered for a while. These values may be old.`,
+    closed: "The market is closed. These are the last values.",
+    offline: "Your broker is not connected. These are the last daily closes. Connect it on the Trade page for live values.",
+  })[st] || "";
+  function tkSetHeight() {
+    const bar = $("#ticker");
+    document.body.style.setProperty("--tk-h", bar.hidden ? "0px" : bar.offsetHeight + "px");
+  }
+  function tkOpen(item) {
+    if (!item.chart || !state.app.settings.charts_enabled) return;
+    setChartView("live"); selectTab("charts");
+    chartView("live").then((mod) => mod.openSymbol(item.chart)).catch(() => { /* shown in the chart's place */ });
+  }
+  function tkItem(item) {
+    const el = h("button", { type: "button", class: "tk-item", "data-id": item.id }, h("b", { text: item.label }), h("span", { class: "v" }), h("span", { class: "c" }));
+    el.addEventListener("click", () => tkOpen(item));
+    return el;
+  }
+  function tkFill(el, item) {
+    const known = item.change != null, up = known && item.change >= 0;
+    el.classList.toggle("up", known && up); el.classList.toggle("down", known && !up);
+    el.classList.toggle("old", !item.kite);
+    el.querySelector(".v").textContent = item.value == null ? "–" : tkNum.format(item.value);
+    el.querySelector(".c").textContent = known ? `${up ? "▲" : "▼"} ${tkNum.format(Math.abs(item.change))} (${Math.abs(item.change_pct).toFixed(2)}%)` : "";
+    el.title = `${item.label}: open its chart`;
+  }
+  function tkRender(d) {
+    const bar = $("#ticker"), run = $("#tk-run");
+    const show = d.state !== "hidden" && d.items.length > 0;
+    bar.hidden = !show; document.body.classList.toggle("has-ticker", show);
+    if (!show) { tk.ids = ""; tkSetHeight(); return; }
+    bar.dataset.state = d.state;
+    $("#tk-label").textContent = TK_LABEL[d.state] + (d.state === "stale" && d.as_of ? " · " + d.as_of : "");
+    $("#tk-state").title = tkTitle(d.state, d.broker || "your broker");
+    const ids = d.items.map((i) => i.id).join(",");
+    if (ids !== tk.ids) {           // a new list: build it twice so the scroll loops without a gap
+      tk.ids = ids;
+      run.replaceChildren(...d.items.map(tkItem), ...d.items.map((i) => { const el = tkItem(i); el.tabIndex = -1; el.setAttribute("aria-hidden", "true"); el.classList.add("copy"); return el; }));
+    }
+    const byId = Object.fromEntries(d.items.map((i) => [i.id, i]));
+    $$(".tk-item", run).forEach((el) => tkFill(el, byId[el.dataset.id]));
+    // When everything fits there is nothing to scroll. Otherwise it moves about 45 pixels a second.
+    $$(".tk-item.copy", run).forEach((el) => { el.hidden = false; });
+    const half = run.scrollWidth / 2, still = half <= $(".tk-track", bar).clientWidth;
+    run.classList.toggle("still", still);
+    $$(".tk-item.copy", run).forEach((el) => { el.hidden = still; });
+    run.style.setProperty("--tk-dur", Math.max(20, Math.round(half / 45)) + "s");
+    tkSetHeight();
+  }
+  async function tkLoad() {
+    clearTimeout(tk.timer);
+    let every = 60;
+    if (!document.hidden && !tk.busy) {
+      tk.busy = true;
+      try { const d = await api("/ticker"); tkRender(d); every = d.every || 60; }
+      catch { /* the strip keeps its last values and tries again */ }
+      tk.busy = false;
+    }
+    tk.timer = setTimeout(tkLoad, every * 1000);
+  }
+  function startTicker() {
+    tkLoad();
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) tkLoad(); });
+    let wait = null;
+    window.addEventListener("resize", () => { clearTimeout(wait); wait = setTimeout(() => { if (tk.ids) { tk.ids = ""; tkLoad(); } }, 300); });
+  }
+  async function fillTickerPicker() {
+    const box = $("#tk-pick");
+    try {
+      const d = await api("/ticker/choices");
+      const chosen = new Set(d.chosen), groups = {};
+      d.choices.forEach((c) => { (groups[c.group] = groups[c.group] || []).push(c); });
+      box.dataset.order = d.chosen.join(",");
+      box.replaceChildren(...Object.entries(groups).flatMap(([group, list]) => [h("h4", { text: group }),
+        ...list.map((c) => h("label", { class: "check" }, h("input", { type: "checkbox", value: c.id, checked: chosen.has(c.id) }), " " + c.label))]));
+    } catch (err) { box.replaceChildren(h("div", { class: "error", text: err.message })); }
+  }
+  function chosenTickerIndices() {
+    const box = $("#tk-pick");
+    if (!$("input", box)) return null;                 // the list did not load: leave the setting as it is
+    const ticked = $$("input:checked", box).map((b) => b.value);
+    const before = (box.dataset.order || "").split(",").filter((id) => ticked.includes(id));
+    return [...before, ...ticked.filter((id) => !before.includes(id))];      // newly ticked go at the end
+  }
+
   // -- start -------------------------------------------------------------------
 
   (async () => {
@@ -5100,7 +5202,7 @@
     bta.start.value = iso(month); bta.end.value = today; bta.end.max = today;
     $("#form-order").product.value = state.app.settings.product;
     $("#form-order").risk_pct.value = state.app.settings.risk_per_trade_pct;
-    fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startPairs(); startSignalTest(); startPriceAlerts(); startAiScan(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startMarginCalc(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); startMarketTools(); renderTheme();
+    fillSettings(); setMode("paper"); startSectors(); startCharts(); startSecurity(); startOptimiser(); startPairs(); startSignalTest(); startPriceAlerts(); startAiScan(); startOptionsBacktest(); startFuturesBacktest(); startStructures(); startPortfolios(); startScreens(); startOptionChain(); startMarginCalc(); startAlgos(); startFnoAlgos(); startBuilder(); startScanner(); startGtt(); startMarketTools(); renderTheme(); startTicker();
     syncSharedDates(); showBacktestPane($("#bt-what").value);
     if (state.app.hosted) { $("#logout").hidden = false; $("#logout-2").hidden = false; $("#logout").title = "Signed in as " + state.app.user; }
     const wanted = location.hash.slice(1);        // an app shortcut or a reload opens the same section

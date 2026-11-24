@@ -97,6 +97,21 @@ The bar at the top is always visible:
 | **Kite: …** | *not connected*, *read-only* (prices and portfolio only) or *trading* (can place orders). |
 | **Paper / Live** | Which account orders go to. Live turns red. |
 
+### Index strip
+
+A thin strip above everything, on every page, scrolls the main index values: NIFTY 50, SENSEX, BANK NIFTY, FIN NIFTY, NIFTY NEXT 50, MIDCAP 100, SMALLCAP 100 and INDIA VIX, each with its change since the previous close (green up, red down). Hover over it to stop it; press an index to open its live chart.
+
+The badge on its left says where the values come from:
+
+| Badge | Meaning |
+|---|---|
+| **Live** | From your broker, refreshed every 15 seconds while the market is open. |
+| **Delayed · 11:42** | Your broker has not answered for over two minutes; the values are from that time. |
+| **Market closed** | The last values of the day, checked every 5 minutes. |
+| **Offline · connect your broker** | No broker is connected. The values (grey) are the last daily closes; INDIA VIX shows a dash. |
+
+Choose which indices it shows, or switch it off, in Settings under **Index strip**. Newly ticked indices go at the end. All the strip's values come in one quote call, made by the desk however many pages are open.
+
 ### Install it as an app
 
 TradeSetu can be installed on a phone, tablet or computer. It then opens from the home screen or desktop in its own window, without the browser's address bar.
@@ -1053,7 +1068,9 @@ The backtest result shows **With adds** and **Without adds** side by side, and t
 
 Under every stock, option strategy, buy-index-options, index futures, **Find the best settings** and **AI scan** result there is a **Create algo** panel. Give it a name, a **Budget** (stocks) or **Maximum loss a day** (options and futures), choose **Paper** or **Live**, and press **Create algo**. It copies the stock, candle, rules and exit rules you just tested. With **My own rules**, the rules are saved as a strategy under the algo's name. The algo is created stopped; start it on the Algos tab.
 
-The algo also gets the trade type (intraday or positional) and the holding limit. Two differences from the backtest: an intraday algo uses the trade window in **Settings**, not the times typed for the test (a positional algo on minute or hourly candles buys any time in market hours, or inside the Settings window when Settings enforces it), and an option strategy algo stops on **Maximum loss (₹)** instead of the whole-position % stoploss.
+The algo also gets the trade type (intraday or positional) and the holding limit. Two differences from the backtest: an intraday algo uses the trade window in **Settings**, not the times typed for the test (a positional algo on minute or hourly candles buys any time in market hours, or inside the Settings window when Settings enforces it), and the algo's **Maximum loss** is the one you type in the panel (filled from the backtest's maximum loss or Stoploss in ₹ when you set one). Every other exit carries over: each leg's rules, the whole position's ₹ and % stoploss and target, the profit steps and the adds.
+
+**What a backtest cannot test.** Some algo controls exist only with real orders, so no backtest pretends to have them: the kill switch and the daily loss limit in Settings, **Exit** and **Close all**, the Supervisor, the Kite login each morning, the limit price buffer and the re-pricing of unfilled orders, freeze-quantity slicing, Zerodha's own margin figure (the backtest uses its estimate), the naked-shorts switch, and **Which expiry → Only this expiry** (one future date has no history; the backtest counts expiries ahead instead). A day-candle algo also enters at its entry time or when the trade window opens, not at 09:15.
 
 - **Find the best settings**: the algo uses the setting the latest walk-forward window chose (the best on the whole period if no window chose one), with the same stock, candle and stoploss.
 - **AI scan**: pick one stock of the index; the algo runs the winning strategy, its settings and its stoploss and target on day candles. The scan judged the winner across the whole index, so one stock alone can do worse.
@@ -1221,7 +1238,9 @@ How it works: every holding period, all stocks are ranked by the signal using on
 
 ![Options backtest](img/31-options-backtest.png)
 
-Settings: index, dates, candle, signal strategy, **Buy** (calls / puts / both), **Strike** (ITM 1, ATM, OTM 1 or 2), lots, minimum days to expiry (rolls to the next expiry if closer), expiry weekday, stoploss and target as % of premium, **Volatility × VIX**, slippage and capital.
+Settings: index, dates, candle, signal strategy, **Buy** (calls / puts / both), **Strike** (ITM 1, ATM, OTM 1 or 2), lots, minimum days to expiry (rolls to the next expiry if closer), expiry weekday, stoploss and target as % of premium, **Maximum loss (₹)** and **Target profit (₹)** for the position (with the charges paid so far, as an F&O algo counts them), **Volatility × VIX**, slippage and capital.
+
+The stoploss, target, maximum loss and target profit are checked on the premium inside each candle (from the index's open, low and high), as the algo watches the live price: they fill at their level, or at the open when the candle opens past it (a gap, or a night's time decay). When one candle reaches both, the stoploss is taken. Profit steps and adds are checked at the candle's close.
 
 **It is simulated, not replayed.** Kite keeps no candles for expired option contracts, so each premium is priced with Black-Scholes from the index level and India VIX (× your multiplier), with time decay to expiry. Real premiums differ: skew (OTM puts are dearer), sudden IV crush after events, wide spreads in far strikes. Positions left at expiry settle at intrinsic value. Entries the capital cannot afford are skipped and counted in the note. Use it to compare ideas, not to forecast profit. For real premiums, paper trade from the option chain.
 
@@ -1232,7 +1251,7 @@ Settings: index, dates, candle, signal strategy, **Buy** (calls / puts / both), 
 ![Index futures backtest](img/39-futures-backtest.png)
 
 - **Direction**: *Buy only*; *Sell only* (sell while the strategy is out, buy back when it says buy); *Buy and sell* (always in: bought on the signal, sold otherwise). Nothing is shorted before the strategy's first signal.
-- **Lots**, **Margin %** (SPAN + exposure for index futures is about 11-14% of the contract value; an entry the equity cannot margin is skipped and counted), **Stoploss / Target %** of the futures price (checked against each candle's high and low; if both are inside one candle the stop is assumed first), **Slippage %**, **Cost of carry % a year**.
+- **Lots**, **Margin %** (SPAN + exposure for index futures is about 11-14% of the contract value; an entry the equity cannot margin is skipped and counted), **Stoploss / Target %** of the futures price (checked against each candle's high and low; if both are inside one candle the stop is assumed first), **Maximum loss (₹)** and **Target profit (₹)** for the whole position (with the charges paid so far, roll costs included, as an F&O algo counts them; checked the same way, and the stoploss reached first wins), **Slippage %**, **Cost of carry % a year**.
 - **Prices.** With Kite logged in, day candles are Kite's continuous futures. At every monthly expiry the series jumps to the next contract. That jump is not profit, so the desk takes out an estimate of the basis (cost of carry × days to the next expiry) and charges a round trip as if you rolled. Intraday runs use the live contract's own candles when they reach back far enough, otherwise the index as a proxy. Without Kite the index from Yahoo stands in, and the note says so.
 - **Charges**: Zerodha futures schedule (0.03% or ₹20 brokerage, 0.05% STT on sells from 1 April 2026 (0.02% before), exchange fees, stamp duty, GST).
 - Returns are on your capital. Futures are leveraged: one NIFTY lot controls about ₹16 lakh, so a 1% move is about ₹16,000. Buy & hold is the index without leverage.
@@ -1307,7 +1326,7 @@ The model prices every leg with Black-Scholes at one volatility. For figures on 
 - **Re-enter** sells that leg again, up to 5 times: when its premium comes back to the price it was first sold at, or straight away at the strike the entry rule picks then.
 - A **bought leg** that covers a sold leg is never closed alone. If its exit rule fires while a sold leg is still open, the whole position is closed, so you are never left with an uncovered sold option.
 
-**Exit rules for the whole position**: **Stoploss (₹)** and **Target (₹)** close every leg when the whole position's profit or loss (legs already closed plus open legs at the candle's close, before charges) reaches that many rupees; **Stoploss** and **Target, %** do the same as a % of the premium received (or paid). 0 is off; whichever is reached first closes the position. On day candles the check is at each day's close, so a loss can run past the stop on a gap day. Run this as an algo fills its maximum loss and target from the rupee figures. **Put skew** raises the volatility of lower strikes (puts below the money are dearer in real markets; 0 = none). A calendar or diagonal sells its later-expiry leg back at the model price when the near expiry settles.
+**Exit rules for the whole position**: **Stoploss (₹)** and **Target (₹)** close every leg when the whole position's profit or loss (legs already closed plus open legs at the candle's close, before charges) reaches that many rupees; **Stoploss** and **Target, %** do the same as a % of the premium received (or paid). 0 is off; whichever is reached first closes the position. They are checked inside each candle, as the algo watches the live price: the open legs are priced along the index's move from the candle's open to its low and high, and the position closes at the prices where the profit or loss first reaches the level (at the open's prices when it opened past it). A target waits for the candle's close while a profit step is still to be taken. After a stoploss or target, a strategy-driven (signal) position opens again on the next candle at the earliest, as the algo waits for the next day. Run this as an algo carries all four over. **Put skew** raises the volatility of lower strikes (puts below the money are dearer in real markets; 0 = none). A calendar or diagonal sells its later-expiry leg back at the model price when the near expiry settles.
 
 **Modelled premiums are a simulation.** Kite keeps no candles for expired options, so without stored history every premium is computed (Black-Scholes) from the index's real candles and India VIX. Real option sellers face things the model does not: volatility spikes and crush around events, skew, wide spreads in far strikes, and expiry-day gamma. Selling options wins often and loses big. The worst day matters more than the win rate, so look at **Max drawdown** first.
 
@@ -1654,6 +1673,7 @@ Strikes are counted from the at-the-money strike when the algo enters: **k** for
 |---|---|
 | **Maximum loss (₹)** | Required for live. When the position's P&L, with charges, reaches minus this amount, every leg is closed and the algo takes no new entry that day. |
 | **Target (₹)** | Closes everything at this profit. |
+| **Stoploss / Target, %** | The backtests' whole-position % exits. An option strategy's are a % of the premium received or paid at entry (its profit and loss before charges, legs closed plus open, as the backtest counts it); a future's are a % move of its price from the entry. 0 is off. After an add, the whole position closes at the larger of the maximum loss and the loss the % stoploss planned. |
 | **Exit rules for each leg** | The same box as the backtest, on each leg's premium, for *Sold legs*, *Bought legs* or *Every leg*. Example: sold at ₹100 with a 30% stoploss, the leg is bought back at ₹130 and the other legs stay. With re-entry, it is sold again when the premium comes back to ₹100. A bought hedge whose exit fires while a sold leg is open closes the whole position. When every leg has exited on its own rules, the algo is done for the day. |
 | **Exit** button | The algo's own kill switch: closes every leg now and stops. Works with the global kill switch on. |
 | **Kill switch** (Settings) | Blocks new entries; exits still go through. |

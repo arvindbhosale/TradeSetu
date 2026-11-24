@@ -44,6 +44,13 @@ and (intraday) before the exit time. After the first add, the whole position clo
 the first entry's planned loss (its ₹ or % stoploss), or to zero without one or with ``cost``
 (``scalein.floor_after``).
 
+The whole position's stop and target (``stop_rs``, ``stop_pct``, ``target_rs``, ``target_pct``, and the stoploss
+moved after adding) are watched inside each candle, as the live algo watches prices: the open legs are priced along
+the index's move from the open to the low and high (the model's move, anchored to each leg's price at the close) and
+the position closes where its profit first reaches the level, or at the open's prices when it opened past it. The
+target waits for the close while a profit step is still to come. After a stop or target, a signal position does not
+open again on the same candle (the algo takes no new entry that day).
+
 ``analyse`` works out one structure now, without a backtest: premiums, the
 payoff at the near expiry and today, breakevens, maximum profit and loss,
 chance of profit, Greeks and margin.
@@ -579,6 +586,7 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
         want = np.where((want == 0) & started, 1, 0)
 
     cash, total_charges, in_market, skipped = capital, 0.0, 0, 0
+    inside = None           # (index level, {leg: price}) where the whole position's stop or target was reached
     trades, equity = [], np.empty(len(bars))
     book = None             # {"legs": [...], "expiry", "opened_i", "margin", "net_open", "qty": lots open × lot size}
     plan = steps.lots() if steps.active else []
@@ -796,10 +804,19 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                 add_leg(i, g, spot, stamp)
 
     def close_book(i, spot, stamp, reason, at_expiry=False):
-        nonlocal book
+        nonlocal book, inside
+        if inside is not None and not at_expiry:
+            spot, fills = inside                         # the whole position's stop or target, inside the candle
+        else:
+            fills = None
+        inside = None
         for g in book["legs"]:
             if g["open"]:
-                if at_expiry and g["expiry"] > book["expiry"]:
+                if fills is not None:
+                    close_leg(g, fills[id(g)])
+                    if g["type"] != "FUT":
+                        pricer.count()
+                elif at_expiry and g["expiry"] > book["expiry"]:
                     # A later-expiry leg of a calendar or diagonal is sold back at the near expiry's close.
                     close_leg(g, pricer.price(g, spot, book["expiry"], g["expiry"]))
                     pricer.count()
@@ -876,6 +893,59 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                 reopen(g, i, stamp, min(first, level) if first <= level else level)
                 pricer.count()
 
+    def path_exit(i, stamp, base, targets: bool) -> str | None:
+        """The whole position's stoploss (and, with ``targets``, its target) reached inside the candle, as the live
+        algo watching the price would see it. The open legs are priced along the index's move from the open to the
+        candle's low and high (the model's move, anchored to each leg's price at the close); the first level the
+        profit and loss crosses closes every leg at the prices there, or at the open's when it opened past it.
+        Sets ``inside`` (the index level and the legs' prices) for ``close_book``."""
+        nonlocal inside
+        down = [(lvl, why) for lvl, why in ((-stop_rs if stop_rs else None, "stoploss in ₹"),
+                                            (-stop_pct / 100 * base if stop_pct else None, "stoploss"),
+                                            (book["floor"], "stoploss moved after adding")) if lvl is not None]
+        up = [(lvl, why) for lvl, why in ((target_rs if target_rs else None, "target in ₹"),
+                                          (target_pct / 100 * base if target_pct else None, "target")) if lvl is not None]
+        if not targets:
+            up = []
+        if not down and not up:
+            return None
+        legs_open = [g for g in book["legs"] if g["open"]]
+        anchor = {id(g): pricer.price(g, closes[i], stamp, g["expiry"]) for g in legs_open}
+        model = {id(g): _Pricer.price(pricer, g, closes[i], stamp, g["expiry"]) for g in legs_open}
+
+        def prices_at(x):
+            return {id(g): max(anchor[id(g)] + _Pricer.price(pricer, g, x, stamp, g["expiry"]) - model[id(g)],
+                               0.0 if g["type"] != "FUT" else -math.inf) for g in legs_open}
+
+        def running(x):
+            at = prices_at(x)
+            return book["realised"] + sum(g["action"] * (at[id(g)] - g["entry"]) * units(g) for g in legs_open)
+
+        start, ends = opens[i], (lows[i], highs[i])
+        at_start = running(start)
+        for levels, worse in ((down, lambda a, b: a <= b), (up, lambda a, b: a >= b)):
+            if not levels:
+                continue
+            # The first level crossed: the highest loss level on the way down, the lowest target on the way up.
+            level, why = max(levels) if levels is down else min(levels)
+            if worse(at_start, level):
+                inside = (start, prices_at(start))
+                return why
+            hit = [x for x in ends if worse(running(x), level)]
+            if not hit:
+                continue
+            far = min(hit, key=running) if levels is down else max(hit, key=running)
+            lo, hi = start, far
+            for _ in range(40):                          # the index level where the profit crosses the level
+                mid = (lo + hi) / 2
+                if worse(running(mid), level):
+                    hi = mid
+                else:
+                    lo = mid
+            inside = (hi, prices_at(hi))
+            return why
+        return None
+
     def check_stops(i, stamp):
         """Each leg's own exit rules (at the candle's worst point), then the whole position's stop and target."""
         if leg_exits.active:
@@ -907,6 +977,10 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                     g["best"] = max(g["best"], high) if side > 0 else min(g["best"], low)
         if book and (stop_pct or target_pct or stop_rs or target_rs or steps.active or book["floor"] is not None):
             base = abs(book["net_open"]) or book["margin"]
+            # Inside the candle: the stoploss always; the target once no profit step is left to take on the way up.
+            why = path_exit(i, stamp, base, targets=book["done"] >= len(plan))
+            if why:
+                return why
             running = book["realised"] + mtm(closes[i], stamp)
             if stop_rs and running <= -stop_rs:
                 return "stoploss in ₹"
@@ -939,7 +1013,7 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
         return any(g["open"] or g.get("rearm") for g in b["legs"])
 
     days_index = stamps.normalize()
-    tried_day = None
+    tried_day, stopped_i = None, None
     for i in range(len(bars)):
         stamp, spot = stamps[i], closes[i]
         if intraday:
@@ -967,15 +1041,20 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                     days_left = np.busday_count(stamp.date(), expiry_day.date())
                     if reason:
                         close_book(i, spot, stamp + pd.Timedelta(hours=15, minutes=30), reason)
+                        stopped_i = i
                     elif exit_days_before and days_left <= exit_days_before:
                         close_book(i, spot, stamp + pd.Timedelta(hours=15, minutes=30), "days before expiry")
                     elif mode == "signal" and i > 0 and not want[i - 1]:
                         close_book(i, opens[i], stamp + pd.Timedelta(hours=9, minutes=15), "signal")
                     elif not live(book):
                         close_book(i, spot, stamp + pd.Timedelta(hours=15, minutes=30), "all legs stopped")
+                        stopped_i = i
             if book is None:
                 go = (mode == "positional" and stamp.weekday() in weekdays) or (mode == "signal" and i > 0 and want[i - 1])
-                if go and not (trades and trades[-1]["exit_date"] == stamp.strftime("%Y-%m-%d") and mode == "positional"):
+                # A stop or target closes the position for the day, as the live algo does: a signal entry waits for
+                # the next candle rather than opening again at this candle's open.
+                if go and stopped_i != i \
+                        and not (trades and trades[-1]["exit_date"] == stamp.strftime("%Y-%m-%d") and mode == "positional"):
                     open_book(i, opens[i], stamp + pd.Timedelta(hours=9, minutes=15))
         if book is not None:
             in_market += 1
