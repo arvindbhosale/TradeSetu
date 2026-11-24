@@ -739,6 +739,39 @@ A live limit buy that has not filled has no stoploss yet: the desk places it whe
 
 Paper and live P&L count a short sale like any trade: it shows as *Short* in closed trades.
 
+### Replay: practise on past candles
+
+**Replay** (on the live chart's bar) cuts the chart at a past moment, hides every candle after it, and shows them one at a time. Indicators are worked out on the shown candles only, so they look exactly as they did at that moment: nothing from the future leaks into them. A replay is practice only: it never places an order, and its trades are kept apart from your paper book, live account, journal and algo results.
+
+1. Open the stock (or coin, or imported file) and candle size. Press **Replay**.
+2. Start it one of three ways:
+   - **Start date** (and for intraday candles an optional **Start time**), then **Start replay**. A date alone starts at 9:15 AM for NSE/BSE.
+   - **Pick a candle on the chart**, then tap a candle: the replay starts right after it.
+   - **Blind replay**: a random stock from your watchlist (or from 20 large NSE shares when the watchlist has none for this market) and a random date. The name, the price ticker's symbol and the dates stay hidden (the time axis reads *Day 1*, *Day 2*) until you end the replay, so a famous day cannot be traded from memory.
+3. Use the controls over the chart: **▶ Play / ❚❚ Pause**, **Next ▶** (one candle), **Next day ⏭** (to the next day's first candle), **◀ Back**, and **Speed** (½ to 10 candles a second). Keys: Space plays or pauses, the Right arrow shows the next candle, the Left arrow goes back.
+4. Change the candle size during a replay and it reloads at the same moment, keeping your practice trade. A bigger candle that was still forming at that moment is hidden until the next step, then shows in full.
+
+**Practice trades.** Under the chart: **Buy** or (NSE/BSE) **Short sell**, **At next open** or **Limit**, **Intraday** or **Delivery**, the quantity, and a stoploss and target (**Add stoploss and target on chart** puts them 1% and 2% away; drag the lines or type the prices). Press **Place practice buy**. One trade at a time. On an open trade you can move the stoploss or target, or press **Exit at next open**. A Long or Short position drawing has **Practise buy with this plan**.
+
+How practice trades fill, the same way every time so the score means something:
+
+| Situation | Fill |
+|---|---|
+| Order at next open | The next candle's open, never a price already on the chart. |
+| Limit order | When a candle trades through the price: at the open if it opens past it, else at the limit. |
+| Stoploss or target | At its price when a candle reaches it; at the open when a candle opens past it (a gap through a stoploss loses more than planned). |
+| A candle touches both | Counted as the stoploss: a candle does not say which came first. |
+| Intraday (NSE/BSE) | Squared off at 3:20 PM, or at the day's last close when the candle size has no 3:20 PM candle. No intraday order after 3:20 PM. |
+| End replay with a trade open | Closed at the last shown close. |
+
+Charges are the paper desk's (brokerage, STT and the rest for shares; 0.1% a side for crypto; none on an index, which cannot be traded). **◀ Back** goes back only to your last order or fill, so a result cannot be redone after seeing what came next.
+
+**Results.** Each closed practice trade is saved with its charges. The panel shows trades, win rate, P&L after charges and the worst drawdown. **End replay** closes the session (and reveals a blind replay's stock and dates). The Replay setup lists your last practice sessions and your score over all of them; **Delete** removes one.
+
+**Then trade it for real.** **Back to live chart** (or, after a blind replay, **Open … live chart**) opens the live chart of that stock with the same indicators. Tick **Keep my replay drawings on the live chart** to carry your lines across. Orders from there go through the normal ticket above, paper or live.
+
+**Limits.** NSE/BSE replays use your broker's history (connect and log in on the Trade tab). With Kite: intraday candles from February 2015, day candles from 2008; Kite keeps no candles for expired option contracts, so past options cannot be replayed. Crypto replays use Binance's history from 2018. Each load brings about 1,500 candles; more load when the replay reaches the end. The candles are in your browser while you replay, so blind mode is honest practice, not a test that cannot be cheated.
+
 ### Classic chart
 
 NSE/BSE candles through the desk, with the same indicators and drawing tools as the live chart.

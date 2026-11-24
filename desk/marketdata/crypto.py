@@ -121,6 +121,41 @@ class Binance:
             return rows
         raise MarketDataError("Binance did not answer: " + "; ".join(errors), self.name)
 
+    def history(self, symbol: str, timeframe: str, start: int, count: int) -> list[dict]:
+        """Up to ``count`` candles from ``start`` (UTC seconds) on, in pages of 1,000 (Binance's most per request),
+        for a chart replay. Rows are on the India clock like ``candles``."""
+        rows: list[dict] = []
+        cursor = start * 1000
+        while len(rows) < count:
+            errors, page = [], None
+            for host in BINANCE_HOSTS:
+                try:
+                    status, payload = self.get(f"{host}/api/v3/klines", {"symbol": symbol, "interval": timeframe,
+                                                                         "startTime": cursor, "limit": 1000})
+                except Exception as exc:  # noqa: BLE001 - reported, then the next host
+                    errors.append(f"{host.split('//')[1]}: {type(exc).__name__}: {str(exc)[:100]}")
+                    continue
+                if status != 200 or not isinstance(payload, list):
+                    errors.append(f"{host.split('//')[1]}: {_reason(status, payload)}")
+                    continue
+                page = payload
+                break
+            if page is None:
+                raise MarketDataError("Binance did not answer: " + "; ".join(errors)
+                                      + " Replay of crypto needs Binance's history (Coinbase is not used for it).",
+                                      self.name)
+            for item in page:
+                try:
+                    rows.append({"time": int(item[0]) // 1000 + IST_OFFSET, "open": _number(item[1]),
+                                 "high": _number(item[2]), "low": _number(item[3]), "close": _number(item[4]),
+                                 "volume": _number(item[5])})
+                except (TypeError, ValueError, IndexError):
+                    continue
+            if len(page) < 1000:
+                break
+            cursor = int(page[-1][0]) + 1
+        return rows[:count]
+
 
 def _iso(stamp: int) -> str:
     return datetime.fromtimestamp(stamp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
