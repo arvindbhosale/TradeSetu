@@ -44,6 +44,7 @@ document.addEventListener("click", function (e) {
   if (a && a.href && !a.hasAttribute("download")) { e.preventDefault(); location.href = a.href; }
 }, true);
 window.open = function (u) { if (u) location.href = new URL(u, location.href).href; return null; };
+window.__deskNativeApp = "mobile";
 "#;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -389,6 +390,12 @@ fn open_desk_window(app: &AppHandle, url: Url) {
 }
 
 fn navigation_allowed(app: &AppHandle, url: &Url) -> bool {
+    // Phones: the WebView cannot save files, so the desk hands a file over at a one-off /dl/ link and the
+    // phone's browser downloads it.
+    if cfg!(mobile) && is_desk_url(app, url) && url.path().starts_with("/dl/") {
+        open_external(app, url);
+        return false;
+    }
     if is_app_url(url) || is_desk_url(app, url) || url.scheme() == "about" || url.scheme() == "blob" || url.scheme() == "data" {
         return true;
     }

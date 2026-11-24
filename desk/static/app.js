@@ -62,9 +62,29 @@
       if (response.status === 401 && payload.signed_out) window.location.replace("/login");
       throw new Error(payload.error || `Download failed (${response.status})`);
     }
+    await saveResponse(response, fallbackName);
+  }
+
+  // Save a fetched file under the name the server gave it. In a browser and the desktop app a link to the file in
+  // memory does it. The phone app's WebView cannot save files: there the file goes back to the desk behind a
+  // one-off link for a few minutes, and the app opens that link in the phone's browser, which saves it to Downloads.
+  async function saveResponse(response, fallbackName) {
     const match = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") || "");
-    const url = URL.createObjectURL(await response.blob());
-    const link = h("a", { href: url, download: match ? match[1] : fallbackName, hidden: true });
+    const name = match ? match[1] : fallbackName;
+    const blob = await response.blob();
+    if (window.__deskNativeApp === "mobile") {
+      let handed;
+      try {
+        handed = await fetch("/api/download/handoff", { method: "POST", body: blob, headers: {
+          "X-Desk-Token": TOKEN, "Content-Type": blob.type || "application/octet-stream", "X-File-Name": name.replace(/[^\x20-\x7e]/g, "-") } });
+      } catch (err) { throw new Error("The desk is not answering. Check your connection and try again."); }
+      const payload = await handed.json().catch(() => ({}));
+      if (!handed.ok || !payload.url) throw new Error(payload.error || `Saving the file failed (${handed.status})`);
+      window.location.href = payload.url;
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const link = h("a", { href: url, download: name, hidden: true });
     document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
@@ -863,6 +883,8 @@
   $("#bt-deploy-go").addEventListener("click", createDeployedAlgo);
 
   function renderBacktest(r) {
+    lastBacktest = r;
+    showError("#bt-export-error", null);
     $("#bt-result").hidden = false;
     placeDeploy($("#bt-result")).hidden = true;
     const m = r.metrics;
@@ -920,6 +942,33 @@
         { label: "Average entry ₹", num: true, get: (t) => (t.average_price == null ? "–" : inr2.format(t.average_price)) }] : []),
     ], r.trades.slice().reverse(), "The strategy made no trades in this period."));
   }
+
+  // The result on screen as an Excel workbook: every tile, trade, month and chart, plus the trust checks as worded here.
+  let lastBacktest = null;
+  async function exportBacktest() {
+    const button = $("#bt-export");
+    showError("#bt-export-error", null);
+    if (!lastBacktest) return;
+    const checks = $$("#bt-checks li").map((li) => ({ tone: li.classList.contains("warn") ? "warn" : li.classList.contains("ok") ? "ok" : "", text: li.textContent }));
+    const howTo = $("#bt-result > .panel.note");
+    const notes = howTo && !lastBacktest.portfolio ? [howTo.textContent.trim()] : [];
+    busy(button, true, "Making the file…");
+    try {
+      let response;
+      try {
+        response = await fetch("/api/backtest/export.xlsx", { method: "POST", headers: { "X-Desk-Token": TOKEN, "Content-Type": "application/json" },
+          body: JSON.stringify({ result: lastBacktest, checks, notes }) });
+      } catch (err) { throw new Error("The desk is not answering. Check your connection and try again."); }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        if (response.status === 401 && payload.signed_out) window.location.replace("/login");
+        throw new Error(payload.error || `Export failed (${response.status})`);
+      }
+      await saveResponse(response, "backtest.xlsx");
+    } catch (err) { showError("#bt-export-error", err); }
+    busy(button, false);
+  }
+  $("#bt-export").addEventListener("click", exportBacktest);
 
   // With profit steps the same backtest is also run with one exit: did the steps help?
   function renderStepsCompare(r) {

@@ -18,7 +18,7 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const request = event.request, url = new URL(request.url);
   if (request.method !== "GET" || url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/kite/")) return;      // always live
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/kite/") || url.pathname.startsWith("/dl/")) return;  // always live
   if (request.mode === "navigate") {
     // Pages carry the session; fetch them fresh and fall back to a plain offline note.
     event.respondWith(fetch(request).catch(() => caches.match("/static/offline.html")));

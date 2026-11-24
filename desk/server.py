@@ -106,6 +106,10 @@ from .tradenotes import MISTAKES, TradeNotes
 logger = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"
 MAX_GRID_CELLS = 60
+XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+HANDOFF_SECONDS = 300            # a phone download link lasts five minutes
+HANDOFF_MAX_BYTES = 25 * 1024 * 1024
+HANDOFF_MAX_FILES = 20
 
 
 def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
@@ -268,9 +272,11 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             request.state.session = session
             # /broker/callback: a broker's sign-in page redirecting back. No session cookie comes with a
             # cross-site redirect; the one-time OAuth state it must carry is the check instead.
+            # /dl/<token>: a file handed to the phone's own browser to save (the app's WebView cannot); the
+            # long random token, made by a signed-in request a few minutes ago, is the check.
             public = path in ("/login", "/api/login", "/api/passkey/options", "/api/passkey/login", "/sw.js",
                               "/broker/callback") \
-                or path.startswith(("/static/", "/kite/"))
+                or path.startswith(("/static/", "/kite/", "/dl/"))
             if not session and not public:
                 if path.startswith("/api/"):
                     return JSONResponse({"error": "Sign in again.", "signed_out": True}, status_code=401)
@@ -3051,8 +3057,55 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         rows, _ = _export_rows(kind, mode, fy)
         from . import xlsxexport
         data = xlsxexport.workbook(kind, rows, mode, fy=fy)
-        return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        return Response(data, media_type=XLSX_TYPE,
                         headers={"Content-Disposition": f'attachment; filename="{_export_name(kind, mode, fy, "xlsx")}"'})
+
+    # -- backtest workbook and file hand-off -------------------------------------------------------------
+
+    @app.post("/api/backtest/export.xlsx")
+    def backtest_export(payload: dict):
+        """The result on the Backtest page as an Excel workbook, with charts. The page sends back the result it
+        shows (and its "Can you trust this result?" lines), so the file matches the screen exactly."""
+        from . import btexport
+        payload = body_of(payload)
+        result = payload.get("result")
+        checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
+        notes = payload.get("notes") if isinstance(payload.get("notes"), list) else []
+        data_ = btexport.workbook(result, checks=checks, notes=notes, app_name=APP_NAME)
+        return Response(data_, media_type=XLSX_TYPE,
+                        headers={"Content-Disposition": f'attachment; filename="{btexport.filename(result, APP_NAME)}"'})
+
+    handoffs: dict[str, tuple[float, str, str, bytes]] = {}
+
+    @app.post("/api/download/handoff")
+    async def download_handoff(request: Request):
+        """A file the phone app has fetched, kept for a few minutes behind a one-off link. The app's WebView cannot
+        save files, so the app opens that link in the phone's browser, which saves it to Downloads."""
+        body = await request.body()
+        if not body or len(body) > HANDOFF_MAX_BYTES:
+            raise ValueError("Nothing to save, or the file is too large (25 MB at most).")
+        name = re.sub(r"[^A-Za-z0-9._ -]+", "-", request.headers.get("x-file-name") or "download").strip(" .-")[:150]
+        ctype = (request.headers.get("content-type") or "application/octet-stream").split(";")[0].strip()
+        if not re.fullmatch(r"[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+", ctype):
+            ctype = "application/octet-stream"
+        now = datetime.now().timestamp()
+        for key in [k for k, v in handoffs.items() if v[0] < now]:
+            handoffs.pop(key, None)
+        while len(handoffs) >= HANDOFF_MAX_FILES:
+            handoffs.pop(next(iter(handoffs)))
+        token = secrets.token_urlsafe(32)
+        handoffs[token] = (now + HANDOFF_SECONDS, name or "download", ctype, body)
+        return {"url": f"/dl/{token}", "expires_in": HANDOFF_SECONDS}
+
+    @app.get("/dl/{token}")
+    def download_handed(token: str):
+        item = handoffs.get(token)
+        if not item or item[0] < datetime.now().timestamp():
+            handoffs.pop(token, None)
+            return HTMLResponse("<p>This download link has expired. Press the download button in the app again.</p>",
+                                status_code=404)
+        _, name, ctype, body = item
+        return Response(body, media_type=ctype, headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
     @app.get("/api/tax")
     def tax_summary(mode: str = "live"):
