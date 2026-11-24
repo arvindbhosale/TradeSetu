@@ -540,7 +540,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             "fundamental_labels": FUNDAMENTAL_LABELS, "optimise_objectives": OBJECTIVES,
             "structures": _structures(), "screens": _screens(), "portfolios": _portfolios(),
             "strategies": [s.describe() for s in library.all()],
-            "indicators": indicators.describe(), "rule_ops": RULE_OPS, "rule_time_ops": RULE_TIME_OPS,
+            "indicators": indicators.describe(), "candle_patterns": _candle_patterns(), "rule_ops": RULE_OPS, "rule_time_ops": RULE_TIME_OPS,
             "chart_overlays": charts.OVERLAYS, "chart_panels": charts.PANELS,
             "intervals": {key: spec["label"] for key, spec in data.INTERVALS.items()},
         }
@@ -2162,6 +2162,67 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         job = scan_runner.submit("signal", f"Signal test: {factortest.SIGNALS[signal][0]} on {entry[1]}", work)
         return {"job": job.view()}
 
+    @app.post("/api/patterns/pooled")
+    def patterns_pooled(payload: dict):
+        """Candle pattern odds with the cases of every stock in an NSE index added together, on day candles
+        up to ``end`` (a replay passes its cut, so nothing after it is read)."""
+        import time as time_module
+
+        from . import aiscan, candles
+        payload = body_of(payload)
+        index_id = str(payload.get("index", "nifty50"))
+        entry = indices.entry(index_id)
+        if entry is None or not entry[3] or entry[3] == "bse":
+            raise ValueError("Choose an NSE index with a published stock list")
+        rows = indices.constituents(index_id)
+        if not rows:
+            raise ValueError(f"The stock list of {entry[1]} has not loaded yet. Open Indices, wait a moment and try again.")
+        filters = candles.clean_filters(payload.get("filters"))
+        min_cases = int(_number(payload, "min_cases", candles.MIN_CASES))
+        if not 5 <= min_cases <= 500:
+            raise ValueError("Fewest cases to trust must be from 5 to 500")
+        end = date_of(payload.get("end") or market.now_ist().strftime("%Y-%m-%d"), "End date")
+        years = int(_number(payload, "years", 6))
+        if not 1 <= years <= 15:
+            raise ValueError("Years of history must be from 1 to 15")
+        from datetime import date as _date, timedelta as _td
+        start = (_date.fromisoformat(end) - _td(days=365 * years)).isoformat()
+        cache = aiscan.PriceCache(home() / "scan_cache")
+
+        def load(symbol: str):
+            hit = cache.get(symbol, start, end)
+            if hit:
+                return hit[0]
+            bars, source = stock_bars(symbol, "1d", start, end)
+            cache.put(symbol, start, end, bars, source["name"])
+            if source["name"] != "Yahoo":
+                time_module.sleep(0.35)               # brokers cap history requests (Kite: three a second)
+            return bars
+
+        def work(job):
+            frames, skipped = {}, []
+            job.progress = {"done": 0, "total": len(rows)}
+            for i, row in enumerate(rows, 1):
+                if job.stop_requested:
+                    job.log(f"Stopped after {i - 1} stocks; counting those.")
+                    break
+                try:
+                    bars = load(row["symbol"])
+                    frames[row["symbol"]] = bars[bars.index <= pd_ts(end)]
+                except Exception as exc:  # noqa: BLE001 - one missing stock does not stop the count
+                    skipped.append(row["symbol"])
+                    job.log(f"{row['symbol']}: skipped ({str(exc)[:80]})")
+                job.progress = {"done": i, "total": len(rows)}
+            result = candles.pooled(frames, filters=filters, min_cases=min_cases)
+            result.update(index_name=entry[1], skipped=skipped, start=start, end=end,
+                          note=(f"Day candles from {start} to {end}. The stock list is today's {entry[1]}, so stocks "
+                                "that dropped out of it are missing; that flatters patterns a little."))
+            job.log("Done")
+            return result
+
+        job = scan_runner.submit("patterns", f"Candle patterns across {entry[1]}", work)
+        return {"job": job.view()}
+
     # -- options ----------------------------------------------------------------
 
     @app.get("/api/futures")
@@ -3044,6 +3105,11 @@ def _llm_models() -> dict:
         out[provider] = {mode: [{"label": label, "id": model} for label, model in modes.get(mode, []) if model != "custom"]
                          for mode in ("quick", "deep")}
     return out
+
+
+def _candle_patterns() -> list:
+    from .candles import PATTERNS
+    return [{"key": k, "name": v[0], "signal": v[1], "candles": v[2], "about": v[3]} for k, v in PATTERNS.items()]
 
 
 def _structures() -> list:

@@ -360,3 +360,4 @@ table.legs-edit td:last-child { width: 1%; }
 .steps-box .step-row { align-items: flex-end; }
 .steps-box .step-row button { margin-bottom: 2px; }
 .closes { font-size: 0.85em; white-space: nowrap; line-height: 1.5; }
+.rule .patterns { display: flex; flex-direction: column; gap: 4px; flex-basis: 100%; } .rule .pattern-group { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }

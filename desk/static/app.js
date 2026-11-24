@@ -4447,7 +4447,7 @@
     select.append(group("Price and price levels", numbers.filter((o) => o.overlay && !pivot(o))),
       group("Pivots (traditional: daily, weekly, monthly)", numbers.filter(pivot)),
       group("Oscillators and volume", numbers.filter((o) => !o.overlay)));
-    if (!allowNumber) select.append(group("Time and day", state.app.indicators.filter((o) => (o.kind || "number") !== "number")));
+    if (!allowNumber) select.append(group("Time, day and candle pattern", state.app.indicators.filter((o) => (o.kind || "number") !== "number")));
     const extra = h("span", { class: "rule" });
     const draw = (values) => {
       if (select.value === "value") {
@@ -4483,7 +4483,7 @@
     let right = null;
     const draw = (r) => {
       const kind = left.kind();
-      const ops = kind === "time" ? state.app.rule_time_ops : kind === "weekday" ? { is_one_of: state.app.rule_ops.is_one_of }
+      const ops = kind === "time" ? state.app.rule_time_ops : kind === "weekday" || kind === "pattern" ? { is_one_of: state.app.rule_ops.is_one_of }
         : Object.fromEntries(Object.entries(state.app.rule_ops).filter(([key]) => key !== "is_one_of"));
       op.replaceChildren(...Object.entries(ops).map(([key, label]) => h("option", { value: key, text: label })));
       if (r && r.op in ops) op.value = r.op;
@@ -4491,6 +4491,14 @@
         const input = h("input", { type: "time", min: "09:00", max: "23:59", required: true, "aria-label": "Time", value: r && r.right && r.right.value != null ? hhmm(r.right.value) : "09:30" });
         right = h("span", {}, input);
         right.read = () => { const [hh, mm] = input.value.split(":").map(Number); return { value: hh * 100 + mm }; };
+      } else if (kind === "pattern") {
+        const chosen = r && r.right && r.right.patterns ? r.right.patterns : [];
+        const words = { up: "Textbook: up", down: "Textbook: down", neutral: "Textbook: either way" };
+        right = h("span", { class: "days patterns" }, Object.entries(words).map(([signal, word]) => h("span", { class: "pattern-group" }, h("em", { class: "hint", text: word + ": " }),
+          (state.app.candle_patterns || []).filter((p) => p.signal === signal).map((p) => h("label", { class: "check", title: p.about },
+            h("input", { type: "checkbox", value: p.key, checked: chosen.includes(p.key) }), " " + p.name)))),
+          h("span", { class: "hint", text: "True on the candle the pattern closes on. Check what followed each pattern on the Charts tab (Patterns) first." }));
+        right.read = () => ({ patterns: $$("input:checked", right).map((c) => c.value) });
       } else if (kind === "weekday") {
         const chosen = r && r.right && r.right.days ? r.right.days : [1, 2, 3, 4, 5];
         right = h("span", { class: "days" }, DAYS.map(([n, label]) => h("label", { class: "check" }, h("input", { type: "checkbox", value: n, checked: chosen.includes(n) }), " " + label)));

@@ -122,7 +122,7 @@ function source(bars, name = "close") {
 /** True range; the first bar's is its high minus low. @param {Bar[]} bars @returns {Values} */
 const trueRange = (bars) => bars.map((b, i) => (i ? Math.max(b.high - b.low, Math.abs(b.high - bars[i - 1].close), Math.abs(b.low - bars[i - 1].close)) : b.high - b.low));
 /** @param {Bar[]} bars @param {number} p */
-const atrValues = (bars, p) => rmaValues(trueRange(bars), p);
+export const atrValues = (bars, p) => rmaValues(trueRange(bars), p);
 
 /** A moving average of the kind a "Type" setting names. @param {string} type @param {Values} v @param {number} p */
 function maOf(type, v, p) {
