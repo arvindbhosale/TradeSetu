@@ -14,7 +14,8 @@ import { DrawingLayer, TOOLS, logicalOf, newPosition, normalise, positionPlan, t
 import { mountWatchlist } from "./watchlist.js";
 import { mountPaper } from "./paper.js";
 import { mountTrade } from "./trade.js";
-import { mountReplay } from "./replay.js";
+import { mountReplay, whenText } from "./replay.js";
+import { cleanSettings as cleanPatternSettings, mountPatterns } from "./patternpanel.js";
 
 /** @typedef {import("./indicators.js").Bar} Bar */
 /** @typedef {import("./drawings.js").Drawing} Drawing */
@@ -150,6 +151,7 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
     selected: /** @type {string|null} */ (null), drag: /** @type {any} */ (null),
     layoutReady: /** @type {Promise<void>|null} */ (null), saveTimer: /** @type {any} */ (0), touched: false,
     replaying: false, blind: false, blindLabel: /** @type {null|((t: number, clock: boolean) => string)} */ (null), picking: false,
+    patterns: cleanPatternSettings(null),
   };
 
   /** @param {any} saved */
@@ -160,10 +162,12 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
     st.tf = String(s.tf || defaults.tf); st.type = s.type in TYPES ? s.type : "candles"; st.volume = s.volume !== false;
     st.active = (Array.isArray(s.indicators) ? s.indicators : defaults.indicators).slice(0, MAX_INDICATORS)
       .map(cleanActive).filter(Boolean).map((a) => ({ uid: ++uid, .../** @type {any} */ (a) }));
+    st.patterns = cleanPatternSettings(s.patterns);
   }
   function layout() {
     return { venue: st.venue, symbol: st.symbol, tf: st.tf, type: st.type, volume: st.volume,
-      indicators: st.active.map((a) => ({ kind: a.kind, params: a.params, colors: a.colors, width: a.width, hidden: a.hidden })) };
+      indicators: st.active.map((a) => ({ kind: a.kind, params: a.params, colors: a.colors, width: a.width, hidden: a.hidden })),
+      patterns: st.patterns };
   }
   applyLayout(loadLocal(storeKey, defaults));
 
@@ -194,6 +198,9 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
   const tfSeg = h("div", { class: "seg cd-scroll", role: "group", "aria-label": "Timeframe" });
   const typeSeg = h("div", { class: "seg", role: "group", "aria-label": "Chart type" });
   const indicatorBtn = h("button", { type: "button", class: "cd-btn", onclick: () => openPicker() });
+  const patternBtn = h("button", { type: "button", class: "cd-btn", text: "Patterns", title: "Candle patterns, what followed them on this chart, and a range of likely prices",
+    onclick: () => { st.patterns = { ...st.patterns, on: !st.patterns.on }; save(); patterns.changed(); renderControls(); if (st.patterns.on) patternRoot.scrollIntoView({ behavior: "smooth", block: "nearest" }); } });
+  const patternRoot = h("section", { class: "panel cd-patterns", hidden: true, "aria-label": "Candle patterns" });
   const replayBtn = classic ? null : h("button", { type: "button", class: "cd-btn", text: "Replay", title: "Practise on past candles, shown one at a time", onclick: () => replay.toggleSetup() });
   const replayBar = h("div", { class: "cd-replaybar", role: "toolbar", "aria-label": "Replay controls", hidden: true });
   const replayRoot = h("section", { class: "panel cd-replay", hidden: true, "aria-label": "Replay practice" });
@@ -224,9 +231,9 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
       h("form", { class: "cd-bar", onsubmit: (/** @type {Event} */ e) => { e.preventDefault(); st.symbol = symbolInput.value.trim().toUpperCase(); open(); } },
         venueSeg,
         h("div", { class: "cd-symbol" }, symbolInput, symbolList, h("button", { class: "primary", type: "submit", text: "Show" })),
-        tfSeg, typeSeg, indicatorBtn, replayBtn),
+        tfSeg, typeSeg, indicatorBtn, patternBtn, replayBtn),
       importPanel, replayBar, head, error, note, extra, loading, chartArea),
-    classic ? null : replayRoot, classic ? null : tradeRoot, classic ? null : paperRoot);
+    patternRoot, classic ? null : replayRoot, classic ? null : tradeRoot, classic ? null : paperRoot);
   root.replaceChildren(classic ? h("div", { class: "cd-grid cd-solo" }, column, dialog) : h("div", { class: "cd-grid" }, watchRoot, column, dialog));
 
   const watch = classic ? { show() {}, hide() {}, render() {} } : mountWatchlist(watchRoot, { api, open: (venue, symbol) => { st.venue = venue; st.symbol = symbol; renderControls(); open(); },
@@ -248,6 +255,14 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
       setTf: (tf) => { st.tf = tf; renderControls(); },
       pickOnChart: (on) => { st.picking = on; mainBox.style.cursor = on ? "crosshair" : ""; } });
 
+  const patterns = mountPatterns(patternRoot, { api, bars: () => st.bars, info: () => st.info, venue: () => (classic ? "india" : st.venue), tf: () => st.tf,
+    replaying: () => st.replaying,
+    live: () => !st.replaying && !!st.info && st.venue !== "imported" && (st.venue === "crypto" || !!(st.info.session && st.info.session.open)),
+    chart: () => (st.main && st.price ? { main: st.main, price: st.price } : null), settings: () => st.patterns,
+    save: (next) => { st.patterns = next; save(); patterns.changed(); },
+    format: (v) => (st.venue === "crypto" ? "" : "₹") + num(v), when: (t) => (st.blind && st.blindLabel ? st.blindLabel(t, intraday()) : whenText(t, !intraday())),
+    heikinAshi: () => st.type === "ha", busyTool: () => !!(st.tool || st.picking || st.drag) });
+
   /** A replay shows its candles: no live feed, its own drawings, the trade and paper panels put away.
    * @param {{ info: any, bars: Bar[], blind: boolean, fresh: boolean, label: (t: number, clock: boolean) => string }} r */
   function enterReplay(r) {
@@ -257,6 +272,7 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
     st.info = r.info; st.bars = r.bars;
     if (st.bars.length) st.decimals = decimalsFor(st.venue, st.bars[st.bars.length - 1].close);
     if (r.fresh) { st.drawings = []; st.tool = null; st.clicks = []; st.selected = null; }
+    patterns.reset();
     error.hidden = true; loading.hidden = true; chartArea.hidden = false;
     const notes = r.info.notes || [];
     note.textContent = notes.join(" "); note.hidden = !notes.length;
@@ -319,6 +335,7 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
       : st.catalog.indices.map((/** @type {any} */ i) => [i.symbol, i.name]);
     symbolList.replaceChildren(...list.map(([value, label]) => h("option", { value, label })));
     indicatorBtn.textContent = `Indicators${st.active.length ? ` (${st.active.length})` : ""}`;
+    patternBtn.setAttribute("aria-pressed", String(st.patterns.on));
     renderDrawBar(); renderEditBar(); renderImport(); watch.render();
     if (!classic) { if (st.visible && st.venue === "crypto" && !st.replaying) paper.show(); else paper.hide(); }
     if (st.visible && st.info && !st.replaying) trade.show(); else trade.hide();
@@ -765,6 +782,7 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
       const notes = info.notes || [];
       note.textContent = notes.join(" "); note.hidden = !notes.length;
       st.drawings = []; st.tool = null; st.clicks = []; st.selected = null;
+      patterns.reset();
       draw(true);
       startLive();
       renderControls(); paper.symbolChanged(); trade.symbolChanged();
@@ -885,8 +903,9 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
     orderLines();
     trade.chartDrawn();
     replay.chartDrawn();
+    patterns.chartDrawn();
     const n = st.bars.length;
-    main.timeScale().setVisibleLogicalRange(keep || { from: Math.max(0, n - 150), to: n + 4 });
+    main.timeScale().setVisibleLogicalRange(keep || { from: Math.max(0, n - 150), to: n + Math.max(4, patterns.room()) });
   }
 
   /** A pane of its own under the price chart for one indicator. @param {Active} a */
@@ -959,6 +978,7 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
       if (made && r) fillIndicator(a, made, r);
     });
     st.results = results; index(results);
+    patterns.update();
     describe(null); renderHead();
   }
 
@@ -988,7 +1008,7 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
         shade(a, r);
       });
       st.results = results; index(results);
-      describe(null); renderHead(); trade.priceChanged();
+      describe(null); renderHead(); trade.priceChanged(); patterns.update();
       if (st.selected) renderPlanOnly();
     });
   }
@@ -1030,6 +1050,8 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
     if (!b) return;
     const pr = (/** @type {number} */ v) => num(v), items = [];
     items.push(h("span", { class: "cd-ohlc", text: `O ${pr(b.open)}  H ${pr(b.high)}  L ${pr(b.low)}  C ${pr(b.close)}${st.volume ? `  Vol ${num(Math.round(b.volume), 0)}` : ""}` }));
+    const names = patterns.namesAt(b.time);
+    if (names.length) items.push(h("span", { class: "cd-leg cd-leg-pat", text: names.join(", ") }));
     st.active.forEach((a) => {
       const c = CATALOG[a.kind], colours = { ...defaultColours(a), ...a.colors };
       const controls = [
