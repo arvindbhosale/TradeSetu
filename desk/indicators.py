@@ -221,6 +221,12 @@ def day_of_week(bars: pd.DataFrame) -> pd.Series:
     return pd.Series(bars.index.day_of_week + 1, index=bars.index, dtype=float)
 
 
+def candle_patterns(bars: pd.DataFrame) -> pd.DataFrame:
+    """One True/False column per candle pattern (desk/candles.py), True on the candle it closes on."""
+    from . import candles
+    return candles.detect(bars)
+
+
 WEEKDAYS = {1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat", 7: "Sun"}
 
 
@@ -299,6 +305,8 @@ OPERANDS: dict[str, Operand] = {o.key: o for o in (
     # Time conditions, the way "Time of day is after 09:20" or "Day of week is one of Mon, Tue" read.
     Operand("time", "Time of day", (), time_of_day, overlay=False, intraday=True, kind="time"),
     Operand("weekday", "Day of week", (), day_of_week, overlay=False, kind="weekday"),
+    # "Candle pattern is one of Hammer, Morning Star": true on the candle the pattern closes on.
+    Operand("pattern", "Candle pattern", (), candle_patterns, overlay=False, kind="pattern"),
 )}
 
 

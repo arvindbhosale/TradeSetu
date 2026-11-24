@@ -207,4 +207,29 @@ def clean_layout(layout) -> dict:
         indicators.append({"kind": item["kind"], "params": clean_params, "colors": dict(colours), "width": width,
                            "hidden": bool(item.get("hidden", False))})
     out["indicators"] = indicators
+    patterns = layout.get("patterns")
+    if patterns is not None:
+        out["patterns"] = _clean_patterns(patterns)
+    return out
+
+
+def _clean_patterns(raw) -> dict:
+    """The Patterns panel's settings: short words, numbers, true/false, and the list of patterns hidden on the
+    chart. Which values mean something is the browser's to check (it falls back to defaults)."""
+    if not isinstance(raw, dict) or len(raw) > 20:
+        raise ValueError("pattern settings must be an object")
+    out: dict = {}
+    for k, v in raw.items():
+        if not isinstance(k, str) or not _KEY.fullmatch(k):
+            raise ValueError("a pattern setting's name is a short word")
+        if k == "hide":
+            if not isinstance(v, list) or len(v) > 40 or not all(isinstance(x, str) and _KEY.fullmatch(x) for x in v):
+                raise ValueError("hidden patterns must be a list of names")
+            out[k] = list(v)
+        elif isinstance(v, bool) or (isinstance(v, (int, float)) and math.isfinite(v)):
+            out[k] = v
+        elif isinstance(v, str):
+            out[k] = _text(v, k)
+        else:
+            raise ValueError(f"pattern setting {k} must be a number, a word or true/false")
     return out

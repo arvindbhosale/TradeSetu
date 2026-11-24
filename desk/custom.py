@@ -61,6 +61,15 @@ def _days(raw, where: str) -> list[int]:
     return sorted(set(days))
 
 
+def _patterns(raw, where: str) -> list[str]:
+    from .candles import PATTERNS
+    chosen = raw.get("patterns") if isinstance(raw, dict) else raw
+    if (not isinstance(chosen, list) or not chosen or len(chosen) > len(PATTERNS)
+            or not all(isinstance(k, str) and k in PATTERNS for k in chosen)):
+        raise ValueError(f"{where}: tick at least one candle pattern")
+    return [k for k in PATTERNS if k in chosen]
+
+
 def _group(raw, label: str, required: bool) -> dict:
     if not isinstance(raw, dict):
         raise ValueError(f"{label} rules are missing")
@@ -81,13 +90,18 @@ def _group(raw, label: str, required: bool) -> dict:
         if "value" in left:
             raise ValueError(f"{where}: the left side must be an indicator")
         kind = ind.OPERANDS[left["indicator"]].kind
+        if kind == "pattern":
+            if rule["op"] != "is_one_of":
+                raise ValueError(f"{where}: Candle pattern takes \"is one of\"")
+            out.append({"left": left, "op": "is_one_of", "right": {"patterns": _patterns(rule.get("right"), where)}})
+            continue
         if kind == "weekday":
             if rule["op"] != "is_one_of":
                 raise ValueError(f"{where}: Day of week takes \"is one of\"")
             out.append({"left": left, "op": "is_one_of", "right": {"days": _days(rule.get("right"), where)}})
             continue
         if rule["op"] == "is_one_of":
-            raise ValueError(f"{where}: \"is one of\" is for Day of week")
+            raise ValueError(f"{where}: \"is one of\" is for Day of week and Candle pattern")
         right = _side(rule.get("right"), f"{where}, right side")
         if kind == "time":
             if rule["op"] not in TIME_OPS:
@@ -123,6 +137,8 @@ def _series(side: dict, bars: pd.DataFrame, cache: dict) -> pd.Series:
 def _rule(rule: dict, bars: pd.DataFrame, cache: dict) -> pd.Series:
     left = _series(rule["left"], bars, cache)
     op = rule["op"]
+    if op == "is_one_of" and "patterns" in rule["right"]:
+        return left[rule["right"]["patterns"]].any(axis=1).astype(bool)
     if op == "is_one_of":
         return left.isin([float(d) for d in rule["right"]["days"]]).astype(bool)
     right = _series(rule["right"], bars, cache)
@@ -161,6 +177,9 @@ def positions(spec: dict, bars: pd.DataFrame) -> pd.Series:
 def _text(side: dict, kind: str = "number") -> str:
     if "days" in side:
         return ", ".join(ind.WEEKDAYS[d] for d in side["days"])
+    if "patterns" in side:
+        from .candles import PATTERNS
+        return ", ".join(PATTERNS[k][0] for k in side["patterns"])
     if "value" in side:
         if kind == "time":
             return f"{int(side['value']) // 100:02d}:{int(side['value']) % 100:02d}"
