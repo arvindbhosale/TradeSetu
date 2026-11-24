@@ -47,6 +47,10 @@ Rules that matter with real money:
   fill is given up without touching the legs already held. After the first add the whole position closes when its
   profit and loss falls to minus the maximum loss (``risk``), or to zero (``cost``, or a paper algo without a
   maximum loss): the rupee loss never grows with the position. Adds count toward every risk check of an order.
+- **% stoploss and target** (``stop_pct``, ``target_pct``), as the backtests have them: an option strategy's profit and
+  loss before charges against the premium received or paid at entry (the margin when nil); a future's move from its
+  first entry price. After an add, the whole position closes at the larger of the maximum loss and the loss the %
+  stoploss planned (``pct_risk``), as the backtest has it.
 - **Expiry.** Every leg is closed at the exit time on its expiry day rather than left to settle (an in-the-money
   option left to expire pays STT on its full value).
 """
@@ -298,6 +302,14 @@ class FnoAlgoEngine:
         except ValueError as exc:
             raise AlgoError(f"{str(exc).rstrip('.')}.") from None
         out["adds"] = adds.as_dict() if adds.active else None
+        # The whole position's stoploss and target in %, as the backtests have them: an option strategy's in % of
+        # the premium received or paid at entry (the margin when that is nil), a future's in % of its price.
+        if kind == "structure":
+            out["stop_pct"] = number("stop_pct", 0, 0, 1000, "Stoploss, % of premium")
+            out["target_pct"] = number("target_pct", 0, 0, 100, "Target, % of premium")
+        else:
+            out["stop_pct"] = number("stop_pct", 0, 0, 50, "Stoploss, % of price")
+            out["target_pct"] = number("target_pct", 0, 0, 100, "Target, % of price")
         out["weekdays"] = sorted(set(weekdays))
         out["min_days"] = number("min_days", 0, 0, 30, "Minimum days to expiry")
         out["exit_days_before"] = number("exit_days_before", 0, 0, 10, "Exit days before expiry", True)
@@ -349,7 +361,8 @@ class FnoAlgoEngine:
             return _copy(algo)
 
     # While legs are open, only these can change: they are read afresh on every check and touch no leg's state.
-    OPEN_EDITABLE = ("max_loss", "target", "limit_buffer_pct", "leg_exits", "leg_scope", "steps", "adds")
+    OPEN_EDITABLE = ("max_loss", "target", "stop_pct", "target_pct", "limit_buffer_pct", "leg_exits", "leg_scope",
+                     "steps", "adds")
     _DERIVED = ("exchange", "structure_name", "naked", "leg_sl_pct", "strategy_name", "legs_text")
 
     def update(self, algo_id: str, raw: dict) -> dict:
@@ -403,8 +416,11 @@ class FnoAlgoEngine:
         kind = "structure" if algo["kind"] == "structure" else "futures"
         steps = scaleout.of(algo.get("steps")).text(kind)
         adds = scalein.of(algo.get("adds")).text(kind)
-        return (f"{what} on {algo['underlying']} ({expiry_text(algo)}), {how}" + (f"; {steps}" if steps else "")
-                + (f"; {adds}" if adds else ""))
+        of = "the premium" if algo["kind"] == "structure" else "the price"
+        pct = ", ".join(f"{word} {algo[key]:g}% of {of}" for key, word in (("stop_pct", "stoploss"), ("target_pct", "target"))
+                        if algo.get(key))
+        return (f"{what} on {algo['underlying']} ({expiry_text(algo)}), {how}" + (f"; whole position {pct}" if pct else "")
+                + (f"; {steps}" if steps else "") + (f"; {adds}" if adds else ""))
 
     def set_enabled(self, algo_id: str, enabled: bool, phrase: str = "", force: bool = False) -> dict:
         with self._lock:
@@ -1011,10 +1027,69 @@ class FnoAlgoEngine:
             return self._added(algo)
         for g in book["legs"]:
             g.setdefault("first", g["avg"])          # profit levels are measured from the first entry
+        book.setdefault("net_open", round(self._net_entry(book), 2))   # the % stoploss and target are of this
         self._log(algo, f"Entered: every leg filled. Premium {'received' if self._net_entry(book) > 0 else 'paid'} "
                         f"₹{abs(self._net_entry(book)):,.0f}.")
         self.desk.notifier.notify(f"F&O algo “{algo['name']}” entered", f"{self._describe(algo)} · {algo['mode']}", "good")
         return self._watch(algo)
+
+    @staticmethod
+    def _pct_base(algo: dict) -> float:
+        """What an option strategy's % stoploss and target are of: the premium received or paid at the first entry,
+        or the margin when that is nil (as in the backtest)."""
+        book = algo["book"]
+        net = book.get("net_open")
+        if net is None:
+            net = FnoAlgoEngine._net_entry(book)
+        return abs(net) or (book.get("margin") or 0.0)
+
+    @classmethod
+    def pct_risk(cls, algo: dict) -> float:
+        """The loss in rupees the % stoploss plans for the first entry (0 without one)."""
+        book, pct = algo["book"], algo.get("stop_pct") or 0
+        if not pct or not book:
+            return 0.0
+        if algo["kind"] == "futures":
+            g = book["legs"][0]
+            return pct / 100 * (g.get("first") or g["avg"]) * algo["lots"] * g["lot_size"] * g.get("mult", 1)
+        return pct / 100 * cls._pct_base(algo)
+
+    def _pct_exit(self, algo: dict, prices: dict) -> str | None:
+        """The whole position's % stoploss or target, when reached. A future's is a move of its price from the first
+        entry; an option strategy's is its profit and loss before charges (legs closed plus open ones) against the
+        premium at entry, as the backtest counts it."""
+        stop, goal = algo.get("stop_pct") or 0, algo.get("target_pct") or 0
+        if not (stop or goal):
+            return None
+        book = algo["book"]
+        if algo["kind"] == "futures":
+            g = next((x for x in book["legs"] if x["open_qty"]), None)
+            if g is None or not prices.get(g["instrument"]):
+                return None
+            start = g.get("first") or g["avg"]
+            move = (prices[g["instrument"]] - start) / start * 100 * (1 if g["action"] > 0 else -1)
+            if stop and move <= -stop:
+                return f"stoploss: the future moved {move:+.2f}% from {start:,.2f} against {stop:g}%"
+            if goal and move >= goal:
+                return f"target: the future moved {move:+.2f}% from {start:,.2f}"
+            return None
+        base = self._pct_base(algo)
+        if not base:
+            return None
+        gross = 0.0
+        for g in book["legs"]:
+            gross += g["realized"]
+            if g["open_qty"]:
+                last = prices.get(g["instrument"])
+                if not last:
+                    return None
+                gross += (last - g["avg"]) * g["open_qty"] * g.get("mult", 1) * (1 if g["action"] > 0 else -1)
+        share = gross / base * 100
+        if stop and share <= -stop:
+            return f"stoploss: {share:+.1f}% of the premium (₹{gross:,.0f}) against {stop:g}%"
+        if goal and share >= goal:
+            return f"target: {share:+.1f}% of the premium (₹{gross:,.0f})"
+        return None
 
     @staticmethod
     def _net_entry(book: dict) -> float:
@@ -1062,6 +1137,9 @@ class FnoAlgoEngine:
                                      block=True)
         if algo["target"] and pnl >= algo["target"]:
             return self._begin_close(algo, f"target: ₹{pnl:,.0f}", block=True)
+        pct = self._pct_exit(algo, prices)
+        if pct:
+            return self._begin_close(algo, pct, block=True)
         if algo["schedule"] == "intraday" and now.strftime("%H:%M") >= algo["exit_time"]:
             return self._begin_close(algo, f"exit time {algo['exit_time']}", block=False)
         due = sorted({g["expiry"] for g in open_legs if self._exit_due(algo, g["expiry"])})
@@ -1305,7 +1383,8 @@ class FnoAlgoEngine:
             book["lots_open"] = book.get("lots_open", algo["lots"]) + adding["lots"]
         book["margin"] = (book.get("margin") or 0) + adding["margin"]
         adds = scalein.of(algo.get("adds"))
-        book["floor"] = scalein.floor_after(algo["max_loss"], adds.stop_after)
+        # The loss the first entry planned: the larger of the maximum loss and the % stoploss's, as the backtest has it.
+        book["floor"] = scalein.floor_after(max(algo["max_loss"], self.pct_risk(algo)), adds.stop_after)
         book.setdefault("adds", []).append({"time": self._now().strftime("%Y-%m-%d %H:%M"), "lots": adding["lots"],
                                             "why": adding["what"], **({"leg": adding["leg"]} if adding["leg"] else {})})
         floor = (f"closes if the P&L falls to −₹{-book['floor']:,.0f} (the maximum loss)" if book["floor"] < 0

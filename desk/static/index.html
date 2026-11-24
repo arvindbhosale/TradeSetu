@@ -371,6 +371,8 @@
         <div class="row">
           <label>Maximum loss (₹) <input name="max_loss" type="number" min="0" step="500" value="5000"></label>
           <label>Target profit (₹, 0 for none) <input name="target" type="number" min="0" step="500" value="0"></label>
+          <label>Stoploss, <span data-pct-of>% of premium</span> <input name="stop_pct" type="number" min="0" max="1000" step="5" value="0"></label>
+          <label>Target, <span data-pct-of>% of premium</span> <input name="target_pct" type="number" min="0" max="100" step="5" value="0"></label>
           <label>Mode <select name="mode"><option value="paper">Paper</option><option value="live">Live · real money</option></select></label>
         </div>
         <div id="fno-steps"></div>
@@ -831,7 +833,10 @@
           <label>Margin, % of the contract value <input name="margin_pct" type="number" min="2" max="100" step="0.5" value="12" required></label>
           <label>Stoploss, % of price <input name="stop_pct" type="number" min="0" max="50" step="0.1" value="0"></label>
           <label>Target, % of price <input name="target_pct" type="number" min="0" max="100" step="0.1" value="0"></label>
+          <label>Maximum loss (₹, 0 for none) <input name="stop_rs" type="number" min="0" step="500" value="0"></label>
+          <label>Target profit (₹, 0 for none) <input name="target_rs" type="number" min="0" step="500" value="0"></label>
         </div>
+        <p class="hint">Maximum loss and target profit in ₹ close the whole position, with the charges paid so far, as an F&amp;O algo does. A live algo needs a maximum loss, so test the one you will use.</p>
         <div id="fbt-steps"></div>
         <div class="row">
           <label>Slippage % <input name="slippage_pct" type="number" min="0" max="2" step="0.01" value="0.02"></label>
@@ -867,6 +872,8 @@
         <div class="row">
           <label>Stoploss, % of premium <input name="stop_pct" type="number" min="0" max="100" step="5" value="35"></label>
           <label>Target, % of premium <input name="target_pct" type="number" min="0" max="1000" step="5" value="70"></label>
+          <label>Maximum loss (₹, 0 for none) <input name="stop_rs" type="number" min="0" step="500" value="0"></label>
+          <label>Target profit (₹, 0 for none) <input name="target_rs" type="number" min="0" step="500" value="0"></label>
           <label>Volatility: India VIX × <input name="iv_scale" type="number" min="0.3" max="3" step="0.05" value="1"></label>
           <label>Slippage % <input name="slippage_pct" type="number" min="0" max="10" step="0.25" value="1"></label>
           <label class="bt-own" hidden>Capital (₹) <input name="capital" type="number" min="10000" step="10000" value="200000" required></label>
