@@ -27,7 +27,11 @@ import time
 logger = logging.getLogger(__name__)
 
 COOKIE = "desk_session"
+REMEMBER_COOKIE = "desk_device"
 SESSION_SECONDS = 12 * 3600
+REMEMBER_DAYS = 30
+REMEMBER_MAX = 10             # remembered devices kept; the oldest goes first
+ROTATE_GRACE = 120            # seconds the previous device secret still works, for requests already in flight
 MAX_FAILURES = 5
 LOCK_SECONDS = 15 * 60
 MIN_PASSWORD = 10
@@ -161,6 +165,171 @@ class TwoFactor:
         return len(self._state["recovery"])
 
 
+def _browser_key(user_agent: str) -> str:
+    """The browser and system a remembered device signed in from, without version numbers (they change on updates)."""
+    import re
+
+    coarse = re.sub(r"[\d._]+", "", str(user_agent or "")).lower()
+    return hashlib.sha256(coarse.encode()).hexdigest()[:32]
+
+
+def device_name(user_agent: str) -> str:
+    """A plain name for a browser, e.g. "Chrome on Windows", from its User-Agent."""
+    ua = str(user_agent or "")
+    system = next((name for mark, name in (("Android", "Android"), ("iPhone", "iPhone"), ("iPad", "iPad"),
+                                           ("Windows", "Windows"), ("Mac OS", "Mac"), ("CrOS", "Chromebook"),
+                                           ("Linux", "Linux")) if mark in ua), "an unknown system")
+    browser = next((name for mark, name in (("Edg/", "Edge"), ("OPR/", "Opera"), ("SamsungBrowser", "Samsung Internet"),
+                                            ("Firefox/", "Firefox"), ("Chrome/", "Chrome"), ("Safari/", "Safari"))
+                    if mark in ua), "Browser")
+    if "wv)" in ua or "TradeSetu" in ua or "Tauri" in ua:
+        browser = "App"
+    return f"{browser} on {system}"
+
+
+class RememberedDevices:
+    """"Keep me signed in on this device": a 30-day sign-in held by one browser.
+
+    The browser keeps ``<id>.<secret>`` in an HttpOnly cookie; this file keeps only a hash of the secret. Each
+    use swaps in a new secret (the old one keeps working for a couple of minutes, for requests already in
+    flight). An old secret used after that means the cookie was copied, so that device is signed out. The
+    cookie also works only in the same browser and system it was made in. A remembered sign-in ends after 30
+    days whatever happens, when it is removed in Settings, on Sign out, or when the desk password changes.
+    """
+
+    def __init__(self, path, password_hash: str, wall=time.time, on_event=None):
+        import json
+
+        self._json, self.path, self._wall = json, path, wall
+        self._lock = threading.Lock()
+        self._owner = hashlib.sha256(("owner:" + password_hash).encode()).hexdigest()[:24]
+        self.on_event = on_event              # (title, body) -> None: a security alert
+        self._devices: dict[str, dict] = {}
+        with contextlib.suppress(OSError, ValueError, TypeError):
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(stored, dict) and stored.get("owner") == self._owner:
+                self._devices = {k: v for k, v in (stored.get("devices") or {}).items() if isinstance(v, dict)}
+            elif isinstance(stored, dict) and stored.get("devices"):
+                logger.warning("The desk password changed: every remembered device has to sign in again.")
+                self._devices = {}
+                self._save()
+        self._prune()
+
+    @staticmethod
+    def _digest(secret: str) -> str:
+        return hashlib.sha256(secret.encode()).hexdigest()
+
+    def _save(self) -> None:
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(self._json.dumps({"owner": self._owner, "devices": self._devices}), encoding="utf-8")
+        with contextlib.suppress(OSError):
+            os.chmod(tmp, 0o600)
+        os.replace(tmp, self.path)
+
+    def _prune(self) -> bool:
+        now = self._wall()
+        alive = {k: v for k, v in self._devices.items() if v.get("expires", 0) > now}
+        changed = len(alive) != len(self._devices)
+        self._devices = alive
+        return changed
+
+    def _event(self, title: str, body: str) -> None:
+        if self.on_event is not None:
+            with contextlib.suppress(Exception):
+                self.on_event(title, body)
+
+    def add(self, user_agent: str, client: str) -> str:
+        """Remember this browser. Returns the cookie value."""
+        with self._lock:
+            self._prune()
+            while len(self._devices) >= REMEMBER_MAX:
+                oldest = min(self._devices, key=lambda k: self._devices[k]["created"])
+                self._devices.pop(oldest)
+            device_id, secret, now = secrets.token_urlsafe(12), secrets.token_urlsafe(32), self._wall()
+            self._devices[device_id] = {
+                "hash": self._digest(secret), "previous": None, "previous_until": 0,
+                "browser": _browser_key(user_agent), "name": device_name(user_agent),
+                "created": now, "expires": now + REMEMBER_DAYS * 86400, "last_used": now, "last_ip": client}
+            self._save()
+            return f"{device_id}.{secret}"
+
+    def use(self, cookie: str | None, user_agent: str, client: str) -> tuple[str, str] | None:
+        """Check a device cookie. Returns (device id, the new cookie value), or None when it does not sign in."""
+        device_id, _, secret = str(cookie or "").partition(".")
+        if not device_id or not secret:
+            return None
+        with self._lock:
+            if self._prune():
+                self._save()
+            device = self._devices.get(device_id)
+            if device is None:
+                return None
+            now, digest = self._wall(), self._digest(secret)
+            current = hmac.compare_digest(digest, device["hash"])
+            recent = bool(device.get("previous")) and now < device.get("previous_until", 0) \
+                and hmac.compare_digest(digest, device["previous"])
+            if not current and not recent:
+                self._devices.pop(device_id)
+                self._save()
+                logger.warning("Remembered device %s signed out: an old sign-in cookie was used from %s.", device_id, client)
+                self._event("Remembered device signed out",
+                            f"{device['name']}: an old copy of its sign-in was used from {client}. It has to sign in "
+                            f"with the password again. If that was not you, change the desk password.")
+                return None
+            if not hmac.compare_digest(_browser_key(user_agent), device["browser"]):
+                self._devices.pop(device_id)
+                self._save()
+                logger.warning("Remembered device %s signed out: its cookie came from another browser (%s).",
+                               device_id, client)
+                self._event("Remembered device signed out",
+                            f"{device['name']}: its sign-in was used from a different browser ({device_name(user_agent)}, "
+                            f"{client}). It has to sign in with the password again.")
+                return None
+            if recent:
+                # A request that left before the last swap: let it through, keep the newest secret.
+                return device_id, ""
+            fresh = secrets.token_urlsafe(32)
+            device.update(previous=device["hash"], previous_until=now + ROTATE_GRACE, hash=self._digest(fresh),
+                          last_used=now, last_ip=client)
+            self._save()
+            return device_id, f"{device_id}.{fresh}"
+
+    def remove(self, device_id: str) -> bool:
+        with self._lock:
+            found = self._devices.pop(str(device_id), None) is not None
+            if found:
+                self._save()
+            return found
+
+    def remove_all(self) -> int:
+        with self._lock:
+            count = len(self._devices)
+            self._devices = {}
+            self._save()
+            return count
+
+    def device_of(self, cookie: str | None) -> str | None:
+        device_id = str(cookie or "").partition(".")[0]
+        return device_id if device_id in self._devices else None
+
+    def listing(self, current: str | None = None) -> list[dict]:
+        import datetime as _dt
+
+        def stamp(seconds: float) -> str:
+            return _dt.datetime.fromtimestamp(seconds, _dt.timezone(_dt.timedelta(hours=5, minutes=30))).strftime(
+                "%Y-%m-%d %H:%M")
+
+        with self._lock:
+            self._prune()
+            rows = [{"id": k, "name": v["name"], "added": stamp(v["created"]), "last_used": stamp(v["last_used"]),
+                     "until": stamp(v["expires"]), "last_ip": v.get("last_ip") or "", "this_device": k == current}
+                    for k, v in self._devices.items()]
+        return sorted(rows, key=lambda r: r["last_used"], reverse=True)
+
+    def count(self) -> int:
+        return len(self._devices)
+
+
 class Auth:
     def __init__(self, username: str, password_hash: str, clock=time.monotonic, two_factor: TwoFactor | None = None):
         self.username, self._hash, self._clock = username, password_hash, clock
@@ -258,6 +427,11 @@ class Auth:
         with self._lock:
             self._failures.setdefault(client, []).append(self._clock())
         logger.warning("Failed sign-in from %s: %s.", client, reason)
+
+    def remembered_session(self) -> dict:
+        """A session for a browser that was remembered ("Keep me signed in on this device")."""
+        with self._lock:
+            return self._new_session(self._clock())
 
     def passkey_session(self, client: str) -> dict:
         """A session after a verified passkey (it is both factors: device plus fingerprint, face or PIN)."""
