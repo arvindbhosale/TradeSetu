@@ -44,8 +44,9 @@ def check_timeframe(timeframe: str) -> str:
     return timeframe
 
 
-def rows_from_frame(frame: pd.DataFrame) -> list[dict]:
-    """Bars with an IST wall-clock index as chart rows. Rows with a missing or non-positive price are dropped."""
+def rows_from_frame(frame: pd.DataFrame, limit: int | None = MAX_BARS) -> list[dict]:
+    """Bars with an IST wall-clock index as chart rows. Rows with a missing or non-positive price are dropped.
+    The newest ``limit`` are kept (``None`` keeps all, for a replay window)."""
     out = []
     for stamp, row in frame.iterrows():
         o, h, low, c = (float(row[k]) for k in ("Open", "High", "Low", "Close"))
@@ -54,7 +55,7 @@ def rows_from_frame(frame: pd.DataFrame) -> list[dict]:
         volume = float(row.get("Volume", 0) or 0)
         out.append({"time": int(pd.Timestamp(stamp).value // 1_000_000_000), "open": o, "high": h, "low": low,
                     "close": c, "volume": volume if volume == volume else 0.0})
-    return out[-MAX_BARS:]
+    return out if limit is None else out[-limit:]
 
 
 def weekly(frame: pd.DataFrame) -> pd.DataFrame:

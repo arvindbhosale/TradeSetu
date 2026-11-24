@@ -136,6 +136,11 @@ class Imports:
             path.unlink(missing_ok=True)
 
     def candles(self, raw_symbol: str, timeframe: str) -> dict:
+        out = self.history(raw_symbol, timeframe)
+        return {**out, "candles": out["candles"][-MAX_BARS:]}
+
+    def history(self, raw_symbol: str, timeframe: str) -> dict:
+        """Every candle of the file at ``timeframe`` (``candles`` keeps the newest MAX_BARS for the chart)."""
         check_timeframe(timeframe)
         symbol = self.name(raw_symbol)
         csv_path, meta_path = self._paths(symbol)
@@ -154,13 +159,13 @@ class Imports:
             frame = _daily(frame)
         elif want > base:
             frame = data.resample(frame, want // 60)
-        rows = rows_from_frame(frame)
+        rows = rows_from_frame(frame, limit=None)
         if not rows:
             raise MarketDataError(f"{symbol}'s file has no usable candles.", "Imported file")
         anchor = {"1d": 0, "1w": 4 * 86400}.get(timeframe, 9 * 3600 + 15 * 60)
         note = (f"From your imported file ({meta['rows']:,} {meta['candle']} candles, {meta['first'][:16]} to "
                 f"{meta['last'][:16]}). Not live.")
-        return {"candles": rows[-MAX_BARS:], "source": "Imported file", "notes": [note], "session_offset": 0,
+        return {"candles": rows, "source": "Imported file", "notes": [note], "session_offset": 0,
                 "seconds": want, "anchor": anchor, "live": {"kind": "none"}, "name": f"{symbol} (imported)"}
 
 

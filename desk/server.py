@@ -13,12 +13,14 @@ import hmac
 import html
 import logging
 import os
+import random
 import re
 import secrets
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -41,6 +43,7 @@ from . import (
     margin as zerodha_margin,
     market,
     mcx,
+    replay as replay_module,
     results,
     risk,
     scalein,
@@ -68,7 +71,13 @@ from .fundamentals import LABELS as FUNDAMENTAL_LABELS, Fundamentals
 from .indices import Indices
 from .kite import KiteError, KiteMCP
 from .kiteconnect import kite_entry, request_token_from
-from .marketdata import TIMEFRAMES as CHART_TIMEFRAMES, MarketDataError, broker as md_broker
+from .marketdata import (
+    TIMEFRAMES as CHART_TIMEFRAMES,
+    MarketDataError,
+    broker as md_broker,
+    rows_from_frame as md_rows,
+    weekly as md_weekly,
+)
 from .marketdata.crypto import PAIRS as CRYPTO_PAIRS, CryptoFeed, tickers as crypto_tickers
 from .marketdata.csvfeed import Imports as ChartImports
 from .markettools import MarketTools, finite
@@ -1169,6 +1178,165 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     def md_import_delete(symbol: str):
         app.state.imports.delete(symbol)
         return {"items": app.state.imports.list()}
+
+    # -- replay charts: past candles one at a time, practice trades kept apart from paper and live -------------
+    def replay_charges(session: dict, trade: dict) -> float:
+        """Round-trip charges of a practice trade as the paper desk would book them."""
+        from . import sizing
+        from .cryptopaper import FEE as CRYPTO_FEE
+        qty, entry, exit_price = trade["qty"], trade["entry"], trade["exit"]
+        if session["venue"] == "crypto":
+            return (entry + exit_price) * qty * CRYPTO_FEE
+        side = "BUY" if trade["side"] == "long" else "SELL"
+        if session["venue"] == "imported":
+            exchange, tradingsymbol = "NSE", session["symbol"]
+        else:
+            if session["symbol"].startswith("IDX:"):
+                return 0.0                      # an index is not traded; practice on it has no charges
+            instrument, raw, _ = chart_instrument(session["symbol"])
+            if raw:
+                exchange, tradingsymbol = instrument.split(":", 1)
+            else:
+                pair = kite_instrument(instrument)
+                if not pair:
+                    return 0.0
+                exchange, tradingsymbol = pair
+        derivative = exchange in ("NFO", "BFO", "MCX")
+        product = "NRML" if derivative else ("MIS" if trade["product"] == "intraday" else "CNC")
+        return sizing.round_trip_charges(side, max(1, int(round(qty))), entry, exit_price, product, exchange,
+                                         tradingsymbol)
+
+    app.state.replays = replay_module.ReplayStore(home() / "replay_sessions.json", replay_charges)
+
+    def replay_rows(venue: str, symbol: str, tf: str, cut: int, warm: int, ahead: int) -> tuple[dict, list[dict]]:
+        """(chart info, candles) around ``cut`` for a replay, from the same source as the live chart."""
+        seconds = CHART_TIMEFRAMES[tf]["seconds"]
+        if venue == "crypto":
+            from .marketdata.crypto import pair as crypto_pair
+            pair_symbol, coin, name, _ = crypto_pair(symbol)
+            first = cut - market_ist_offset() - warm * seconds
+            rows = app.state.crypto.binance.history(pair_symbol, tf, first, warm + ahead)
+            info = {"symbol": pair_symbol, "name": f"{name} ({coin}/USDT)", "source": "Binance",
+                    "session_offset": market_ist_offset(),
+                    "anchor": (4 * 86400 + market_ist_offset()) if tf == "1w" else market_ist_offset()}
+            return info, rows
+        if venue == "imported":
+            out = app.state.imports.history(symbol, tf)
+            return {k: v for k, v in out.items() if k != "candles"}, out["candles"]
+        instrument, raw, name = chart_instrument(symbol)
+        broker = chart_broker()
+        if not kite.connected:
+            raise MarketDataError("Replay of NSE/BSE charts uses your broker's history. Open Trade, press Connect "
+                                  f"and log in to {broker}.", broker, needs_login=True)
+        interval, merge = md_broker.BASE[tf]
+        at = pd.Timestamp(cut, unit="s")
+        today = pd.Timestamp(market.now_ist().replace(tzinfo=None)).normalize()
+        first = (at - pd.Timedelta(days=replay_module.WARM_DAYS[tf])) if warm else at
+        last = min(at + pd.Timedelta(days=replay_module.AHEAD_DAYS[tf]), today)
+        continuous = interval == "1d" and (raw and instrument.split(":", 1)[0] in ("NFO", "BFO", "MCX")
+                                           and instrument.endswith("FUT"))
+        try:
+            frame = data.kite_range(kite, instrument, interval, first.strftime("%Y-%m-%d"), last.strftime("%Y-%m-%d"),
+                                    raw=raw, continuous=continuous)
+        except data.NoData as exc:
+            raise MarketDataError(f"{broker} has no candles for this replay: {exc}", broker) from exc
+        except KiteError as exc:
+            raise MarketDataError(f"{broker} could not serve the replay. {str(exc)[:200]}", broker,
+                                  needs_login=exc.needs_login) from exc
+        if merge == "week":
+            frame = md_weekly(frame)
+        elif merge:
+            frame = data.resample(frame, merge)
+        info = {"symbol": symbol.strip().upper(), "name": name, "source": broker, "session_offset": 0,
+                "anchor": md_broker.ANCHOR.get(tf, md_broker.SESSION_OPEN)}
+        notes = []
+        if frame.attrs.get("adjusted"):
+            notes.append("Prices before " + ", ".join(d for d, _ in frame.attrs["adjusted"])
+                         + " were adjusted for a split or bonus.")
+        info["notes"] = notes
+        return info, md_rows(frame, limit=None)
+
+    def market_ist_offset() -> int:
+        from .marketdata import IST_OFFSET
+        return IST_OFFSET
+
+    @app.get("/api/md/replay")
+    def md_replay(venue: str = "india", symbol: str = "", tf: str = "5m", start: str = "", after: int | None = None):
+        """Candles for a replay: a warm-up before ``start`` and the candles after it (``start_index`` is how many
+        are shown at first). ``start=random`` picks a random date (blind mode). ``after`` (a bar time) loads the
+        next candles once a replay reaches the end of what it has."""
+        if not settings.get("charts_enabled"):
+            raise ValueError("Charts are switched off in Settings.")
+        if venue not in ("india", "crypto", "imported"):
+            raise ValueError("venue must be india, crypto or imported")
+        if tf not in CHART_TIMEFRAMES:
+            raise ValueError("unknown candle size")
+        if not symbol.strip():
+            raise ValueError("Enter a symbol.")
+        today = pd.Timestamp(market.now_ist().replace(tzinfo=None))
+        seconds = CHART_TIMEFRAMES[tf]["seconds"]
+        if after is not None:
+            info, rows = replay_rows(venue, symbol, tf, int(after) + 1, 0, replay_module.AHEAD_BARS)
+            rows = [r for r in rows if r["time"] > int(after)][:replay_module.AHEAD_BARS]
+            return {**info, "candles": rows, "start_index": 0, "seconds": seconds, "tf": tf, "market": venue,
+                    "live": {"kind": "none"}, "more": bool(rows) and rows[-1]["time"] + seconds < epoch_now(today)}
+        rng = random.Random()
+        tries = 4 if start == "random" else 1
+        span = None
+        if start == "random" and venue == "imported":
+            whole = app.state.imports.history(symbol, tf)["candles"]
+            if len(whole) < 120:
+                raise ValueError("This imported file is too short for a random replay.")
+            span = (pd.Timestamp(whole[60]["time"], unit="s"), pd.Timestamp(whole[-60]["time"], unit="s"))
+        problem = ""
+        for _ in range(tries):
+            if start == "random":
+                stamp = replay_module.random_start(venue, tf, today, rng, *(span or (None, None)))
+            else:
+                stamp = replay_module.parse_start(start, tf, venue)
+                replay_module.check_start(stamp, venue, tf, today)
+            cut = replay_module.epoch(stamp)
+            info, rows = replay_rows(venue, symbol, tf, cut, replay_module.WARM_BARS, replay_module.AHEAD_BARS)
+            candles, shown = replay_module.window(rows, cut, seconds)
+            if shown >= 20 and len(candles) - shown >= 20:
+                notes = list(info.pop("notes", []) or [])
+                if shown < 100:
+                    notes.append(f"Only {shown} candles before the start: long indicators need a while to settle.")
+                return {**info, "candles": candles, "start_index": shown, "start": cut, "seconds": seconds,
+                        "tf": tf, "market": venue, "notes": notes, "live": {"kind": "none"},
+                        "more": candles[-1]["time"] + seconds < epoch_now(today)}
+            problem = (f"{shown} candles before {stamp:%d %b %Y %H:%M} and {len(candles) - shown} after it"
+                       if candles else f"no candles around {stamp:%d %b %Y}")
+        raise ValueError(f"Not enough history to replay from there ({problem}). "
+                         + ("Try again for another date, or another stock." if start == "random"
+                            else "Pick another date; it may be before this stock listed, or a holiday stretch."))
+
+    def epoch_now(today: pd.Timestamp) -> int:
+        return replay_module.epoch(today)
+
+    @app.get("/api/replay/sessions")
+    def replay_sessions():
+        return app.state.replays.list()
+
+    @app.post("/api/replay/sessions")
+    def replay_session_save(payload: dict):
+        return {"session": app.state.replays.save(body_of(payload)), **app.state.replays.list()}
+
+    @app.get("/api/replay/sessions/{sid}")
+    def replay_session_get(sid: str):
+        try:
+            found = app.state.replays.get(sid)
+        except KeyError:
+            raise HTTPException(404, "no such practice session") from None
+        if found.get("blind") and not found.get("ended"):
+            found = {**found, "symbol": "Hidden", "name": "Hidden until you end it"}
+        return {"session": found}
+
+    @app.delete("/api/replay/sessions/{sid}")
+    def replay_session_delete(sid: str):
+        if not app.state.replays.delete(sid):
+            raise HTTPException(404, "no such practice session")
+        return app.state.replays.list()
 
     @app.get("/api/cpaper")
     def cpaper_view():

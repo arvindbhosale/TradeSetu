@@ -205,3 +205,24 @@ dialog.cd-confirm::backdrop { background: rgba(8, 11, 18, .55); }
 @media (max-width: 720px) {
   .cd-t-form input { width: 120px; }
 }
+
+/* Replay: controls over the chart, practice ticket and results under it. */
+.cd-replaybar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--warn-bg); }
+.cd-replaybar[hidden] { display: none; }
+.cd-replaybar button { padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer; font-size: 13px; }
+.cd-replaybar button.primary { background: var(--accent); border-color: var(--accent); color: #fff; min-width: 92px; }
+.cd-replaybar button:disabled { opacity: .45; cursor: default; }
+.cd-replaybar .cd-r-speed { display: flex; flex-direction: row; gap: 6px; align-items: center; font-size: 12px; color: var(--text2); }
+.cd-r-clock { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text2); flex: 1 1 220px; min-width: 0; }
+.cd-replay { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.cd-replay .cd-t-form label[hidden], .cd-replay .cd-t-form .seg[hidden] { display: none; }
+.cd-r-open { display: grid; gap: 6px; }
+.cd-r-open .cd-ticket input { width: 110px; }
+.cd-r-log { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
+.cd-r-past { display: grid; gap: 6px; }
+@media (max-width: 720px) {
+  .cd-replaybar { gap: 6px; padding: 6px 8px; }
+  .cd-replaybar button { padding: 6px 9px; }
+  .cd-r-clock { flex-basis: 100%; order: 9; }
+}
+.cd-replay label.check { display: flex; gap: 6px; align-items: center; font-size: 13px; }
