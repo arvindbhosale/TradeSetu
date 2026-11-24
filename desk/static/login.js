@@ -1,4 +1,8 @@
 "use strict";
+// After signing in: the page the visit was for (only the Kite login link from the morning reminder), else the desk.
+const AFTER = new URLSearchParams(window.location.search).get("next") === "/broker/login" ? "/broker/login" : "/";
+const remember = () => document.getElementById("remember").checked;
+document.getElementById("remember").addEventListener("change", (event) => { document.getElementById("remember-hint").hidden = !event.target.checked; });
 document.getElementById("form-login").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target, button = form.querySelector("button"), box = document.getElementById("login-error");
@@ -6,8 +10,8 @@ document.getElementById("form-login").addEventListener("submit", async (event) =
   box.hidden = true; button.disabled = true; button.textContent = "Signing in…";
   try {
     const response = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: form.username.value, password: form.password.value, code: form.code.value }) });
-    if (response.ok) { window.location.replace("/"); return; }
+      body: JSON.stringify({ username: form.username.value, password: form.password.value, code: form.code.value, remember: remember() }) });
+    if (response.ok) { window.location.replace(AFTER); return; }
     let message = "Sign-in failed.", needsCode = false;
     try { const data = await response.json(); message = data.error || message; needsCode = Boolean(data.needs_code); } catch (err) { /* not JSON */ }
     if (needsCode && codeRow.hidden) {
@@ -32,8 +36,8 @@ document.getElementById("form-login").addEventListener("submit", async (event) =
       const begun = await start.json();
       if (!start.ok) throw new Error(begun.error || "Passkey sign-in is not available.");
       const credential = await Passkey.get(begun.options);
-      const done = await post("/api/passkey/login", { token: begun.token, credential });
-      if (done.ok) { window.location.replace("/"); return; }
+      const done = await post("/api/passkey/login", { token: begun.token, credential, remember: remember() });
+      if (done.ok) { window.location.replace(AFTER); return; }
       throw new Error((await done.json()).error || "The passkey was not accepted.");
     } catch (err) {
       box.textContent = Passkey.cancelled(err) ? "Passkey sign-in was cancelled." : err.message; box.hidden = false;

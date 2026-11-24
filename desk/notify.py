@@ -38,11 +38,26 @@ class Notifier:
         self.last_error: str | None = None
 
     def _telegram(self) -> tuple[str, str] | None:
+        return self.telegram_target()
+
+    def telegram_target(self, require_alerts: bool = True) -> tuple[str, str] | None:
+        """(bot token, chat id) to send to. ``require_alerts`` False: also when "Send alerts" is off (reminders)."""
         if self.settings is None:
             return None
         cfg = self.settings.all()
         token, chat = cfg["api_keys"].get("TELEGRAM_BOT_TOKEN", ""), cfg["telegram_chat_id"]
-        return (token, chat) if cfg["alerts_enabled"] and token and chat else None
+        return (token, chat) if (cfg["alerts_enabled"] or not require_alerts) and token and chat else None
+
+    def record(self, title: str, body: str = "", level: str = "info") -> None:
+        """Add to the in-app alert log only."""
+        entry = {"time_ist": self._now().strftime("%Y-%m-%d %H:%M:%S"), "level": level if level in LEVELS else "info",
+                 "title": title, "body": body}
+        with self._lock, contextlib.suppress(OSError), open(self.path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+
+    def deliver(self, target: tuple[str, str], text: str) -> None:
+        """Send one Telegram message now (sets ``last_error`` when it fails)."""
+        self._deliver(target, text)
 
     def notify(self, title: str, body: str = "", level: str = "info", key: str | None = None) -> bool:
         """Record an alert and queue it for Telegram. Returns False when it repeats a recent one."""
@@ -125,3 +140,74 @@ class Notifier:
             with contextlib.suppress(json.JSONDecodeError):
                 out.append(json.loads(line))
         return out
+
+
+class TelegramLink:
+    """Link a Telegram chat to the desk without looking up a chat id: open the bot, press Start, done.
+
+    ``begin`` makes a one-time code and a t.me link that opens the bot with it; when the user presses Start,
+    Telegram sends the bot "/start <code>", and ``check`` finds that message among the bot's updates and
+    takes its chat id. The code lasts 10 minutes. ``call(token, method, params)`` replaces the Telegram API
+    (tests).
+    """
+
+    LIFETIME = 600
+
+    def __init__(self, call=None, wall=time.time):
+        self._call, self._wall = call, wall
+        self._pending: dict | None = None
+
+    def _api(self, token: str, method: str, params: dict | None = None):
+        if self._call is not None:
+            return self._call(token, method, params or {})
+        import httpx
+
+        try:
+            response = httpx.post(f"https://api.telegram.org/bot{token}/{method}", json=params or {}, timeout=15)
+            answer = response.json() if response.content else {}
+        except Exception as exc:  # noqa: BLE001 - reported to the user, without the token
+            raise ValueError("Telegram is not answering: " + str(exc).replace(token, "<token>")[:160]) from None
+        if not answer.get("ok"):
+            code, detail = response.status_code, str(answer.get("description") or "")[:160]
+            if code == 401:
+                raise ValueError("Telegram does not accept this bot token. Copy it again from @BotFather and Save.")
+            if code == 409:
+                raise ValueError("This bot sends its messages to a webhook, so the desk cannot read them. Enter "
+                                 "the chat id by hand instead.")
+            raise ValueError(f"Telegram answered {code}: {detail}")
+        return answer.get("result")
+
+    def begin(self, token: str) -> dict:
+        if not token:
+            raise ValueError("Save the bot token from @BotFather first, then press Link.")
+        bot = self._api(token, "getMe") or {}
+        username = bot.get("username")
+        if not username:
+            raise ValueError("Telegram did not say what this bot is called. Check the bot token.")
+        import secrets
+
+        code = "desk" + secrets.token_hex(8)
+        self._pending = {"code": code, "until": self._wall() + self.LIFETIME}
+        return {"url": f"https://t.me/{username}?start={code}", "bot": "@" + username, "code": code}
+
+    def check(self, token: str) -> dict:
+        """{"linked": True, "chat_id", "name"} once Start was pressed; {"linked": False} until then."""
+        pending = self._pending
+        if not pending or self._wall() > pending["until"]:
+            self._pending = None
+            raise ValueError("The link has expired. Press “Link my Telegram” again.")
+        updates = self._api(token, "getUpdates", {"allowed_updates": ["message"], "limit": 100}) or []
+        for update in reversed(updates):
+            message = update.get("message") or {}
+            if str(message.get("text") or "").strip() == f"/start {pending['code']}":
+                chat = message.get("chat") or {}
+                if chat.get("id") is None:
+                    continue
+                self._pending = None
+                # Mark these updates read, so the code is not found again.
+                with contextlib.suppress(Exception):
+                    self._api(token, "getUpdates", {"offset": int(update["update_id"]) + 1, "limit": 1})
+                name = " ".join(x for x in (chat.get("first_name"), chat.get("last_name")) if x) \
+                    or chat.get("title") or chat.get("username") or ""
+                return {"linked": True, "chat_id": str(chat["id"]), "name": name}
+        return {"linked": False}

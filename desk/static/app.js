@@ -1330,6 +1330,7 @@
     form.ticker_show.checked = s.ticker_show; fillTickerPicker();
     form.chart_yahoo.checked = s.chart_source === "kite_then_yahoo";
     form.alerts_enabled.checked = s.alerts_enabled; form.telegram_chat_id.value = s.telegram_chat_id; form.telegram_token.value = "";
+    form.kite_reminder.checked = s.kite_reminder; form.kite_reminder_time.value = s.kite_reminder_time; loadReminderStatus();
     $("#tg-saved").textContent = s.api_keys.TELEGRAM_BOT_TOKEN ? `(saved ${s.api_keys.TELEGRAM_BOT_TOKEN})` : "(not set)";
     form.holidays.value = s.holidays.join("\n");
     form.mcx_holidays.value = s.mcx_holidays.join("\n");
@@ -1396,6 +1397,7 @@
     const changes = { llm_provider: form.llm_provider.value, mcp, kill_switch: form.kill_switch.checked, live_enabled: form.live_enabled.checked, fno_naked_live: form.fno_naked_live.checked, require_stoploss: form.require_stoploss.checked, charts_enabled: form.charts_enabled.checked, enforce_trade_window: form.enforce_trade_window.checked,
       chart_source: form.chart_yahoo.checked ? "kite_then_yahoo" : "kite",
       alerts_enabled: form.alerts_enabled.checked, telegram_chat_id: form.telegram_chat_id.value, holidays: form.holidays.value,
+      kite_reminder: form.kite_reminder.checked, kite_reminder_time: form.kite_reminder_time.value,
       mcx_holidays: form.mcx_holidays.value, analysts: $$("input[name=analyst]:checked", form).map((b) => b.value) };
     NUMERIC.forEach((k) => { changes[k] = Number(form[k].value); });
     TEXT.forEach((k) => { changes[k] = form[k].value; });
@@ -2404,6 +2406,39 @@
     busy(event.target, false);
   });
 
+  async function loadReminderStatus() {
+    let r;
+    try { r = await api("/kite/reminder"); } catch (err) { return; }
+    const last = r.last_day ? `Last: ${r.last_day}, ${r.last_outcome}.` : "";
+    const missing = !r.telegram ? "Needs the bot token and chat id above. " : !r.link ? "Open the desk once from its usual address so the message can carry a login link. " : "";
+    const nse = r.nse_holidays ? ` NSE's holiday list is loaded (${r.nse_holidays} days).` : " NSE's holiday list could not be loaded, so only your holiday list below is used.";
+    $("#kr-status").textContent = r.enabled ? (missing + last + nse).trim() : "Off.";
+  }
+
+  $("#tg-link").addEventListener("click", async (event) => {
+    const out = $("#tg-link-out"), button = event.target;
+    if (!state.app.settings.api_keys.TELEGRAM_BOT_TOKEN) { out.replaceChildren(h("div", { class: "error", text: "Paste the bot token and press Save settings first." })); return; }
+    busy(button, true, "Opening…");
+    try {
+      const r = await api("/telegram/link", { method: "POST" });
+      window.open(r.url, "_blank", "noopener");
+      out.replaceChildren(h("div", { class: "warnbox" }, h("p", {}, "In Telegram, press ", h("strong", { text: "Start" }), ` in the chat with ${r.bot}. Didn't open? `,
+        h("a", { href: r.url, target: "_blank", rel: "noopener noreferrer", text: "Open the bot" }), ". Waiting…")));
+      const until = Date.now() + 5 * 60 * 1000;
+      while (Date.now() < until) {
+        await new Promise((done) => setTimeout(done, 3000));
+        const found = await api("/telegram/link/check", { method: "POST" });
+        if (found.linked) {
+          await loadState(); fillSettings();
+          out.replaceChildren(h("div", { class: "okbox", text: `Linked${found.name ? " to " + found.name : ""}. A confirmation was sent to that chat.` }));
+          busy(button, false); return;
+        }
+      }
+      out.replaceChildren(h("div", { class: "error", text: "No Start seen in 5 minutes. Press Link my Telegram again." }));
+    } catch (err) { out.replaceChildren(h("div", { class: "error", text: err.message })); }
+    busy(button, false);
+  });
+
   $("#holidays-fixed").addEventListener("click", () => {
     const box = $("#form-settings").holidays, year = Number(state.app.today.slice(0, 4));
     const fixed = [year, year + 1].flatMap((y) => [`${y}-01-26`, `${y}-05-01`, `${y}-08-15`, `${y}-10-02`, `${y}-12-25`]);
@@ -2440,8 +2475,31 @@
       renderPasskeys(done.passkeys); }) })), fail);
   }
 
+  async function startDevices() {
+    let r;
+    try { r = await api("/devices"); } catch (err) { return; }
+    if (!r.available) return;
+    $("#devices-panel").hidden = false;
+    renderDevices(r);
+  }
+  function renderDevices(r) {
+    const box = $("#devices"), fail = h("div", {});
+    const run = async (fn) => { fail.replaceChildren(); try { await fn(); } catch (err) { fail.replaceChildren(h("div", { class: "error", text: err.message })); } };
+    const rows = r.devices.length ? table([
+      { label: "Device", get: (d) => d.name + (d.this_device ? " (this one)" : "") }, { label: "Signed in", get: (d) => d.added },
+      { label: "Last used", get: (d) => d.last_used }, { label: "From", get: (d) => d.last_ip }, { label: "Signed in until", get: (d) => d.until },
+      { label: "", get: (d) => h("button", { type: "button", text: "Remove", onclick: () => run(async () => {
+        if (!confirm(`Sign out ${d.name}${d.this_device ? " (this device)" : ""}? It will need the password next time.`)) return;
+        renderDevices(await api(`/devices/${encodeURIComponent(d.id)}`, { method: "DELETE" })); }) }) }], r.devices, "")
+      : h("p", { class: "hint", text: "No device is kept signed in." });
+    box.replaceChildren(rows, r.devices.length ? h("div", { class: "row" }, h("button", { type: "button", text: "Remove all", onclick: () => run(async () => {
+      if (!confirm("Sign out every remembered device? Each will need the password next time.")) return;
+      renderDevices(await api("/devices", { method: "DELETE" })); }) })) : null, fail);
+  }
+
   async function startSecurity() {
     startPasskeys();
+    startDevices();
     let status;
     try { status = await api("/2fa"); } catch (err) { return; }
     if (!status.available) return;

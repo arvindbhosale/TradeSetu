@@ -281,6 +281,7 @@ body.has-ticker .top { top: var(--tk-h, 0px); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; background: var(--muted); }
 .dot.good { background: var(--good); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--s4); }
 .login .or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; } .login .or::before, .login .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.login label.check { justify-content: flex-start; } .login label.check input { width: auto; flex: none; } .login #remember-hint { margin: -6px 0 0; }
 .regimes { display: block; margin-top: 6px; } .regime { display: inline-block; padding: 1px 8px; margin-right: 6px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 .regime.yes { background: var(--good-bg); color: var(--good); } .regime.no { background: var(--surface-2); color: var(--muted); }
 fieldset.days { border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; margin: 8px 0; display: flex; gap: 14px; flex-wrap: wrap; } fieldset.days legend { font-size: 12px; color: var(--muted); padding: 0 4px; }

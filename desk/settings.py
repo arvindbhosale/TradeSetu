@@ -94,6 +94,10 @@ DEFAULTS: dict = {
     # Alerts
     "alerts_enabled": False,
     "telegram_chat_id": "",
+    # A Telegram message on NSE trading days when the desk is not logged in to Kite yet (needs the bot token and
+    # chat id above; sent even when "Send alerts" is off). Time is IST.
+    "kite_reminder": True,
+    "kite_reminder_time": "08:30",
     # Exchange holidays, one YYYY-MM-DD each. The exchange publishes the list every year.
     "holidays": [],
     # Trading window, IST. New orders are taken only between trade_start and
@@ -327,6 +331,12 @@ def _validated(key: str, value, current):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 3 <= value <= 100:
             raise ValueError("mcx_margin_pct must be between 3 and 100")
         return float(value)
+    if key == "kite_reminder_time":
+        if not isinstance(value, str) or not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value.strip()):
+            raise ValueError("The reminder time must be a time as HH:MM")
+        if not "06:00" <= value.strip() <= "15:00":
+            raise ValueError("The reminder time must be between 06:00 (when Kite logins end) and 15:00")
+        return value.strip()
     if key in ("trade_start", "trade_end", "square_off"):
         if not isinstance(value, str) or not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value.strip()):
             raise ValueError(f"{key} must be a time as HH:MM")
