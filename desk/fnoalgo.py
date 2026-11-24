@@ -7,8 +7,11 @@ An F&O algo trades one index (NIFTY, BANKNIFTY, SENSEX...). It is one of two kin
   on a stop or target, or by hand:
   ``intraday`` opens at the entry time on the chosen weekdays and closes at the exit time the same day;
   ``positional`` opens at the entry time on the chosen weekdays and holds until a set number of days before the
-  near expiry; ``signal`` (directional structures only) holds the structure while a strategy on the index's day
-  candles says so, the way the backtest's signal mode does.
+  near expiry; ``signal`` (directional structures only) holds the structure while a strategy on the index's candles
+  says so, the way the backtest's signal mode does. On day candles (``interval`` "1d") it holds overnight (NRML); on
+  intraday candles (5 minutes, 15 minutes...) it is an intraday trade (MIS) like the options backtest on them: read
+  once each candle finishes, sold at the exit time, nothing carried overnight, and after a stoploss or target no new
+  entry that day.
 - **Index futures.** A strategy on the index's day candles decides long, short, or long-and-short; the algo holds
   the near-month future accordingly.
 
@@ -104,6 +107,13 @@ def expiry_text(algo: dict) -> str:
         return f"{_day(algo['expiry'])} expiry only"
     ahead = int(algo.get("expiry_ahead") or 0)
     return f"{_ORDINAL[ahead]} {algo['expiry_kind']}" if ahead else algo["expiry_kind"]
+
+
+def same_day(algo: dict) -> bool:
+    """Whether an algo closes everything by its exit time and carries nothing overnight (MIS): an intraday schedule,
+    or a signal algo on intraday candles (5 minutes, 15 minutes...), as the options backtest on those candles has it."""
+    return algo.get("schedule") == "intraday" or (algo.get("schedule") == "signal"
+                                                   and (algo.get("interval") or "1d") != "1d")
 
 
 def arm_phrase(name: str) -> str:
@@ -336,12 +346,18 @@ class FnoAlgoEngine:
                 raise AlgoError("Unknown strategy.") from None
             if strategy.key == "buy_hold":
                 raise AlgoError("Buy and hold never changes position; there is nothing to automate.")
-            if strategy.intraday_only:
-                raise AlgoError(f"{strategy.name} needs intraday candles; F&O signal algos read day candles.")
-            out.update(strategy=strategy.key, strategy_name=strategy.name,
+            interval = str(raw.get("interval") or "1d")
+            if interval not in data.INTERVALS:
+                raise AlgoError(f"Candle size must be one of {', '.join(data.INTERVALS)}.")
+            if interval != "1d" and (metal or kind == "futures"):
+                raise AlgoError("Futures and MCX metal algos read day candles. Intraday candles are for index "
+                                "option algos.")
+            if strategy.intraday_only and interval == "1d":
+                raise AlgoError(f"{strategy.name} needs intraday candles. Choose a candle size under 1 day.")
+            out.update(strategy=strategy.key, strategy_name=strategy.name, interval=interval,
                        params=strategy.resolve(raw.get("strategy_params")))
         else:
-            out.update(strategy=None, strategy_name=None, params={})
+            out.update(strategy=None, strategy_name=None, params={}, interval="1d")
         return out
 
     def create(self, raw: dict) -> dict:
@@ -398,7 +414,8 @@ class FnoAlgoEngine:
             was_enabled = algo["enabled"]
             algo.update(config)
             core = [k for k in changed if k not in self.OPEN_EDITABLE]
-            if any(k in core for k in ("kind", "underlying", "structure", "direction", "schedule", "strategy", "params")):
+            if any(k in core for k in ("kind", "underlying", "structure", "direction", "schedule", "strategy", "params",
+                                       "interval")):
                 algo.update(last_signal=None, ready=False)  # a signal algo waits for a fresh signal, as a new one does
             if "mode" in changed and was_enabled:
                 algo.update(enabled=False, status="Stopped")
@@ -412,7 +429,9 @@ class FnoAlgoEngine:
         what = algo["structure_name"] if algo["kind"] == "structure" else f"{algo['underlying']} futures {algo['direction']}"
         how = {"intraday": f"intraday {algo['entry_time']}-{algo['exit_time']}",
                "positional": f"positional, out {algo['exit_days_before']} day(s) before expiry",
-               "signal": f"on {algo.get('strategy_name')} signals"}[algo["schedule"]]
+               "signal": f"on {algo.get('strategy_name')} signals"
+                         + (f" ({data.INTERVALS[algo['interval']]['label']} candles, intraday: out by "
+                            f"{algo['exit_time']})" if same_day(algo) else "")}[algo["schedule"]]
         kind = "structure" if algo["kind"] == "structure" else "futures"
         steps = scaleout.of(algo.get("steps")).text(kind)
         adds = scalein.of(algo.get("adds")).text(kind)
@@ -760,7 +779,7 @@ class FnoAlgoEngine:
         reason = margin_why_not(kite)
         if reason:
             return {"margin_note": reason}
-        product = "MIS" if algo["schedule"] == "intraday" else "NRML"
+        product = "MIS" if same_day(algo) else "NRML"
         try:
             got = zerodha_basket(kite, [{"exchange": g["exchange"], "tradingsymbol": g["tradingsymbol"],
                                          "side": "BUY" if g["action"] > 0 else "SELL", "quantity": g["quantity"],
@@ -858,7 +877,7 @@ class FnoAlgoEngine:
             if any(g["pending"] for g in book["legs"]):
                 return "Running: waiting for fills", True
         if not session:
-            if book and algo["schedule"] == "intraday" and book["phase"] != "closing":
+            if book and same_day(algo) and book["phase"] != "closing":
                 self._log(algo, "Legs still open after the close. An intraday algo carries nothing overnight; it closes "
                                 "them at the next open. Check Kite.")
                 return "Blocked: legs left open", False
@@ -908,14 +927,72 @@ class FnoAlgoEngine:
         return signal
 
     def _signal(self, algo: dict) -> int | None:
-        """The day's signal, read once a day from the index's finished day candles: +1, -1 or 0."""
-        today = self._now().strftime("%Y-%m-%d")
+        """The signal: +1, -1 or 0. On day candles it is read once a day from the index's finished day candles; on
+        intraday candles once a candle, from the newest finished one (the backtest acts on it at the next open)."""
+        now = self._now()
+        today = now.strftime("%Y-%m-%d")
+        interval = algo.get("interval") or "1d"
+        if interval != "1d":
+            return self._intraday_signal(algo, now)
         if algo["last_signal"] and algo["last_signal"]["day"] == today:
             return algo["last_signal"]["want"]
         bars = self._day_bars(algo["underlying"])
         bars = bars[bars.index.normalize() < pd.Timestamp(today)]           # finished candles only
         if len(bars) < 30:
             raise AlgoError(f"Not enough {algo['underlying']} day candles for the strategy")
+        return self._read_signal(algo, bars, today, bars.index[-1].strftime("%Y-%m-%d"))
+
+    def _intraday_signal(self, algo: dict, now) -> int:
+        minutes = data.INTERVALS[algo["interval"]]["minutes"]
+        naive = now.replace(tzinfo=None)
+        last = algo["last_signal"]
+        if last and last.get("next") and naive < datetime.strptime(last["next"], "%Y-%m-%d %H:%M"):
+            return last["want"]                                     # the next candle has not finished yet
+        bars = self._intraday_bars(algo, naive)
+        bars = bars[bars.index + pd.Timedelta(minutes=minutes) <= naive]   # drop the forming candle
+        if len(bars) < 30:
+            raise AlgoError(f"Not enough {algo['underlying']} {data.INTERVALS[algo['interval']]['label']} candles "
+                            f"for the strategy")
+        stamp = bars.index[-1]
+        age = (naive - (stamp + pd.Timedelta(minutes=minutes))).total_seconds() / 60
+        # Today's first candle finishes only after the open: until then yesterday's last one stands, as in the backtest.
+        if stamp.normalize() == pd.Timestamp(naive.date()) and age > max(2 * minutes, 10):
+            raise AlgoError(f"The newest finished {algo['underlying']} candle ({stamp:%H:%M}) is {age:.0f} minutes "
+                            f"old. Not trading on stale data; Kite's historical data gives live candles")
+        first_done = pd.Timestamp(naive.date()) + data.SESSION_OPEN + pd.Timedelta(minutes=minutes)
+        if stamp.normalize() < pd.Timestamp(naive.date()) and naive >= first_done + pd.Timedelta(minutes=max(minutes, 10)):
+            raise AlgoError(f"No {algo['underlying']} candle from today yet. Not trading on stale data; Kite's "
+                            f"historical data gives live candles")
+        bar = stamp.strftime("%Y-%m-%d %H:%M")
+        if last and last.get("bar") == bar:
+            return last["want"]
+        want = self._read_signal(algo, bars, now.strftime("%Y-%m-%d"), bar)
+        # Read again once the next candle has finished: today's first one, while the newest is from an earlier day.
+        upcoming = (stamp + pd.Timedelta(minutes=2 * minutes) if stamp.normalize() == pd.Timestamp(naive.date())
+                    else first_done)
+        algo["last_signal"]["next"] = upcoming.strftime("%Y-%m-%d %H:%M")
+        return want
+
+    def _intraday_bars(self, algo: dict, naive) -> pd.DataFrame:
+        """The index's intraday candles from Kite (a few days, or what the strategy needs), else Yahoo's (delayed)."""
+        kite, interval, underlying = self.desk.kite, algo["interval"], algo["underlying"]
+        if self.fetch is None and kite.connected and "get_historical_data" in kite.tools:
+            need = 0
+            with contextlib.suppress(ValueError, AttributeError):
+                need = int(getattr(self.library.strategy(algo["strategy"]), "history_days", 0) or 0)
+            days = min(max(5, need), data.KITE_CHUNK[interval])
+            with contextlib.suppress(KiteError, KeyError, ValueError, TypeError):
+                frame = data.kite_frame(kite.candles(SPOT[underlying], interval, naive - timedelta(days=days), naive))
+                if len(frame) >= 30:
+                    return frame
+        if underlying not in YAHOO_SPOT:
+            raise AlgoError(f"{underlying} intraday candles come from Kite's historical data, which is not available")
+        try:
+            return data.candles(YAHOO_SPOT[underlying], interval, fetch=self.fetch, max_age=20)
+        except data.NoData as exc:
+            raise AlgoError(f"No intraday candles for {underlying}: {exc}") from None
+
+    def _read_signal(self, algo: dict, bars: pd.DataFrame, today: str, bar: str) -> int:
         strategy = self.library.strategy(algo["strategy"])
         try:
             positions = strategy.positions(bars, algo["params"]).fillna(0).astype(int)
@@ -935,7 +1012,7 @@ class FnoAlgoEngine:
         if previous is not None and want != previous:
             algo["ready"] = True                             # a fresh signal: a new algo does not join a trend midway
         close = round(float(bars["Close"].iloc[-1]), 2)
-        algo["last_signal"] = {"day": today, "bar": bars.index[-1].strftime("%Y-%m-%d"), "want": want, "close": close}
+        algo["last_signal"] = {"day": today, "bar": bar, "want": want, "close": close}
         self._log(algo, f"{algo['last_signal']['bar']} close {close:,.2f}: signal "
                         f"{ {1: 'on' if algo['kind'] == 'structure' else 'buy', -1: 'sell', 0: 'off'}[want] }"
                         + ("" if algo["ready"] or not want else "; waiting for a fresh signal rather than joining midway") + ".")
@@ -1120,7 +1197,7 @@ class FnoAlgoEngine:
             return self._begin_close(algo, "Exit pressed", block=True)
         if self.desk.flatten_day == today:
             return self._begin_close(algo, "daily loss limit", block=True)
-        if algo["schedule"] == "intraday" and book["day"] != today:
+        if same_day(algo) and book["day"] != today:
             return self._begin_close(algo, "carried overnight (the desk was not running at the exit time)", block=False)
         open_legs = [g for g in book["legs"] if g["open_qty"]]
         prices = self._prices([g["instrument"] for g in open_legs])
@@ -1140,8 +1217,8 @@ class FnoAlgoEngine:
         pct = self._pct_exit(algo, prices)
         if pct:
             return self._begin_close(algo, pct, block=True)
-        if algo["schedule"] == "intraday" and now.strftime("%H:%M") >= algo["exit_time"]:
-            return self._begin_close(algo, f"exit time {algo['exit_time']}", block=False)
+        if same_day(algo) and now.strftime("%H:%M") >= algo["exit_time"]:
+            return self._begin_close(algo, f"exit time {algo['exit_time']}", block=False, ready=True)
         due = sorted({g["expiry"] for g in open_legs if self._exit_due(algo, g["expiry"])})
         if due:
             roll = algo["schedule"] == "signal"
@@ -1291,7 +1368,7 @@ class FnoAlgoEngine:
         """The margin of the legs an add opens (``(leg, quantity)``): Zerodha's basket figure, else an estimate."""
         kite = self.desk.kite
         if not margin_why_not(kite):
-            product = "MIS" if algo["schedule"] == "intraday" else "NRML"
+            product = "MIS" if same_day(algo) else "NRML"
             with contextlib.suppress(MarginUnavailable):
                 got = zerodha_basket(kite, [{"exchange": g["exchange"], "tradingsymbol": g["tradingsymbol"],
                                              "side": "BUY" if g["action"] > 0 else "SELL", "quantity": q,
@@ -1427,7 +1504,7 @@ class FnoAlgoEngine:
         """Open again a leg that hit its stoploss, when its rule says so; and keep working a re-entry order."""
         book = algo["book"]
         rules = self.leg_rules(algo)
-        if algo["schedule"] == "intraday" and now.strftime("%H:%M") >= algo["exit_time"]:
+        if same_day(algo) and now.strftime("%H:%M") >= algo["exit_time"]:
             return None
         for g in [x for x in book["legs"] if x.get("reentry") and x["open_qty"] < x["quantity"] and not x["pending"]]:
             if g["tries"] >= ENTRY_TRIES:
@@ -1482,7 +1559,10 @@ class FnoAlgoEngine:
             g.pop("close_to", None)
         if block:
             algo["blocked_day"] = self._now().strftime("%Y-%m-%d")
-        algo["ready"] = ready if algo["schedule"] == "signal" else algo["ready"]
+        if algo["schedule"] == "signal":
+            # A signal algo on intraday candles stays ready after any close: it opens again on a later day while the
+            # strategy still says so (a stop or target blocks only the rest of that day), as the backtest does.
+            algo["ready"] = ready or same_day(algo)
         self._log(algo, f"Closing every leg: {reason}.")
         return self._work_close(algo)
 
@@ -1552,7 +1632,7 @@ class FnoAlgoEngine:
         if -(-quantity // biggest) > MAX_SLICES:
             raise OrderRejected([f"{quantity} of {leg['tradingsymbol']} needs more than {MAX_SLICES} orders at the "
                                  f"exchange's freeze limit of {freeze}; use fewer lots"])
-        product = "MIS" if algo["schedule"] == "intraday" else "NRML"
+        product = "MIS" if same_day(algo) else "NRML"
         source = f"fno:{algo['name']}"
         while quantity > 0:
             size = min(quantity, biggest)
@@ -1665,4 +1745,5 @@ _BLANK = {
     "enabled": False, "exit_requested": False, "status": "Stopped", "log": [], "book": None,
     "last_entry_day": None, "blocked_day": None, "last_signal": None, "ready": False,
     "realized": 0.0, "trades": 0, "history": [], "hold_until": None, "expiry": None, "expiry_ahead": 0, "bias": None,
+    "interval": "1d",
 }
