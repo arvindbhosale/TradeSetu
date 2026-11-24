@@ -14,6 +14,10 @@ Stoploss and target (% of the premium, and ``stop_rs`` / ``target_rs`` in rupees
 premium inside each candle, priced from the index's open, low and high, as the algo watches the live price: they fill at
 their level, or at the open's premium when the candle opens past it. When one candle reaches both, the stoploss.
 
+Intraday (candles under a day): everything is sold at the square-off time in Settings and nothing is carried overnight;
+no entry is made at or after it, nor outside the trade window when Settings enforces it. Once a stoploss, target or the last profit step closes a trade, no new one opens that
+day, as an intraday F&O algo stops for the day; it buys again on a later day while the strategy still says so.
+
 Book profit in steps (``steps``, in lots, levels in % or points of the premium paid): checked on each candle's close
 like the stoploss and target, closing that many lots of the option there and holding the rest.
 
@@ -202,11 +206,15 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
                 lots: int, lot_size: int, side: str = "calls", moneyness: int = 0, min_days: float = 2,
                 expiry_weekday: int = 1, stop_pct: float = 0, target_pct: float = 0, iv_scale: float = 1.0,
                 slippage_pct: float = 1.0, intraday: bool = False, square_off: str = "15:00", strategy_name: str = "",
-                steps: Steps = NO_STEPS, adds: Adds = NO_ADDS, stop_rs: float = 0.0, target_rs: float = 0.0) -> dict:
+                steps: Steps = NO_STEPS, adds: Adds = NO_ADDS, stop_rs: float = 0.0, target_rs: float = 0.0,
+                entry_window: tuple[str, str] | None = None) -> dict:
     """Buy options on the underlying strategy's signals, priced with Black-Scholes. See the module note.
 
     ``stop_rs`` / ``target_rs``: close the position when its profit or loss in rupees (with the charges paid so far,
-    and any profit step booked) reaches this, as an F&O algo's maximum loss and target do."""
+    and any profit step booked) reaches this, as an F&O algo's maximum loss and target do.
+
+    ``entry_window`` (intraday): ("09:30", "15:00") buys only on candles that start inside it, as an algo enforcing the
+    trade window in Settings does."""
     if side not in ("calls", "puts", "both"):
         raise ValueError("side must be calls, puts or both")
     if lots < 1 or lot_size < 1:
@@ -236,12 +244,14 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
     quantity = lots * lot_size
     slip = slippage_pct / 100
     cutoff = pd.Timestamp(f"2000-01-01 {square_off}").time()
+    window = tuple(pd.Timestamp(f"2000-01-01 {t}").time() for t in entry_window) if intraday and entry_window else None
     cash, held, trades, total_charges, in_market = capital, None, [], 0.0, 0
     skipped = 0
     equity = []
     plan = steps.lots() if steps.active else []
     steps_booked = 0
     adds_made = adds_skipped = 0
+    done_day = None                 # intraday: the day a stoploss or target closed the trade (no new entry that day)
 
     def vol_at(stamp):
         return float(vol_by_day.get(stamp.normalize(), vol_by_day.iloc[-1])) * iv_scale
@@ -264,7 +274,9 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
         return fill, qty * fill - fees - part
 
     def close(i, premium, reason):
-        nonlocal held
+        nonlocal held, done_day
+        if intraday and reason not in ("square-off", "signal", "expiry"):
+            done_day = stamps[i].normalize()     # as the algo: a stop or target ends that day's trading
         fill, pnl = settle(premium, held["lots"])
         pnl += held["booked"]
         trade = {"entry_date": held["opened"].strftime("%Y-%m-%d %H:%M"), "exit_date": stamps[i].strftime("%Y-%m-%d %H:%M"),
@@ -344,7 +356,8 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
             wanted_kind = "PE"
         if held is not None and held["kind"] != wanted_kind:
             close(i, price(held, stamp, spot_open), "signal")
-        if held is None and wanted_kind and not (intraday and stamp.time() >= cutoff):
+        if held is None and wanted_kind and not (intraday and (stamp.time() >= cutoff or done_day == stamp.normalize()
+                                                               or (window and not window[0] <= stamp.time() < window[1]))):
             expiry = next_expiry(stamp, expiry_weekday, min_days)
             atm = round(spot_open / step) * step
             shift = step * moneyness

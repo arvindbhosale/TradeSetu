@@ -2635,12 +2635,17 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             stop_pct=_number(payload, "stop_pct", 0), target_pct=_number(payload, "target_pct", 0),
             stop_rs=_number(payload, "stop_rs", 0), target_rs=_number(payload, "target_rs", 0),
             iv_scale=_number(payload, "iv_scale", 1.0), slippage_pct=_number(payload, "slippage_pct", 1.0),
-            intraday=interval != "1d", square_off=cfg["square_off"], strategy_name=strategy.name, steps=s, adds=a),
+            intraday=interval != "1d", square_off=cfg["square_off"], strategy_name=strategy.name, steps=s, adds=a,
+            entry_window=(cfg["trade_start"], cfg["trade_end"]) if cfg["enforce_trade_window"] else None),
             scaleout.from_payload(payload.get("steps"), "option", lots), scalein.from_payload(payload.get("adds"), "option", lots))
         skipped = result.get("skipped_entries") or 0
         result.update(interval=interval, data_note=f"Underlying candles from {source}. Option premiums are simulated with "
                       f"Black-Scholes and India VIX × {_number(payload, 'iv_scale', 1.0):g}: Kite keeps no candles for expired contracts."
-                      + (f" {skipped} signals were not taken: the capital did not cover the premium." if skipped else ""),
+                      + (f" {skipped} signals were not taken: the capital did not cover the premium." if skipped else "")
+                      + ((f" Intraday: buys only between {cfg['trade_start']} and {cfg['trade_end']} (the trade window in "
+                          f"Settings)" if cfg["enforce_trade_window"] else " Intraday")
+                         + f", everything sold at {cfg['square_off']}, and no new trade on a day after a stoploss or "
+                           f"target, as the algo does." if interval != "1d" else ""),
                       benchmark_name=None, benchmark_note=None)
         return result
 
