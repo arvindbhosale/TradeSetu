@@ -5,7 +5,8 @@ How a run trades, so its figures can be read for what they are:
 - A signal formed on bar ``t``'s close is acted on at bar ``t+1``'s open.
 - Trade type. **Intraday** (intraday candles only, MIS charges): entries only
   inside the trade window, and whatever is open is sold at the square-off time;
-  nothing is carried overnight. **Positional** (any candle; day candles are always
+  nothing is carried overnight, a buy signal included: rules that latched a buy on an earlier day buy again
+  only when today's candles meet the buy rules. **Positional** (any candle; day candles are always
   positional): no trade window and no square-off, the position is held across
   days until the strategy, the stoploss, the target or the holding limit closes
   it, with delivery (CNC) charges. A positional trade bought and sold the same
@@ -177,6 +178,13 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
                                               (params.trade_start, params.trade_end, params.square_off))
 
     target = strategy.positions(bars, resolved).to_numpy()
+    # Intraday: a buy signal latched in an earlier session is not carried into today. Rules with their own buy
+    # condition (custom rules) buy only on a candle of today where that condition holds again, or after the
+    # position has gone flat and signalled anew. Strategies without one keep their position as the signal.
+    signal = getattr(strategy, "entry_signal", None)
+    fresh = signal(bars, resolved) if signal and same_day_only else None
+    fresh = None if fresh is None else fresh.to_numpy(bool)
+    carried = False
     opens, highs, lows, closes = (bars[c].to_numpy(float) for c in ("Open", "High", "Low", "Close"))
     dates = bars.index
     slip = params.slippage_bps / 10_000
@@ -331,13 +339,13 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
     for i in range(len(bars)):
         want = target[i - 1] if i > 0 else 0
         if want == 0:
-            blocked, rearm = False, None
+            blocked, rearm, carried = False, None, False
         held_before = qty > 0
         may_enter = True
         if same_day_only:
             new_day = i == 0 or days[i] != days[i - 1]
             if new_day:
-                blocked, rearm = False, None
+                blocked, rearm, carried = False, None, bool(want)
                 if held_before:                      # never carried overnight: sold at the last close
                     close_trade(i - 1, closes[i - 1] * (1 - slip), "square-off")
                     equity[i - 1] = cash
@@ -346,6 +354,8 @@ def run_strategy(bars: pd.DataFrame, strategy, strategy_params: dict | None = No
                 close_trade(i, opens[i] * (1 - slip), "square-off")
                 held_before = False
             may_enter = window_start <= times[i] < window_end
+            if carried and fresh is not None and not (fresh[i - 1] and days[i - 1] == days[i]):
+                may_enter = False            # yesterday's signal: wait for today's candles to say buy again
 
         # 0. The holding limit: sold at this session's first open once the trade has been held long enough.
         if held_before and max_hold and sessions[i] - sessions[entry_index] >= max_hold:
