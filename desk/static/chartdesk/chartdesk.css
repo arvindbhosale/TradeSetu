@@ -226,3 +226,31 @@ dialog.cd-confirm::backdrop { background: rgba(8, 11, 18, .55); }
   .cd-r-clock { flex-basis: 100%; order: 9; }
 }
 .cd-replay label.check { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+
+/* Candle patterns panel (patternpanel.js) */
+.cd-btn[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.cd-patterns { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.cd-pat-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.cd-pat-head h3, .cd-pat-block h4 { margin: 0; }
+.cd-pat-controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end; }
+.cd-pat-controls label { display: grid; gap: 4px; font-size: 13px; color: var(--text2); }
+.cd-pat-controls label.check { display: flex; gap: 6px; align-items: center; }
+.cd-pat-controls input[type=number] { width: 7em; }
+.cd-pat-adv { flex-basis: 100%; }
+.cd-pat-adv summary { cursor: pointer; font-size: 13px; color: var(--text2); }
+.cd-pat-adv .cd-pat-controls { margin-top: 8px; }
+.cd-pat-adv p { margin: 0; flex-basis: 100%; }
+.cd-pat-block { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.cd-pat-block p { margin: 0; }
+.cd-pat-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.cd-pat-picked { border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px; }
+.cd-pat-pickhead { display: flex; justify-content: space-between; align-items: center; }
+.cd-pat-one + .cd-pat-one { margin-top: 8px; }
+.cd-table tr.cd-few td { color: var(--muted); }
+.cd-table tr.cd-few td.up, .cd-table tr.cd-few td.down { color: var(--muted); }
+.cd-verdict { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line-strong); white-space: nowrap; }
+.cd-verdict.v-up { color: var(--good); border-color: var(--good); }
+.cd-verdict.v-down { color: var(--bad); border-color: var(--bad); }
+.cd-verdict.v-maybe_up, .cd-verdict.v-maybe_down { border-style: dashed; }
+.cd-verdict.v-few { color: var(--muted); }
+.cd-leg-pat { color: var(--accent); font-weight: 600; }

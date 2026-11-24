@@ -787,6 +787,33 @@ Charges are the paper desk's (brokerage, STT and the rest for shares; 0.1% a sid
 
 **Limits.** NSE/BSE replays use your broker's history (connect and log in on the Trade tab). With Kite: intraday candles from February 2015, day candles from 2008; Kite keeps no candles for expired option contracts, so past options cannot be replayed. Crypto replays use Binance's history from 2018. Each load brings about 1,500 candles; more load when the replay reaches the end. The candles are in your browser while you replay, so blind mode is honest practice, not a test that cannot be cheated.
 
+### Candle patterns: what followed them, and a range of likely prices
+
+**Patterns** (on the chart's bar) marks candle patterns on the chart and shows what actually followed each one **on this chart's own candles**. It does not say "Morning Star means up": a textbook reading is often wrong for a given stock, so the panel measures it instead.
+
+**On the chart.** A green arrow under a candle marks a pattern the textbook reads as up (Hammer, Bullish Engulfing, Morning Star…), a red arrow over it one read as down (Shooting Star, Evening Star…), a grey dot a Doji. A pattern is marked only when its last candle has **closed**, so a mark never appears and then vanishes; on a live chart during market hours the newest candle waits until it closes. Tap a marked candle to see its patterns' odds. Untick **On chart** in the table to hide one (Doji is hidden at first, it is common).
+
+**The table.** For each of 19 patterns: how many times it closed on these candles, how often the price was **higher** 1, 5 or 10 candles later (**Look ahead**), the average move, the worst and the best. The first line is the **normal candle**: how often the price was higher after any candle. A pattern is worth something only if it beats that: on a stock that rose on 54% of days, a pattern that was "up 56% of the time" tells you nothing.
+
+**What the past shows** puts it in words:
+
+| Words | Meaning |
+|---|---|
+| Too few cases | Fewer than 30 cases (change it under Advanced). Grey row: do not read anything into it. |
+| No clear edge | Within 2 standard errors of the normal candle. Most patterns on most stocks land here. |
+| A little more up (down), could be luck | 2 to 3 standard errors away. 19 patterns at 3 look-aheads are tested at once, so a few land here by chance alone. |
+| Up (Down) more often than normal | 3 or more standard errors away. Rare on pure chance; still check it across other stocks and in a backtest. |
+
+**Filters** count a pattern only where it is supposed to matter: **Trend before it** (Uptrend or Downtrend by the 20- and 50-candle averages, on the candle before), **Where** (near a recent low or high: within 1 × ATR of the lowest low or highest high of the 20 candles before), **Only on above-average volume**. The normal candle is filtered the same way, so the comparison stays fair.
+
+**Count across all Nifty 50 stocks** (NSE day candles) adds up every stock's cases, for patterns too rare on one stock (Morning Star shows up only a few times a year). It loads about six years of day candles per stock once, then reuses them. The stock list is today's Nifty 50, so stocks that dropped out are missing, which flatters patterns a little.
+
+**Range of likely prices.** A shaded band to the right of the last closed candle: half of this stock's past moves of that length ended in the darker band, 8 in 10 in the lighter one, scaled to how much the price is moving now. The dashed line is the middle. The panel says how often the 8-in-10 range held the price on the newest third of the candles, measured with the older two-thirds only (near 80% means the range is honest). It is a range from past moves, **not a prediction**: there is no forecast line, because a single line would claim more than the data can.
+
+**In a replay** the patterns, odds and range use only the candles shown, so they never see past the cut. Step forward and see where the price went.
+
+**In strategies.** "Candle pattern *is one of* …" is a rule in Strategies, so you can backtest a pattern with charges before trusting it.
+
 ### Classic chart
 
 NSE/BSE candles through the desk, with the same indicators and drawing tools as the live chart.
@@ -866,10 +893,11 @@ Comparisons: *is above*, *is below*, *is at or above*, *is at or below*, *crosse
 
 Indicators you can use: Close, Open, High, Low, Previous close, SMA, EMA, VWAP, Bollinger upper/middle/lower, Supertrend line, Parabolic SAR, highest high and lowest low of the last N candles, traditional pivots P, R1-R3 and S1-S3 (daily, weekly or monthly), RSI, MACD line/signal/histogram, ADX, +DI, −DI, Stochastic %K/%D, CCI, Awesome Oscillator, ATR, Volume, Average volume.
 
-**Time and day rules.** Two more choices on the left side:
+**Time, day and pattern rules.** Three more choices on the left side:
 
 - **Time of day** *is after*, *is before*, *is at or after* or *is at or before* a time such as 09:20. Intraday candles only. Example: "Buy when Close crosses above VWAP **and** Time of day is after 09:30".
 - **Day of week** *is one of* the days you tick. Example: "Buy when … **and** Day of week is one of Mon, Tue".
+- **Candle pattern** *is one of* the patterns you tick (Hammer, Bullish Engulfing, Morning Star and the rest). True on the candle the pattern closes on. Example: "Buy when Candle pattern is one of Hammer, Morning Star **and** Close is below SMA(50)". See what followed each pattern on the chart's **Patterns** panel first.
 
 Good to know:
 
