@@ -1387,9 +1387,17 @@
         <p class="hint">1. In Telegram, message <code>@BotFather</code>, send <code>/newbot</code>, and copy the token it gives. 2. Open your new bot and press Start. 3. Message <code>@userinfobot</code> to get your chat id. 4. Fill both in, tick the box, Save, then Test.</p>
         <label>Bot token <span class="hint" id="tg-saved"></span><input name="telegram_token" type="password" autocomplete="off" placeholder="unchanged"></label>
         <label>Chat id <input name="telegram_chat_id" autocomplete="off" placeholder="123456789"></label>
+        <div class="row"><button type="button" id="tg-link">Link my Telegram</button><span class="hint">After saving the bot token: opens your bot; press Start there and the chat id fills in by itself.</span></div>
+        <div id="tg-link-out"></div>
         <label class="check"><input type="checkbox" name="alerts_enabled"> Send alerts to Telegram</label>
         <div class="row"><button type="button" id="alerts-test">Send a test alert</button><span class="hint">Save first.</span></div>
         <div id="alerts-test-out"></div>
+        <fieldset><legend>Morning Kite login reminder</legend>
+          <label class="check"><input type="checkbox" name="kite_reminder"> Remind me on Telegram to log in to Kite</label>
+          <label>At (IST) <input name="kite_reminder_time" type="time" min="06:00" max="15:00"></label>
+          <p class="hint">Sent on NSE trading days only (no weekends or exchange holidays), and only if the desk is not logged in to Kite yet that day. The message has a link that opens the Kite login for this desk. Uses the bot and chat above, even with "Send alerts" off. The desk must be running at that time (on a server it always is; the desktop app must be open).</p>
+          <p class="hint" id="kr-status"></p>
+        </fieldset>
         <p class="hint">Sent for: orders filled or refused, an algo blocked or closed by a stop or target, the daily loss limit, Kite signing you out while live algos wait, and security changes.</p>
       </div>
       <div class="panel">
@@ -1405,6 +1413,11 @@
     <div class="panel" id="security-panel" hidden>
       <h2>Two-factor sign-in</h2>
       <div id="twofa"></div>
+    </div>
+    <div class="panel" id="devices-panel" hidden>
+      <h2>Signed-in devices</h2>
+      <p class="hint">Phones and computers where "Keep me signed in on this device" was ticked at sign-in. Each stays signed in for 30 days from then, only in that same browser. Remove one to sign it out now. Signing out on a device also removes it.</p>
+      <div id="devices"></div>
     </div>
     <div class="panel" id="passkey-panel" hidden>
       <h2>Passkeys</h2>

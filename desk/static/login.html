@@ -27,6 +27,8 @@
       <label>Username <input name="username" autocomplete="username" required autofocus></label>
       <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
       <label id="code-row" hidden>Authenticator code <input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 digits, or a recovery code"></label>
+      <label class="check" title="Stay signed in on this phone or computer for 30 days. Remove it any time in Settings → Signed-in devices."><input type="checkbox" name="remember" id="remember"> Keep me signed in on this device for 30 days</label>
+      <p class="hint" id="remember-hint" hidden>Only on your own phone or computer, never a shared one.</p>
       <button class="primary" type="submit">Sign in</button>
       <div class="or" id="passkey-row" hidden><span>or</span></div>
       <button type="button" id="passkey-login" hidden>Sign in with a passkey</button>
