@@ -205,7 +205,8 @@ def as_strategy(strategy_id: str, spec: dict) -> Strategy:
             for side in (rule["left"], rule["right"]) if side.get("indicator")]
     return Strategy(PREFIX + strategy_id, spec["name"], summary, (), lambda bars: positions(spec, bars),
                     intraday_only=any(ind.OPERANDS[key].intraday for key in used), source="custom",
-                    history_days=max((ind.OPERANDS[key].history_days for key in used), default=0))
+                    history_days=max((ind.OPERANDS[key].history_days for key in used), default=0),
+                    entries=lambda bars: _passes(spec["entry"], bars, {}))
 
 
 class CustomStrategies:

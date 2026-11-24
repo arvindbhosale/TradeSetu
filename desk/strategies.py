@@ -40,6 +40,15 @@ class Strategy:
     legend: str = ""                    # the trader whose rules it follows
     note: str = ""                      # how it behaves in each kind of market
     history_days: int = 0               # calendar days of intraday history a live algo must load (weekly pivots: 14)
+    entries: object = None              # the raw buy condition (bars, **params) -> bool Series, for latched rules
+
+    def entry_signal(self, bars: pd.DataFrame, params: dict | None = None) -> pd.Series | None:
+        """Where the buy condition itself holds, or None when the strategy has no separate one (its position is
+        the condition). An intraday trade uses it to re-check a buy signal carried over from an earlier session."""
+        if self.entries is None:
+            return None
+        out = self.entries(bars, **self.resolve(params))
+        return out.reindex(bars.index).fillna(False).astype(bool)
 
     def resolve(self, given: dict | None) -> dict:
         """Parameter values, validated; raises ValueError naming the bad one."""

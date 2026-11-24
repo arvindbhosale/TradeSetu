@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- **Intraday backtests and algos no longer buy on yesterday's signal.** With your own Buy when / Sell when rules, a buy signal stayed "on" after the square-off until the Sell rule fired, so the next morning the backtest (and the intraday algo) bought at the first candle of the window even when none of the Buy rules held that day. A signal from an earlier day is now bought only when today's candles meet the Buy rules again. Positional trades and built-in strategies are unchanged (`Strategy.entries`, `entry_signal`; algo status **Running: waiting for today's buy signal**).
+
 ### Added
 - **Backtests test what algos do.** Index futures and options buying backtests take **Maximum loss (₹)** and **Target profit (₹)** for the position, as F&O algos have them (a live algo needs a maximum loss), and **Create algo** carries them over. F&O algos take the backtests' whole-position **Stoploss / Target %** (an option strategy's % of its premium, a future's % of its price), so the % exits a backtest tested are no longer dropped when it becomes an algo (`stop_rs`/`target_rs` in `/api/backtest/futures` and `/api/backtest/options`; `stop_pct`/`target_pct` in `/api/fno-algos`).
 - **Index strip** along the top of every page (desktop, phone and the apps): NIFTY 50, SENSEX, BANK NIFTY, FIN NIFTY, NIFTY NEXT 50, MIDCAP 100, SMALLCAP 100 and INDIA VIX scrolling with their change, live from your broker (one quote call for the whole strip, at most every 15 seconds while the market is open, every 5 minutes when closed). Badge: Live, Delayed, Market closed, or Offline with the last daily closes. Press an index to open its live chart. Pick the indices or switch it off in Settings → Index strip (`desk/ticker.py`, `GET /api/ticker`, `GET /api/ticker/choices`, settings `ticker_show`, `ticker_indices`).

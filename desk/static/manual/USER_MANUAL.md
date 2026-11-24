@@ -1110,7 +1110,7 @@ The **Trades** table lists every trade with its entry, exit, profit and the reas
 Choose a 1, 2, 3, 4, 5, 15, 30-minute or 1-hour candle. With **Trade type: Intraday** (the default on these candles) the backtest trades the way an intraday algo does:
 
 - Buys only between **Start buying at** and **Stop buying at** (your Settings trade window, 09:30 to 15:00 by default, when left empty).
-- Sells everything at the **Sell everything at** time. Nothing is held overnight.
+- Sells everything at the **Sell everything at** time. Nothing is held overnight, and neither is a buy signal: with your own **Buy when / Sell when** rules, a signal from an earlier day is bought only when today's candles meet the Buy rules again.
 - Uses intraday (MIS) charges.
 
 ### Positional (swing) backtests
@@ -1589,6 +1589,7 @@ Open **Activity** to see everything the algo did and why.
 | **Running: waiting to re-enter** | It hit a plain stoploss and has re-entries left. It buys again as the exit rules say. |
 | **Running: order sent** | A live order is with Zerodha, not yet filled. |
 | **Running: done for the day** | Past the square-off time (intraday). |
+| **Running: waiting for today's buy signal** | Intraday, your own rules: the buy signal is from an earlier day. It buys when today's candles meet the Buy rules again. |
 | **Running: market closed, holding N** | A positional algo waiting overnight; its GTT guards the position. |
 | **Blocked: Kite not connected / needs a login** | Sign in to Kite on the Trade tab. |
 | **Blocked: candles are delayed** | The newest candle is too old to trust. The algo refuses to trade on it. |

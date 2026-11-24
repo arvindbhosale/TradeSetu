@@ -59,6 +59,7 @@ import uuid
 from datetime import datetime, time as clock_time, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from tradingagents.dataflows.symbols import kite_instrument, normalize_symbol, safe_ticker_component
@@ -832,9 +833,20 @@ class AlgoEngine:
             self._retry_at[algo["id"]] = now + timedelta(seconds=45)
             return self._result(algo, f"Running: {self._holding(algo)}", True)
         try:
-            target = int(self._strategy(algo).positions(bars, algo["params"]).iloc[-1])
+            strategy = self._strategy(algo)
+            held = strategy.positions(bars, algo["params"])
+            target = int(held.iloc[-1])
+            # Intraday: a buy latched on an earlier day is not carried into today. Rules with their own buy
+            # condition buy again only when today's latest candle meets it (the backtest does the same).
+            signal = getattr(strategy, "entry_signal", None)
+            fresh = signal(bars, algo["params"]) if signal and target == 1 and not carry else None
         except ValueError as exc:
             return self._result(algo, "Blocked: strategy error", False, f"Strategy error: {exc}")
+        stale = False
+        if fresh is not None:
+            flat = np.flatnonzero(held.to_numpy() == 0)
+            began = bars.index[flat[-1] + 1] if len(flat) else bars.index[0]
+            stale = began.normalize() < stamp.normalize() and not bool(fresh.iloc[-1])
         close = float(bars["Close"].iloc[-1])
         algo["last_bar"] = last_bar
         algo["last_signal"] = {"bar": last_bar, "target": target, "close": round(close, 2)}
@@ -844,6 +856,10 @@ class AlgoEngine:
             algo["blocked"], algo["rearm"] = False, None
         if target == 0 and algo["position"]:
             return self._send(algo, "SELL", f"{last_bar} signal", fallback_price=price or close)
+        if target == 1 and not algo["position"] and not algo["blocked"] and stale:
+            return self._result(algo, "Running: waiting for today's buy signal", True,
+                                f"{last_bar}: the buy signal is from an earlier day and the buy rules do not hold "
+                                f"now; an intraday trade buys only on today's signal.")
         if target == 1 and not algo["position"] and not algo["blocked"]:
             if self.desk.settings.get("kill_switch"):
                 return self._result(algo, "Blocked: kill switch is on", False,
