@@ -97,6 +97,21 @@ The bar at the top is always visible:
 | **Kite: …** | *not connected*, *read-only* (prices and portfolio only) or *trading* (can place orders). |
 | **Paper / Live** | Which account orders go to. Live turns red. |
 
+### Index strip
+
+A thin strip above everything, on every page, scrolls the main index values: NIFTY 50, SENSEX, BANK NIFTY, FIN NIFTY, NIFTY NEXT 50, MIDCAP 100, SMALLCAP 100 and INDIA VIX, each with its change since the previous close (green up, red down). Hover over it to stop it; press an index to open its live chart.
+
+The badge on its left says where the values come from:
+
+| Badge | Meaning |
+|---|---|
+| **Live** | From your broker, refreshed every 15 seconds while the market is open. |
+| **Delayed · 11:42** | Your broker has not answered for over two minutes; the values are from that time. |
+| **Market closed** | The last values of the day, checked every 5 minutes. |
+| **Offline · connect your broker** | No broker is connected. The values (grey) are the last daily closes; INDIA VIX shows a dash. |
+
+Choose which indices it shows, or switch it off, in Settings under **Index strip**. Newly ticked indices go at the end. All the strip's values come in one quote call, made by the desk however many pages are open.
+
 ### Install it as an app
 
 TradeSetu can be installed on a phone, tablet or computer. It then opens from the home screen or desktop in its own window, without the browser's address bar.

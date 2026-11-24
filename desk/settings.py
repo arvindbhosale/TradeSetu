@@ -107,6 +107,10 @@ DEFAULTS: dict = {
     # Where chart candles come from: "kite" (Kite's historical data only) or
     # "kite_then_yahoo" (Yahoo's delayed data when Kite cannot serve the chart).
     "chart_source": "kite",
+    # The index strip along the top of every page, and which indices it shows (ids from desk/ticker.py).
+    "ticker_show": True,
+    "ticker_indices": ["nifty50", "bsesensex", "niftybank", "niftyfinance", "niftynext50", "niftymidcap100",
+                       "niftysmallcap100", "indiavix"],
     # Backtest
     # The live option chain of these indices is saved every chain_recorder_minutes during the session (near two
     # expiries, ATM ± 20 strikes), so intraday option backtests can use real premiums later. Empty switches it off.
@@ -358,6 +362,9 @@ def _validated(key: str, value, current):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value or not 1 <= value <= 60:
             raise ValueError("chain_recorder_minutes must be a whole number from 1 to 60")
         return int(value)
+    if key == "ticker_indices":
+        from .ticker import validate as validate_ticker
+        return validate_ticker(value)
     if key == "telegram_chat_id":
         text = str(value).strip()
         if text and not re.fullmatch(r"-?\d{3,20}|@[A-Za-z0-9_]{4,40}", text):
