@@ -2,7 +2,7 @@
 // TradeSetu service worker. It makes the desk installable and keeps the
 // interface files ready, and that is all: prices, orders and account data are
 // never cached, because a stale price or order status is worse than none.
-const CACHE = "desk-shell-v13";
+const CACHE = "desk-shell-v14";
 const SHELL = ["/static/app.css", "/static/app.js", "/static/theme.js", "/static/lightweight-charts.js",
   "/static/offline.html", "/static/icon-192.png", "/static/logo-mark.png", "/static/favicon.ico"];
 
@@ -18,7 +18,7 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const request = event.request, url = new URL(request.url);
   if (request.method !== "GET" || url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/kite/")) return;      // always live
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/kite/") || url.pathname.startsWith("/dl/")) return;  // always live
   if (request.mode === "navigate") {
     // Pages carry the session; fetch them fresh and fall back to a plain offline note.
     event.respondWith(fetch(request).catch(() => caches.match("/static/offline.html")));

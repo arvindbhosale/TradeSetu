@@ -753,3 +753,13 @@ def test_fno_api(hosted):
     hosted.post("/api/kite/connect", headers=headers)
     loaded = hosted.get("/api/fno", headers=headers).json()         # fills itself once Kite is there
     assert len(loaded["stocks"]) == 4 and loaded["indices"][0]["name"] == "NIFTY"
+
+
+def test_phone_download_link_works_without_the_session(hosted):
+    headers = sign_in(hosted)
+    assert hosted.post("/api/download/handoff", content=b"x").status_code == 403        # making one needs the request token
+    url = hosted.post("/api/download/handoff", content=b"file", headers={**headers, "X-File-Name": "a.csv"}).json()["url"]
+    hosted.cookies.clear()                                                               # the phone's browser
+    got = hosted.get(url)
+    assert got.status_code == 200 and got.content == b"file"
+    assert hosted.get("/dl/guess").status_code == 404

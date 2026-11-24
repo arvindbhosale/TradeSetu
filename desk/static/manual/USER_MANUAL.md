@@ -1103,6 +1103,17 @@ The chart compares your strategy (blue) with simply holding the stock (orange) a
 
 The **Trades** table lists every trade with its entry, exit, profit and the reason it closed: *signal*, *stoploss*, *trailing stoploss*, *stoploss at cost*, *target*, *square-off* (intraday) or *held N days* (the holding limit). The **Re-entries** tile counts the buys made again after a stoploss.
 
+**Download in Excel** (above the tiles) saves the result on screen as one Excel file, for every backtest that shows these tiles: stocks, buying index options, option strategies, index futures and ETF portfolios. It opens in Excel, Google Sheets or LibreOffice and has:
+
+- **Summary**: every tile, the comparison with buy and hold and the benchmark, best and worst month, the steps or adds comparison when you used them, and the **Can you trust this result?** lines exactly as the page words them.
+- **Charts**: portfolio value against buy and hold and the benchmark, the fall from the high (drawdown), profit/loss each month, return each year and profit/loss of each trade. They are real Excel charts, drawn from the sheets below.
+- **Trades**: every trade, oldest first, with a running total, the exit reason, and the parts booked in steps or added. Profit is green, loss red; the filter and **Total (rows shown)** work as in the P&L exports.
+- **Monthly** and **Yearly**: profit/loss and return each month, and a year-by-month grid of returns shaded red to green.
+- **Equity curve**: each day's value, buy and hold, the benchmark, the fall from the high and the day's change.
+- **Settings**: every input the backtest ran with, the price source and notes, so two files can be compared later.
+
+On the phone app the file opens in your phone's browser, which saves it to Downloads; the link it uses works for five minutes. In the desktop app it goes to your Downloads folder.
+
 ### Intraday backtests
 
 ![Intraday backtest of an opening range breakout](img/11-backtest-intraday.png)
