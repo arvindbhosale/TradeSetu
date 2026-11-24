@@ -50,7 +50,15 @@ from . import (
     scaleout,
 )
 from .algo import AlgoEngine, AlgoError, arm_phrase
-from .auth import COOKIE, SESSION_SECONDS, Auth
+from .auth import (
+    COOKIE,
+    REMEMBER_COOKIE,
+    REMEMBER_DAYS,
+    SESSION_SECONDS,
+    Auth,
+    RememberedDevices,
+    device_name,
+)
 from .backtest import BacktestParams, run_strategy
 from .broker import Desk, OrderRejected
 from .brokers import Switch, catalog as broker_catalog
@@ -71,6 +79,7 @@ from .fundamentals import LABELS as FUNDAMENTAL_LABELS, Fundamentals
 from .indices import Indices
 from .kite import KiteError, KiteMCP
 from .kiteconnect import kite_entry, request_token_from
+from .kitereminder import KiteReminder
 from .marketdata import (
     TIMEFRAMES as CHART_TIMEFRAMES,
     MarketDataError,
@@ -81,6 +90,7 @@ from .marketdata import (
 from .marketdata.crypto import PAIRS as CRYPTO_PAIRS, CryptoFeed, tickers as crypto_tickers
 from .marketdata.csvfeed import Imports as ChartImports
 from .markettools import MarketTools, finite
+from .notify import TelegramLink
 from .nse import NseClient, exchange_proxy as nse_proxy
 from .openpeaks import OpenPeaks
 from .optimiser import OBJECTIVES, optimise
@@ -196,6 +206,17 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     algos.extra_ticks.append(supervisor.tick)
     hosted = auth is not None
     passkeys = Passkeys(home() / "passkeys.json", auth.username) if hosted else None
+    remembered = RememberedDevices(home() / "remembered-devices.json", auth._hash,
+                                   on_event=lambda title, body: desk.notifier.notify(title, body, "warn")) \
+        if hosted else None
+    telegram_link = TelegramLink()
+
+    def public_base() -> str:
+        return (os.environ.get("DESK_PUBLIC_URL") or "").strip().rstrip("/") or reminder.link_base()
+
+    reminder = KiteReminder(settings, kite, desk.notifier, nse=financials.client,
+                            link=lambda: (public_base() + "/broker/login") if public_base() else "")
+    algos.extra_ticks.append(reminder.tick)
     local_hosts = ("127.0.0.1", "localhost", "::1", "testserver")
     allowed = {h.strip().lower() for h in (allowed_hosts or []) if h.strip()}
 
@@ -210,6 +231,17 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     app.state.financials = financials
     app.state.fno_algos = fno_algos
     app.state.supervisor = supervisor
+    app.state.reminder, app.state.remembered = reminder, remembered
+
+    def _secure(request: Request) -> bool:
+        return request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+
+    def _set_device_cookie(response, request: Request, value: str) -> None:
+        # Lax, not Strict: the link in the morning Telegram reminder is a visit from another site, and a Strict
+        # cookie would not come with it. The device cookie only ever buys a new session on a page load; every
+        # /api call still needs the session's own request token.
+        response.set_cookie(REMEMBER_COOKIE, value, max_age=REMEMBER_DAYS * 86400, httponly=True, samesite="lax",
+                            secure=_secure(request), path="/")
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -220,8 +252,19 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if (not hosted and host not in local_hosts) or (hosted and allowed and host not in allowed
                                                         and host not in local_hosts):
             return JSONResponse({"error": "forbidden host"}, status_code=403)
+        device_cookie = None                     # a new device cookie to send back ("" to clear it)
         if hosted:
             session = auth.session(request.cookies.get(COOKIE))
+            if not session and request.method == "GET" and REMEMBER_COOKIE in request.cookies \
+                    and path != "/sw.js" and not path.startswith(("/api/", "/static/", "/kite/")):
+                # "Keep me signed in on this device": a page load from a remembered browser gets a new session.
+                used = remembered.use(request.cookies.get(REMEMBER_COOKIE), request.headers.get("user-agent", ""),
+                                      request.client.host if request.client else "unknown")
+                if used:
+                    session, device_cookie = auth.remembered_session(), used[1] or None
+                    request.state.new_session = session
+                else:
+                    device_cookie = ""
             request.state.session = session
             # /broker/callback: a broker's sign-in page redirecting back. No session cookie comes with a
             # cross-site redirect; the one-time OAuth state it must carry is the check instead.
@@ -231,7 +274,12 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             if not session and not public:
                 if path.startswith("/api/"):
                     return JSONResponse({"error": "Sign in again.", "signed_out": True}, status_code=401)
-                return RedirectResponse("/login", status_code=303)
+                # The reminder's link: sign in, then carry on to the Kite login.
+                after = "/login?next=/broker/login" if path == "/broker/login" else "/login"
+                redirect = RedirectResponse(after, status_code=303)
+                if device_cookie == "":
+                    redirect.delete_cookie(REMEMBER_COOKIE, path="/")
+                return redirect
             if session and path.startswith("/api/") and not public and not hmac.compare_digest(
                     request.headers.get("x-desk-token", ""), session["csrf"]):
                 return JSONResponse({"error": "missing or wrong request token"}, status_code=403)
@@ -240,6 +288,14 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             if not hmac.compare_digest(sent, token):
                 return JSONResponse({"error": "missing or wrong session token"}, status_code=401)
         response = await call_next(request)
+        fresh = getattr(request.state, "new_session", None) if hosted else None
+        if fresh:
+            response.set_cookie(COOKIE, fresh["id"], max_age=SESSION_SECONDS, httponly=True, samesite="strict",
+                                secure=_secure(request), path="/")
+        if device_cookie:
+            _set_device_cookie(response, request, device_cookie)
+        elif device_cookie == "":
+            response.delete_cookie(REMEMBER_COOKIE, path="/")
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -325,6 +381,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
+        reminder.remember_base(str(request.base_url).rstrip("/"))
         page = (STATIC / "index.html").read_text(encoding="utf-8")
         return page.replace("__DESK_TOKEN__", request.state.session["csrf"] if hosted else token)
 
@@ -355,9 +412,9 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
 
     if hosted:
         @app.get("/login", response_class=HTMLResponse)
-        def login_page(request: Request):
+        def login_page(request: Request, next: str = ""):
             if request.state.session:
-                return RedirectResponse("/", status_code=303)
+                return RedirectResponse("/broker/login" if next == "/broker/login" else "/", status_code=303)
             return (STATIC / "login.html").read_text(encoding="utf-8")
 
         @app.post("/api/login")
@@ -375,20 +432,22 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                 second = auth.two_factor is not None and auth.two_factor.enabled
                 return JSONResponse({"error": "Wrong username, password or code." if second
                                      else "Wrong username or password.", "needs_code": second}, status_code=401)
-            response = JSONResponse({"ok": True})
-            secure = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
-            response.set_cookie(COOKIE, session["id"], max_age=SESSION_SECONDS, httponly=True,
-                                samesite="strict", secure=secure, path="/")
-            return response
+            return _sign_in(request, session, bool(payload.get("remember")))
 
         def _client(request: Request) -> str:
             return request.client.host if request.client else "unknown"
 
-        def _sign_in(request: Request, session: dict) -> JSONResponse:
-            response = JSONResponse({"ok": True})
-            secure = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+        def _sign_in(request: Request, session: dict, remember: bool = False) -> JSONResponse:
+            response = JSONResponse({"ok": True, "remembered": remember})
             response.set_cookie(COOKIE, session["id"], max_age=SESSION_SECONDS, httponly=True,
-                                samesite="strict", secure=secure, path="/")
+                                samesite="strict", secure=_secure(request), path="/")
+            if remember:
+                agent, client = request.headers.get("user-agent", ""), _client(request)
+                remembered.remove(remembered.device_of(request.cookies.get(REMEMBER_COOKIE)) or "")
+                _set_device_cookie(response, request, remembered.add(agent, client))
+                desk.notifier.notify("Keep me signed in turned on",
+                                     f"{device_name(agent)} from {client} stays signed in for {REMEMBER_DAYS} days. "
+                                     f"Remove it in Settings → Signed-in devices if that was not you.", "info")
             return response
 
         @app.post("/api/passkey/options")
@@ -414,14 +473,48 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                 auth.failed(client, f"passkey: {exc}")
                 return JSONResponse({"error": str(exc)}, status_code=401)
             desk.notifier.notify("Signed in with a passkey", f"{used['name']} from {client}.", "info")
-            return _sign_in(request, auth.passkey_session(client))
+            return _sign_in(request, auth.passkey_session(client), bool(payload.get("remember")))
 
         @app.post("/api/logout")
         def logout(request: Request):
+            # Signing out also forgets this device: "Keep me signed in" has to be ticked again.
             auth.logout(request.cookies.get(COOKIE))
+            remembered.remove(remembered.device_of(request.cookies.get(REMEMBER_COOKIE)) or "")
             response = JSONResponse({"ok": True})
             response.delete_cookie(COOKIE, path="/")
+            response.delete_cookie(REMEMBER_COOKIE, path="/")
             return response
+
+    # -- remembered devices ("Keep me signed in on this device") -------------------------
+
+    @app.get("/api/devices")
+    def device_list(request: Request):
+        if not hosted:
+            return {"available": False, "devices": []}
+        current = remembered.device_of(request.cookies.get(REMEMBER_COOKIE))
+        return {"available": True, "days": REMEMBER_DAYS, "devices": remembered.listing(current)}
+
+    @app.delete("/api/devices/{device_id}")
+    def device_remove(device_id: str, request: Request):
+        if not hosted:
+            raise ValueError("Signed-in devices apply to the hosted desk only.")
+        current = remembered.device_of(request.cookies.get(REMEMBER_COOKIE))
+        if not remembered.remove(device_id):
+            raise ValueError("That device is no longer remembered.")
+        response = JSONResponse({"available": True, "days": REMEMBER_DAYS,
+                                 "devices": remembered.listing(None if device_id == current else current)})
+        if device_id == current:
+            response.delete_cookie(REMEMBER_COOKIE, path="/")
+        return response
+
+    @app.delete("/api/devices")
+    def device_remove_all():
+        if not hosted:
+            raise ValueError("Signed-in devices apply to the hosted desk only.")
+        removed = remembered.remove_all()
+        response = JSONResponse({"available": True, "days": REMEMBER_DAYS, "devices": [], "removed": removed})
+        response.delete_cookie(REMEMBER_COOKIE, path="/")
+        return response
 
     # -- passkeys --------------------------------------------------------------
 
@@ -598,6 +691,28 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     @app.post("/api/alerts/test")
     def alerts_test():
         return desk.notifier.test()
+
+    def bot_token() -> str:
+        return settings.all()["api_keys"].get("TELEGRAM_BOT_TOKEN", "")
+
+    @app.post("/api/telegram/link")
+    def telegram_link_start():
+        """Start linking a Telegram chat: a link that opens the bot with a one-time code."""
+        return telegram_link.begin(bot_token())
+
+    @app.post("/api/telegram/link/check")
+    def telegram_link_check():
+        found = telegram_link.check(bot_token())
+        if found["linked"]:
+            settings.update({"telegram_chat_id": found["chat_id"]})
+            desk.notifier.deliver((bot_token(), found["chat_id"]),
+                                  f"✅ Linked to your {APP_NAME}. Alerts and the morning Kite login reminder come here.")
+        return found
+
+    @app.get("/api/kite/reminder")
+    def kite_reminder_status():
+        return {**reminder.status(), "telegram": bool(desk.notifier.telegram_target(require_alerts=False)),
+                "link": bool(public_base())}
 
     @app.get("/api/pnl")
     def pnl(mode: str = "paper"):
@@ -1782,6 +1897,34 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                     entry["redirect_uri"] = str(request.base_url).rstrip("/") + "/broker/callback"
                 return kite.connect(entry)
         return kite.connect(kite_entry(settings, str(request.base_url).rstrip("/") + "/broker/callback"))
+
+    @app.get("/broker/login")
+    def broker_login(request: Request):
+        """Open Zerodha's login page for this desk in one step (the morning reminder links here)."""
+        try:
+            if settings.all().get("broker", "kite") != "kite":
+                raise KiteError("This link opens the Zerodha Kite login. Your desk uses another broker: sign in "
+                                "from the Trade tab.")
+            if not kite.connected:
+                base = (os.environ.get("DESK_PUBLIC_URL") or "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+                entry = kite_entry(settings, base + "/broker/callback")
+                if not entry.get("api_key"):
+                    # A Kite MCP server may need its own sign-in window; that is done from the Trade tab.
+                    raise KiteError("Open the desk, press Connect on the Trade tab, then Log in to Kite.")
+                if isinstance(kite, Switch):
+                    kite.use("kite")
+                kite.connect(entry)
+            login = kite.login()
+            if login.get("url"):
+                return RedirectResponse(login["url"], status_code=303)
+            text, ok = login.get("message") or "Already logged in to Kite for today.", True
+        except (KiteError, ValueError) as exc:
+            text, ok = str(exc), False
+        body = (f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'><title>Kite login</title>"
+                f"<body style='font-family:system-ui;max-width:36rem;margin:3rem auto;padding:0 1rem'>"
+                f"<h1>{'Kite' if ok else 'Kite login did not start'}</h1><p>{html.escape(text)}</p>"
+                f"<p><a href='/'>Open the desk</a></p>")
+        return HTMLResponse(body, status_code=200 if ok else 400)
 
     @app.post("/api/kite/session")
     def kite_session(payload: dict):

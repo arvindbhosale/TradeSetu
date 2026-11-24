@@ -80,6 +80,8 @@ Open your desk's address and sign in with the user name and password set when it
 
 Five wrong passwords lock that device out for 15 minutes.
 
+**Keep me signed in on this device for 30 days**: tick it on your own phone or computer and the desk stays signed in there for 30 days, without the password or code. It works only in that browser; a copy of it used anywhere else is refused and that device is signed out. Tick it only on your own devices, never a shared one. See or remove them in Settings → **Signed-in devices**; **Sign out** on a device also removes it, and changing the desk password removes all of them.
+
 If two-factor sign-in is on (see Settings), the page then asks for the 6-digit code from your authenticator app:
 
 ![Sign-in asking for the code](img/23-sign-in-code.png)
@@ -569,6 +571,10 @@ Selling is allowed whenever the market is open.
 5. Press **Send a test alert**. A message should arrive within seconds; if not, the reason is shown.
 
 The same alerts always appear on the P&L & alerts screen, with or without Telegram.
+
+Instead of steps 3 and the chat id: save the bot token, press **Link my Telegram**, and press **Start** in the bot chat that opens. The chat id fills in by itself and the bot confirms.
+
+**Morning Kite login reminder.** Kite logins end at 6 AM each day. At 08:30 IST (change the time under the box) on NSE trading days, if the desk is not logged in to Kite yet, the bot sends "Log in to Kite for today" with a link. The link opens the Kite login for your desk (sign in to the desk first if it asks). No message on weekends, on holidays in your list below or on NSE's own holiday list, or when you have already logged in. It uses the same bot and chat, even with **Send alerts** off. The desk must be running at that time: a server always is; the desktop app must be open. Every person who runs their own desk links their own Telegram and gets their own reminder.
 
 ### Exchange holidays
 
