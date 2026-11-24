@@ -727,8 +727,8 @@
     const panel = placeDeploy($(host)), name = $("#bt-deploy-name");
     $("#bt-deploy-msg").textContent = ""; showError("#bt-deploy-error", null);
     const daily = !body.interval || body.interval === "1d";
-    if ((kind === "futures" || kind === "options") && !daily) {
-      deployBlocked(`F&O algos read day candles. Run this backtest on 1-day candles to make an algo from it.`); return;
+    if (kind === "futures" && !daily) {
+      deployBlocked(`Futures algos read day candles. Run this backtest on 1-day candles to make an algo from it.`); return;
     }
     if (kind === "optimise" && !optimiserPick(result)) { deployBlocked("No setting was chosen, so there is nothing to make an algo from."); return; }
     if (kind === "aiscan" && !result.winner) { deployBlocked("No strategy passed the checks on unseen data, so there is nothing to make an algo from."); return; }
@@ -782,7 +782,10 @@
         + " The scan judged it across the whole index: one stock alone can do worse." : "",
       structure: "The algo uses this option strategy, these times and days, strikes, lots, each leg's exit rules and the whole position's stoploss and target (₹ and %). The whole position closes at the maximum loss you set here (filled from the backtest's Stoploss in ₹ when you set one)." + expiryNote,
       options: kind === "options" ? `The algo buys ${body.side === "both" ? "calls while the strategy says buy and puts once it says sell: that is two algos, one for calls and one for puts" : body.side}`
-        + ` on ${body.underlying}, ${Number(body.moneyness) ? `${Math.abs(body.moneyness)} strike(s) ${body.moneyness > 0 ? "in" : "out of"} the money` : "at the money"}, ${body.lots} lot(s), when ${strategyName(body.strategy)} on the index's day candles says so (read at 09:20), with this stoploss and target on the premium, and the backtest's target in ₹. The algo sells at the exit time on expiry day at the latest. It closes everything at the maximum loss you set here (filled from the backtest's maximum loss in ₹ when you set one).` + expiryNote : "",
+        + ` on ${body.underlying}, ${Number(body.moneyness) ? `${Math.abs(body.moneyness)} strike(s) ${body.moneyness > 0 ? "in" : "out of"} the money` : "at the money"}, ${body.lots} lot(s), when ${strategyName(body.strategy)} on the index's ${daily ? "day candles says so (read at 09:20)" : `${state.app.intervals[body.interval].toLowerCase()} candles says so (read as each candle closes)`}, with this stoploss and target on the premium, and the backtest's target in ₹. `
+        + (daily ? "The algo sells at the exit time on expiry day at the latest."
+          : `It is intraday, as this backtest: it buys from 09:15, sells everything at ${state.app.settings.square_off} (the square-off time in Settings) the same day, and after a stoploss or target buys again only the next day.`)
+        + ` It closes everything at the maximum loss you set here (filled from the backtest's maximum loss in ₹ when you set one).` + expiryNote : "",
       futures: "The algo holds the near-month future while this strategy says so, on day candles, with this stoploss and target in % of the price and the backtest's target in ₹. It closes everything at the maximum loss you set here (filled from the backtest's maximum loss in ₹ when you set one).",
     };
     $("#bt-deploy-what").textContent = notes[kind] + tail;
@@ -825,12 +828,15 @@
         // Bought calls lean bullish (on while the strategy is long); bought puts bearish (on once it has turned flat),
         // as the backtest buys them. Positive moneyness is in the money: a lower call strike, a higher put strike.
         const sides = body.side === "both" ? ["calls", "puts"] : [body.side], m = Math.round(Number(body.moneyness || 0));
+        const intraday = Boolean(body.interval) && body.interval !== "1d";
         for (const side of sides) {
           const call = side === "calls", each = sides.length > 1 ? `${name} ${side}` : name;
           await api("/fno-algos", { method: "POST", body: { name: each, kind: "structure", structure: "custom", bias: call ? "bull" : "bear",
             legs: [{ side: "BUY", type: call ? "CE" : "PE", strikes: call ? -m : m, lots: 1, expiry: "near" }],
             underlying: body.underlying, expiry_kind: optionsExpiryKind(body.underlying), ...readExpiryPick($("#bt-deploy-expiry")),
-            schedule: "signal", strategy: body.strategy, strategy_params: body.strategy_params, entry_time: "09:20", exit_time: "15:15",
+            schedule: "signal", strategy: body.strategy, strategy_params: body.strategy_params, interval: body.interval || "1d",
+            // Intraday, as the backtest: entries from the open, everything sold at the square-off time in Settings.
+            entry_time: intraday ? "09:15" : "09:20", exit_time: intraday ? state.app.settings.square_off : "15:15",
             min_days: body.min_days, lots: body.lots, leg_scope: "bought",
             leg_exits: { unit: "pct", stop_loss: Number(body.stop_pct || 0), target: Number(body.target_pct || 0) }, max_loss: maxLoss,
             target: Number(body.target_rs || 0), mode,
@@ -1541,7 +1547,7 @@
     form.expiry_kind.value = a.expiry_kind;
     form.expiry_pick.dataset.want = a.expiry || (a.expiry_ahead ? `ahead:${a.expiry_ahead}` : "");
     form.expiry_pick.reload();
-    if (a.kind === "structure") { form.schedule.value = a.schedule; fire(form.schedule); }
+    if (a.kind === "structure") { form.schedule.value = a.schedule; form.interval.value = a.interval || "1d"; fire(form.schedule); }
     if (a.strategy) { form.strategy.value = a.strategy; fire(form.strategy); }
     Object.entries(a.params || {}).forEach(([k, v]) => { const input = form.elements["p_" + k]; if (input) input.value = v; });
     ["entry_time", "exit_time", "exit_days_before", "min_days", "k", "w", "lots", "max_loss", "target", "stop_pct", "target_pct", "mode", "limit_buffer_pct", "margin_pct", "leg_scope"]
@@ -1789,7 +1795,8 @@
     $$("#fno-params input").forEach((input) => { params[input.name.slice(2)] = Number(input.value); });
     return { name: form.name.value, kind: form.kind.value, structure: form.structure.value, direction: form.direction.value,
       underlying: form.underlying.value, expiry_kind: form.kind.value === "futures" ? "monthly" : form.expiry_kind.value,
-      schedule: form.kind.value === "futures" ? "signal" : form.schedule.value, entry_time: form.entry_time.value, exit_time: form.exit_time.value,
+      schedule: form.kind.value === "futures" ? "signal" : form.schedule.value,
+      interval: form.kind.value === "structure" && form.schedule.value === "signal" ? form.interval.value : "1d", entry_time: form.entry_time.value, exit_time: form.exit_time.value,
       exit_days_before: num("exit_days_before"), min_days: num("min_days"), strategy: form.strategy.value, strategy_params: params,
       weekdays: $$("input[name=fwd]", form).filter((c) => c.checked).map((c) => Number(c.value)),
       k: num("k"), w: num("w"), lots: num("lots"), leg_exits: $("#fno-exits").read(), leg_scope: form.leg_scope.value, max_loss: num("max_loss"), target: num("target"),
@@ -1806,7 +1813,8 @@
     mountAdds("fno-adds", "structure", form, "fno-steps");
     structureOptions(form.structure, list);
     form.structure.value = "iron_condor";
-    strategyOptions(form.strategy, (x) => !x.intraday_only && x.key !== "buy_hold"); form.strategy.value = "supertrend";
+    strategyOptions(form.strategy, (x) => x.key !== "buy_hold"); form.strategy.value = "supertrend";
+    intervalOptions(form.interval);
     fnoLegs = legEditor({ form, list, body: $("#fno-legs tbody"), add: $("#fno-leg-add"), reset: $("#fno-leg-reset"), spot: $("#fno-legs-spot"), changed: () => sync() });
     const params = () => {
       const strategy = state.app.strategies.find((x) => x.key === form.strategy.value);
@@ -1826,6 +1834,12 @@
       $$("[data-pct-of]", form).forEach((el) => { el.textContent = futures ? "% of price" : "% of premium"; });
       form.stop_pct.max = futures ? 50 : 1000; form.stop_pct.step = futures ? 0.1 : 5; form.target_pct.step = futures ? 0.1 : 5;
       $$(".fno-signal", form).forEach((el) => { el.hidden = schedule !== "signal"; });
+      $$(".fno-candles", form).forEach((el) => { el.hidden = futures || schedule !== "signal"; });
+      const intraday = !futures && schedule === "signal" && form.interval.value !== "1d";
+      $("#fno-candle-note").hidden = futures || schedule !== "signal";
+      $("#fno-candle-note").textContent = intraday
+        ? `Intraday: it checks the strategy each time a candle closes (${state.app.intervals[form.interval.value].toLowerCase()} candles), buys between the entry time and the exit time, and sells everything at the exit time the same day (MIS). After a stoploss or target it waits for the next day.`
+        : "Day candles: it checks the strategy once a day, at the entry time, and holds overnight (NRML) while the strategy says so.";
       $$(".fno-positional", form).forEach((el) => { el.hidden = schedule !== "positional"; });
       $$(".fno-days", form).forEach((el) => { el.hidden = schedule === "signal"; });
       $("#fno-params").hidden = schedule !== "signal";
@@ -1840,6 +1854,7 @@
       params();
     };
     form.kind.addEventListener("change", sync); form.schedule.addEventListener("change", sync); form.strategy.addEventListener("change", params);
+    form.interval.addEventListener("change", sync);
     form.bias.addEventListener("change", sync);
     form.structure.addEventListener("change", fnoLegs.structureChanged);
     const syncUnderlying = () => {
@@ -4565,7 +4580,7 @@
   async function reloadStrategies() {
     const data = await api("/strategies");
     state.app.strategies = data.strategies;
-    btStrategyOptions(); strategyOptions($("#form-algo").strategy, (s) => s.key !== "buy_hold"); strategyOptions($("#form-fno").strategy, (s) => s.key !== "buy_hold" && !s.intraday_only);
+    btStrategyOptions(); strategyOptions($("#form-algo").strategy, (s) => s.key !== "buy_hold"); strategyOptions($("#form-fno").strategy, (s) => s.key !== "buy_hold");
     return data;
   }
 
