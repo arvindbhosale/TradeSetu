@@ -16,6 +16,9 @@ price) is checked against each candle's high and low; when both are inside
 one candle the stop is assumed to have come first. Intraday runs enter only
 inside the trade window and close everything at the square-off time.
 
+A maximum loss and target in rupees (``stop_rs`` / ``target_rs``), as an F&O algo has them, are price levels for the
+lots held (with the charges paid so far), checked the same way; the stoploss the price reaches first is taken.
+
 Margin. An entry needs ``margin_pct`` of the contract value (SPAN plus
 exposure is roughly 11-14% for index futures) out of current equity; an
 entry that cannot be afforded is skipped and counted.
@@ -71,7 +74,10 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
                 intraday: bool = False, trade_start: str = "09:30", trade_end: str = "15:00", square_off: str = "15:15",
                 continuous: bool = True, carry_pct: float = 7.0, holidays=frozenset(), exchange: str = "NFO",
                 strategy_name: str = "", risk_free_rate_pct: float = 6.5, steps: Steps = NO_STEPS,
-                adds: Adds = NO_ADDS) -> dict:
+                adds: Adds = NO_ADDS, stop_rs: float = 0.0, target_rs: float = 0.0) -> dict:
+    """``stop_rs`` / ``target_rs``: close the position when its profit or loss in rupees (with the charges paid so
+    far, roll costs included, and any profit step booked) reaches this, as an F&O algo's maximum loss and target do.
+    It is a price level for the lots held, checked inside the candle like the % stoploss and target."""
     if direction not in DIRECTIONS:
         raise ValueError(f"direction must be one of {', '.join(DIRECTIONS)}")
     if lots < 1 or lot_size < 1:
@@ -80,6 +86,9 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
         raise ValueError("margin must be 2-100% of the contract value")
     if not 0 <= stop_pct <= 50 or not 0 <= target_pct <= 100:
         raise ValueError("stoploss must be 0-50% and target 0-100% of the price")
+    for label, value in (("Maximum loss (₹)", stop_rs), ("Target (₹)", target_rs)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1e8:
+            raise ValueError(f"{label} must be between 0 and 10 crore")
     if not 0 <= slippage_pct <= 2 or not 0 <= carry_pct <= 20:
         raise ValueError("slippage must be 0-2% and carry 0-20% a year")
     if len(bars) < 30:
@@ -213,9 +222,30 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
             else:
                 book_step(i, fill, n)
 
-    def locked_stop(stop):
+    def rupee_level(pnl) -> float:
+        """The futures price at which the position's profit, with the charges paid so far and steps booked, is
+        ``pnl``."""
+        return entry + pos * (pnl + entry_cost - booked) / (held * lot_size)
+
+    def base_stop():
+        """The first entry's stoploss: the % one or the rupee one, whichever the price reaches first."""
+        found = [(level, why) for level, why in ((first * (1 - pos * stop_pct / 100) if stop_pct else None, "stoploss"),
+                                                 (rupee_level(-stop_rs) if stop_rs else None, "maximum loss in ₹"))
+                 if level is not None]
+        if not found:
+            return None, "stoploss"
+        return max(found) if pos > 0 else min(found)
+
+    def base_goal():
+        found = [(level, why) for level, why in ((first * (1 + pos * target_pct / 100) if target_pct else None, "target"),
+                                                 (rupee_level(target_rs) if target_rs else None, "target in ₹"))
+                 if level is not None]
+        if not found:
+            return None, "target"
+        return min(found) if pos > 0 else max(found)
+
+    def locked_stop(stop, kind="stoploss"):
         """The stoploss, moved by the profit steps taken and by the adds made."""
-        kind = "stoploss"
         moved = steps.lock(done) if steps.active else None
         if moved is not None:
             level = entry if not moved else first + pos * steps.distance(first, moved)
@@ -265,27 +295,29 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
                     pos, entry, entry_i, entry_cost, rolls_in_trade = target, price, i, charge, 0
                     held, done, booked, partials = lots, 0, 0.0, []
                     first, opened, adds_done, add_stop, added = price, lots, 0, None, []
-                    risk0 = qty_per * price * stop_pct / 100
+                    risk0 = max(qty_per * price * stop_pct / 100, stop_rs)
         # 3. stoploss, profit steps and target inside the candle
-        if pos and (stop_pct or target_pct or steps.active or adds.active):
+        if pos and (stop_pct or target_pct or stop_rs or target_rs or steps.active or adds.active):
+            stop, kind = locked_stop(*base_stop())
+            goal, reached = base_goal()
             if pos > 0:
-                stop, kind = locked_stop(first * (1 - stop_pct / 100) if stop_pct else None)
-                goal = first * (1 + target_pct / 100) if target_pct else None
                 if stop is not None and lows[i] <= stop:
                     close_trade(i, min(opens[i], stop) * (1 - slip), kind)
                 else:
                     take_steps(i, highs[i], lows[i], goal)
+                    if pos:
+                        goal, reached = base_goal()          # a step booked changes the rupee target's price
                     if pos and goal is not None and highs[i] >= goal:
-                        close_trade(i, max(opens[i], goal) * (1 - slip), "target")
+                        close_trade(i, max(opens[i], goal) * (1 - slip), reached)
             else:
-                stop, kind = locked_stop(first * (1 + stop_pct / 100) if stop_pct else None)
-                goal = first * (1 - target_pct / 100) if target_pct else None
                 if stop is not None and highs[i] >= stop:
                     close_trade(i, max(opens[i], stop) * (1 + slip), kind)
                 else:
                     take_steps(i, highs[i], lows[i], goal)
+                    if pos:
+                        goal, reached = base_goal()
                     if pos and goal is not None and lows[i] <= goal:
-                        close_trade(i, min(opens[i], goal) * (1 + slip), "target")
+                        close_trade(i, min(opens[i], goal) * (1 + slip), reached)
         # 4. intraday: nothing is held past the square-off candle
         if intraday and pos and (moment >= t_close or i + 1 == len(bars) or stamps[i + 1].normalize() != stamp.normalize()):
             close_trade(i, closes[i] * (1 - slip if pos > 0 else 1 + slip), "square-off")
@@ -321,7 +353,8 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
     label = {"long": "long", "short": "short", "both": "long & short"}[direction]
     return {"strategy": {"name": f"{strategy_name} → {underlying} futures, {label}"},
             "params": {**params.__dict__, "direction": direction, "lots": lots, "lot_size": lot_size, "margin_pct": margin_pct,
-                       "stop_pct": stop_pct, "target_pct": target_pct, "slippage_pct": slippage_pct, "carry_pct": carry_pct,
+                       "stop_pct": stop_pct, "target_pct": target_pct, "stop_rs": stop_rs, "target_rs": target_rs,
+                       "slippage_pct": slippage_pct, "carry_pct": carry_pct,
                        "steps": steps.as_dict() if steps.active else None,
                        "adds": adds.as_dict() if adds.active else None},
             "period": {"start": curve.index[0].strftime("%Y-%m-%d"), "end": curve.index[-1].strftime("%Y-%m-%d"),

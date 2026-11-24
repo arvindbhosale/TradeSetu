@@ -10,6 +10,10 @@ India VIX (scaled by a factor you choose) as its volatility. Real premiums
 differ, most around events and on expiry day; treat the result as a rough
 check of an idea, not a measured edge.
 
+Stoploss and target (% of the premium, and ``stop_rs`` / ``target_rs`` in rupees for the position) are checked on the
+premium inside each candle, priced from the index's open, low and high, as the algo watches the live price: they fill at
+their level, or at the open's premium when the candle opens past it. When one candle reaches both, the stoploss.
+
 Book profit in steps (``steps``, in lots, levels in % or points of the premium paid): checked on each candle's close
 like the stoploss and target, closing that many lots of the option there and holding the rest.
 
@@ -24,6 +28,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, time as clock_time
 
+import numpy as np
 import pandas as pd
 
 from . import market
@@ -197,14 +202,20 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
                 lots: int, lot_size: int, side: str = "calls", moneyness: int = 0, min_days: float = 2,
                 expiry_weekday: int = 1, stop_pct: float = 0, target_pct: float = 0, iv_scale: float = 1.0,
                 slippage_pct: float = 1.0, intraday: bool = False, square_off: str = "15:00", strategy_name: str = "",
-                steps: Steps = NO_STEPS, adds: Adds = NO_ADDS) -> dict:
-    """Buy options on the underlying strategy's signals, priced with Black-Scholes. See the module note."""
+                steps: Steps = NO_STEPS, adds: Adds = NO_ADDS, stop_rs: float = 0.0, target_rs: float = 0.0) -> dict:
+    """Buy options on the underlying strategy's signals, priced with Black-Scholes. See the module note.
+
+    ``stop_rs`` / ``target_rs``: close the position when its profit or loss in rupees (with the charges paid so far,
+    and any profit step booked) reaches this, as an F&O algo's maximum loss and target do."""
     if side not in ("calls", "puts", "both"):
         raise ValueError("side must be calls, puts or both")
     if lots < 1 or lot_size < 1:
         raise ValueError("lots and lot size must be at least 1")
     if not 0 <= stop_pct <= 100 or not 0 <= target_pct <= 1000:
         raise ValueError("stoploss must be 0-100% and target 0-1000% of the premium")
+    for label, value in (("Maximum loss (₹)", stop_rs), ("Target (₹)", target_rs)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1e8:
+            raise ValueError(f"{label} must be between 0 and 10 crore")
     if len(bars) < 30:
         raise ValueError("not enough candles")
     if steps.active and sum(steps.lots()) > lots:
@@ -219,6 +230,8 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
     if float(vol_by_day.max()) > 1.5:
         raise ValueError("The India VIX series does not look like VIX (values above 150). Check the data feed.")
     stamps, opens, closes = bars.index, bars["Open"].to_numpy(float), bars["Close"].to_numpy(float)
+    highs = bars["High"].to_numpy(float) if "High" in bars else np.maximum(opens, closes)
+    lows = bars["Low"].to_numpy(float) if "Low" in bars else np.minimum(opens, closes)
     want = positions.reindex(stamps).fillna(0).astype(int).to_numpy()
     quantity = lots * lot_size
     slip = slippage_pct / 100
@@ -265,6 +278,10 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
             trade["adds"], trade["average_price"] = held["adds"], round(held["avg"], 2)
         trades.append(trade)
         held = None
+
+    def rupee_level(pnl) -> float:
+        """The premium at which the held position's profit, with charges paid so far and steps booked, is ``pnl``."""
+        return (held["open_cost"] - held["booked"] + pnl) / (held["lots"] * lot_size * (1 - slip))
 
     def take_steps(i, premium) -> None:
         """Profit steps on this candle's closing premium; the stoploss moved by them."""
@@ -347,27 +364,41 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
                             "lots": lots, "open_cost": cost, "done": 0, "booked": 0.0, "partials": [],
                             "avg": premium, "bought": lots, "adds_done": 0, "add_stop": None, "adds": [],
                             # the loss the first lots planned: to the stoploss, or the whole premium without one
-                            "risk": quantity * premium * (stop_pct / 100 if stop_pct else 1)}
+                            "risk": (max(quantity * premium * stop_pct / 100, stop_rs) if (stop_pct or stop_rs)
+                                     else quantity * premium)}
         if held is not None:
             now_premium = price(held, stamp + pd.Timedelta(minutes=1), closes[i])
+            # The premium inside the candle, from the index's open, low and high: the stoploss and target are watched
+            # on the live price by the algo, so they fill at their level here (or at the open when it opened past it).
+            first_premium = price(held, stamp, opens[i])
+            path = [price(held, stamp, x) for x in (opens[i], lows[i], highs[i])]
+            low_premium, high_premium = min(path), max(path)
             moved = steps.lock(held["done"]) if steps.active else None
             locked = (held["avg"] if not moved else held["premium"] + steps.distance(held["premium"], moved)) \
                 if moved is not None else None
-            if stop_pct and now_premium <= held["premium"] * (1 - stop_pct / 100):
-                close(i, now_premium, "stoploss")
-            elif locked is not None and now_premium <= locked:
-                close(i, now_premium, steps.lock_name(held["done"]))
-            elif held["add_stop"] is not None and now_premium <= held["add_stop"]:
-                close(i, now_premium, "stoploss moved after adding")
+            stops = [(level, why) for level, why in (
+                (held["premium"] * (1 - stop_pct / 100) if stop_pct else None, "stoploss"),
+                (rupee_level(-stop_rs) if stop_rs else None, "maximum loss in ₹"),
+                (locked, steps.lock_name(held["done"]) if moved is not None else ""),
+                (held["add_stop"], "stoploss moved after adding")) if level is not None and level > 0]
+            stop, why = max(stops) if stops else (None, "")
+            goals = [(level, what) for level, what in (
+                (held["premium"] * (1 + target_pct / 100) if target_pct else None, "target"),
+                (rupee_level(target_rs) if target_rs else None, "target in ₹")) if level is not None]
+            goal, what = min(goals) if goals else (None, "")
+            if stop is not None and low_premium <= stop:
+                close(i, min(first_premium, stop), why)
+            elif goal is not None and held["done"] >= len(plan) and high_premium >= goal:
+                close(i, max(first_premium, goal), what)         # no profit step left to take on the way up
             else:
                 take_steps(i, now_premium)
                 while (held is not None and adds.active and not held["done"] and held["adds_done"] < len(adds.levels)
                        and now_premium >= held["premium"] + adds.distance(held["premium"], adds.levels[held["adds_done"]])
                        and not (intraday and stamp.time() >= cutoff)
-                       and not (target_pct and now_premium >= held["premium"] * (1 + target_pct / 100))):
+                       and not (goal is not None and now_premium >= goal)):
                     add_more(i, now_premium)
-                if held is not None and target_pct and now_premium >= held["premium"] * (1 + target_pct / 100):
-                    close(i, now_premium, "target")
+                if held is not None and goal is not None and now_premium >= goal:
+                    close(i, now_premium, what)
         value = cash + (held["lots"] * lot_size * price(held, stamp + pd.Timedelta(minutes=1), closes[i]) if held is not None else 0)
         in_market += held is not None
         equity.append(value)
@@ -394,7 +425,7 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
         plural = "s" if abs(moneyness) > 1 else ""
         where = f"{abs(moneyness)} strike{plural} {'ITM' if moneyness > 0 else 'OTM'}"
     return {"strategy": {"name": f"{strategy_name} → {side} ({where})"},
-            "params": params.__dict__, "simulated": True, "lot_size": lot_size,
+            "params": {**params.__dict__, "stop_rs": stop_rs, "target_rs": target_rs}, "simulated": True, "lot_size": lot_size,
             "period": {"start": curve.index[0].strftime("%Y-%m-%d"), "end": curve.index[-1].strftime("%Y-%m-%d"), "bars": len(bars), "days": len(curve)},
             "metrics": {**_metrics(curve, trades, params, total_charges, in_market), "steps_booked": steps_booked,
                         "adds_made": adds_made, "adds_skipped": adds_skipped},
