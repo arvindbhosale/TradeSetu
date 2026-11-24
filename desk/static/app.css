@@ -217,6 +217,34 @@ dialog#stock-dialog::backdrop { background: rgba(8, 11, 18, .55); }
 .app-panel { display: none; }
 @media (display-mode: standalone) { .top { padding-top: max(12px, env(safe-area-inset-top)); } }
 
+/* Index strip along the top of every page. Dark in both themes, like the menu. */
+.ticker { position: sticky; top: 0; z-index: 40; display: flex; align-items: stretch; height: calc(32px + env(safe-area-inset-top)); padding-top: env(safe-area-inset-top);
+  background: #070a11; color: #c5cede; border-bottom: 1px solid rgba(255, 255, 255, .08); font-size: 12.5px; overflow: hidden; }
+.tk-state { flex: none; display: flex; align-items: center; gap: 6px; padding: 0 12px; font-weight: 600; font-size: 11.5px; color: #9fb0cc; background: #0d1322; border-right: 1px solid rgba(255, 255, 255, .08); white-space: nowrap; }
+.tk-state i { width: 7px; height: 7px; border-radius: 50%; background: #6f7b91; }
+.ticker[data-state="live"] .tk-state i { background: #34c77b; box-shadow: 0 0 0 3px rgba(52, 199, 123, .18); }
+.ticker[data-state="stale"] .tk-state i, .ticker[data-state="closed"] .tk-state i { background: #eda100; box-shadow: 0 0 0 3px rgba(237, 161, 0, .18); }
+.tk-track { flex: 1; min-width: 0; overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 20px, #000 calc(100% - 20px), transparent); mask-image: linear-gradient(90deg, transparent, #000 20px, #000 calc(100% - 20px), transparent); }
+.tk-run { display: flex; width: max-content; height: 100%; animation: tk-scroll var(--tk-dur, 60s) linear infinite; }
+.tk-run.still { animation: none; }
+.ticker:hover .tk-run, .ticker:focus-within .tk-run { animation-play-state: paused; }
+@keyframes tk-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.tk-item { display: inline-flex; align-items: center; gap: 6px; padding: 0 16px; border: 0; border-right: 1px solid rgba(255, 255, 255, .07); background: none; color: inherit; font: inherit; white-space: nowrap; cursor: pointer; font-variant-numeric: tabular-nums; }
+.tk-item:hover b, .tk-item:focus-visible b { text-decoration: underline; }
+.tk-item b { font-weight: 600; color: #e8ecf4; letter-spacing: .02em; }
+.tk-item .v { color: #e8ecf4; }
+.tk-item .c { color: #9fb0cc; }
+.tk-item.up .c { color: #34c77b; } .tk-item.down .c { color: #ff6b74; }
+.ticker .tk-item.old .v, .ticker .tk-item.old .c { color: #6f7b91; }
+body.has-ticker { height: auto; min-height: 100%; }     /* a 100%-tall body would carry the sticky strip away on scroll */
+body.has-ticker .shell { min-height: calc(100vh - var(--tk-h, 0px)); }
+body.has-ticker .side { top: var(--tk-h, 0px); height: calc(100vh - var(--tk-h, 0px)); }
+body.has-ticker .top { top: var(--tk-h, 0px); }
+@media (display-mode: standalone) { body.has-ticker .top { padding-top: 12px; } }
+@media (prefers-reduced-motion: reduce) { .tk-run { animation: none; } .tk-track { overflow-x: auto; scrollbar-width: none; } }
+.tk-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 2px 12px; margin: 6px 0; max-height: 260px; overflow-y: auto; }
+.tk-pick h4 { grid-column: 1 / -1; margin: 8px 0 2px; font-size: 12px; color: var(--muted); font-weight: 600; }
+
 /* Phones and narrow windows: the menu becomes a bar along the bottom, like an app. */
 @media (max-width: 860px) {
   .shell { grid-template-columns: 1fr; }
@@ -228,6 +256,8 @@ dialog#stock-dialog::backdrop { background: rgba(8, 11, 18, .55); }
   .tabs button svg { width: 21px; height: 21px; }
   .tabs button[aria-selected="true"] { box-shadow: inset 0 3px 0 #5b7cff; }
   .content { padding-bottom: calc(70px + env(safe-area-inset-bottom)); }
+  body.has-ticker .side { top: auto; height: auto; }
+  .ticker { height: calc(28px + env(safe-area-inset-top)); font-size: 11.5px; } .tk-state { padding: 0 8px; font-size: 10.5px; } .tk-item { padding: 0 11px; }
   .app-panel { display: block; }
   .top { padding: 10px 14px; gap: 8px; } h1 { font-size: 18px; }
   .status { gap: 6px; } .pill { font-size: 11px; padding: 2px 8px; }

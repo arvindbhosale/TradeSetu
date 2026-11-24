@@ -21,7 +21,7 @@ server = MCPServer("fake-kite", log_level="CRITICAL")
 STATE = {"logged_in": False, "orders": [], "gtts": []}
 PRICES = {"NSE:RELIANCE": 1400.0, "NSE:TCS": 3500.0, "NSE:INFY": 1500.0, "BSE:RELIANCE": 1400.5,
           "NSE:NIFTY 50": 24500.0, "NSE:NIFTY BANK": 52000.0, "NSE:NIFTY IT": 38000.0,
-          "BSE:SENSEX": 81000.0, "BSE:BANKEX": 60000.0, "BSE:SENSEX50": 25800.0, "BSE:BSE500": 36000.0}
+          "NSE:INDIA VIX": 14.5, "BSE:SENSEX": 81000.0, "BSE:BANKEX": 60000.0, "BSE:SENSEX50": 25800.0, "BSE:BSE500": 36000.0}
 # Kite files indices under the INDICES segment; these are the BSE ones the fake lists.
 BSE_INDEX_ROWS = [("SENSEX", "SENSEX"), ("BANKEX", "BANKEX"), ("SENSEX50", "SENSEX50"), ("BSE500", "BSE 500")]
 HOLDINGS = [{"tradingsymbol": "INFY", "exchange": "NSE", "quantity": 20, "average_price": 1450.0,

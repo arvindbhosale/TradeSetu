@@ -19,6 +19,10 @@
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
+<div class="ticker" id="ticker" hidden role="region" aria-label="Index values">
+  <span class="tk-state" id="tk-state"><i aria-hidden="true"></i><span id="tk-label"></span></span>
+  <div class="tk-track"><div class="tk-run" id="tk-run"></div></div>
+</div>
 <div class="shell">
 <aside class="side">
   <div class="brand"><img class="logo" src="/static/logo-mark.png" alt="" width="34" height="34"><span>TradeSetu<small>NSE · BSE</small></span></div>
@@ -1369,6 +1373,11 @@
         </fieldset>
         <label class="check"><input type="checkbox" name="charts_enabled"> Show the Charts tab</label>
         <label class="check"><input type="checkbox" name="chart_yahoo"> If Kite cannot serve a chart, fall back to delayed Yahoo data</label>
+        <fieldset><legend>Index strip</legend>
+          <label class="check"><input type="checkbox" name="ticker_show"> Show the index strip at the top of every page</label>
+          <div class="tk-pick" id="tk-pick"></div>
+          <p class="hint">Live values come from your broker while the market is open. Without it the strip shows the last close and says Offline.</p>
+        </fieldset>
         <p class="hint">Live orders also need a Kite server that offers order placement, and a typed confirmation for each order.</p>
       </div>
     </div>
