@@ -391,6 +391,12 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         page = (STATIC / "index.html").read_text(encoding="utf-8")
         return page.replace("__DESK_TOKEN__", request.state.session["csrf"] if hosted else token)
 
+    @app.get("/charts", response_class=HTMLResponse)
+    def chart_window(request: Request):
+        # The chart window: one chart popped out of the Charts tab, or several in one window.
+        page = (STATIC / "charts.html").read_text(encoding="utf-8")
+        return page.replace("__DESK_TOKEN__", request.state.session["csrf"] if hosted else token)
+
     @app.get("/manual", response_class=HTMLResponse)
     def manual():
         return _manual_page()
@@ -1279,6 +1285,14 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     def md_layout_set(payload: dict):
         body = body_of(payload)
         return {"layout": app.state.chartstore.set_layout(str(body.get("view", "")), body.get("layout"))}
+
+    @app.get("/api/md/grid")
+    def md_grid():
+        return {"grid": app.state.chartstore.grid()}
+
+    @app.put("/api/md/grid")
+    def md_grid_set(payload: dict):
+        return {"grid": app.state.chartstore.set_grid(body_of(payload).get("grid"))}
 
     @app.get("/api/md/drawings")
     def md_drawings(venue: str = "", symbol: str = ""):
