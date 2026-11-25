@@ -94,6 +94,7 @@ from .notify import TelegramLink
 from .nse import NseClient, exchange_proxy as nse_proxy
 from .openpeaks import OpenPeaks
 from .optimiser import OBJECTIVES, optimise
+from .orderwins import OrderWins
 from .passkeys import PasskeyError, Passkeys, relying_party
 from .scanner import Scanner
 from .sectors import Sectors
@@ -221,6 +222,35 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     reminder = KiteReminder(settings, kite, desk.notifier, nse=financials.client,
                             link=lambda: (public_base() + "/broker/login") if public_base() else "")
     algos.extra_ticks.append(reminder.tick)
+
+    def order_revenue(symbol: str) -> float | None:
+        """Yearly revenue in ₹ crore when the desk has it (fetched in the background otherwise)."""
+        if not symbol:
+            return None
+        if not fundamentals.fresh(symbol):
+            fundamentals.queue([symbol])
+        revenue = (fundamentals.get(symbol) or {}).get("revenue")
+        return round(float(revenue) / 1e7, 2) if revenue else None
+
+    def order_ask(prompt: str) -> str:
+        if not settings.get("order_scan_ai"):
+            raise RuntimeError("AI reading of order filings is off in Settings")
+        from tradingagents.llm_clients import create_tier_client
+
+        reply = create_tier_client({**settings.agent_config(), "llm_max_retries": 1, "max_tokens": 400},
+                                   "quick").get_llm().invoke(prompt)
+        content = reply.content
+        if isinstance(content, list):
+            content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+        return str(content)
+
+    order_wins = OrderWins(settings, desk.notifier, nse=financials.client,
+                           bse_json=offline_json, download=(lambda url: (_ for _ in ()).throw(OSError("offline")))
+                           if fetch is not None else None,
+                           ask=order_ask, llm_problem=lambda: (llm_ready() or (None if settings.get("order_scan_ai")
+                                                                               else "AI reading is off")),
+                           revenue=order_revenue, is_trading_day=reminder.is_trading_day)
+    algos.extra_ticks.append(order_wins.tick)
     local_hosts = ("127.0.0.1", "localhost", "::1", "testserver")
     allowed = {h.strip().lower() for h in (allowed_hosts or []) if h.strip()}
 
@@ -236,6 +266,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     app.state.fno_algos = fno_algos
     app.state.supervisor = supervisor
     app.state.reminder, app.state.remembered = reminder, remembered
+    app.state.order_wins = order_wins
 
     def _secure(request: Request) -> bool:
         return request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
@@ -720,6 +751,22 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             desk.notifier.deliver((bot_token(), found["chat_id"]),
                                   f"✅ Linked to your {APP_NAME}. Alerts and the morning Kite login reminder come here.")
         return found
+
+    @app.get("/api/order-wins")
+    def order_wins_view(days: int = 7, all: bool = False):  # noqa: A002 - the query word the screen sends
+        return finite(order_wins.view(max(1, min(days, 45)), all))
+
+    @app.post("/api/order-wins/scan")
+    def order_wins_scan():
+        return {"started": order_wins.scan_now(), "busy": order_wins.busy()}
+
+    @app.post("/api/order-wins/send")
+    def order_wins_send():
+        """Send the order wins not reported yet to Telegram now."""
+        if order_wins.busy():
+            raise HTTPException(409, "A scan is running. Try again in a minute.")
+        now = market.now_ist()
+        return order_wins.report("morning" if now.hour < 12 else "evening")
 
     @app.get("/api/kite/reminder")
     def kite_reminder_status():
