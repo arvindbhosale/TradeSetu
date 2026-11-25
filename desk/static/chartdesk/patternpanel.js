@@ -290,12 +290,6 @@ export function mountPatterns(root, deps) {
     changed() { compute(true); paint(true); render(); },
     /** Empty candles to leave right of the last one, for the range. */
     room() { const s = S(); return s.on && s.cone ? s.horizon + 3 : 0; },
-    /** Pattern names on one candle, for the legend. @param {number} time @returns {string[]} */
-    namesAt(time) {
-      if (!S().on) return [];
-      const i = deps.bars().findIndex((b) => b.time === time);
-      return i >= 0 && i < st.found.length ? st.found[i].map((k) => PATTERNS[k][0]) : [];
-    },
     /** A new symbol or timeframe: earlier picks and pooled counts no longer apply. */
     reset() { st.picked = null; st.closed = -1; if (!st.pooledJob) { st.pooled = null; st.pooledMsg = ""; } },
   };
