@@ -72,7 +72,11 @@ def _side(row: dict) -> str:
 
 
 def _status(row: dict) -> str:
-    return "Placed" if row.get("ok") else "Failed"
+    if not row.get("ok"):
+        return "Failed"
+    if row.get("fill_price") not in (None, ""):
+        return "Filled"
+    return "Set" if row.get("gtt") else "Placed"           # a stoploss/target trigger order was set
 
 
 def _yes(key: str) -> Callable[[dict], str]:
@@ -86,7 +90,8 @@ def _src(row: dict) -> str:
 PNL = [Col("time_ist", "Closed on (IST)", "time", 22), Col("source", "From", width=22, get=_src),
        Col("symbol", "Stock / contract", width=24), Col("side", "Side", width=8, get=_side, tone="side"),
        Col("quantity", "Quantity", "qty", 10), Col("buy_price", "Buy price", "price", 12),
-       Col("sell_price", "Sell price", "price", 12), Col("pnl", "Profit/Loss", "money", 15, True, tone="pnl"),
+       Col("sell_price", "Sell price", "price", 12), Col("charges", "Charges", "money", 12, True),
+       Col("pnl", "Profit/Loss", "money", 15, True, tone="pnl"),
        Col("return_pct", "Return", "pct", 10, tone="pnl")]
 JOURNAL = [Col("time_ist", "Time (IST)", "time", 22), Col("mode", "Account", width=9, get=lambda r: str(r.get("mode", "")).title()),
            Col("source", "From", width=22, get=_src), Col("exchange", "Exchange", width=9),
@@ -104,7 +109,7 @@ FILLS = [Col("time_ist", "Time (IST)", "time", 22), Col("mode", "Account", width
          Col("product", "Product", width=9), Col("charges", "Charges", "money", 12, True), Col("trade_id", "Trade ID", width=20)]
 LOTS = [Col("fy", "Financial year", width=10, get=lambda r: "FY " + str(r.get("fy", ""))),
         Col("category", "Tax head", width=22, tone="band"), Col("symbol", "Stock / contract", width=24),
-        Col("exchange", "Exchange", width=9), Col("quantity", "Quantity", "qty", 10),
+        Col("exchange", "Exchange", width=9), Col("side", "Side", width=8), Col("quantity", "Quantity", "qty", 10),
         Col("buy_date", "Bought on", "date", 12), Col("sell_date", "Sold on", "date", 12), Col("days_held", "Days held", "int", 9),
         Col("buy_price", "Buy price", "price", 12), Col("sell_price", "Sell price", "price", 12),
         Col("buy_value", "Buy value", "money", 15, True), Col("sell_value", "Sell value", "money", 15, True),

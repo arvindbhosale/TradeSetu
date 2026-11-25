@@ -2403,7 +2403,9 @@
     $("#pnl-closed").replaceChildren(table([
       { label: "Closed on (IST)", get: (x) => x.time_ist }, { label: "Stock / contract", get: (x) => x.symbol }, { label: "From", get: (x) => sourceLabel(x.source) },
       { label: "Qty", num: true, get: (x) => x.quantity }, { label: "Buy price ₹", num: true, get: (x) => inr2.format(x.buy_price) },
-      { label: "Sell price ₹", num: true, get: (x) => inr2.format(x.sell_price) }, { label: "Profit/Loss", num: true, get: (x) => money(x.pnl), tone: (x) => tone(x.pnl) },
+      { label: "Sell price ₹", num: true, get: (x) => inr2.format(x.sell_price) },
+      { label: "Charges ₹", num: true, get: (x) => (x.charges == null ? "–" : inr2.format(x.charges)) },
+      { label: "Profit/Loss", num: true, get: (x) => money(x.pnl), tone: (x) => tone(x.pnl) },
       { label: "Return", num: true, get: (x) => pct(x.return_pct), tone: (x) => tone(x.pnl) }], r.closed, "No closed trades yet."));
     $("#pnl-sources").replaceChildren(table([
       { label: "Algo / source", get: (x) => sourceLabel(x.source) }, { label: "Booked", num: true, get: (x) => money(x.realized), tone: (x) => tone(x.realized) },

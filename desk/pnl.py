@@ -19,13 +19,29 @@ from collections import defaultdict
 from pathlib import Path
 
 from . import market, mcx
-from .charges import commodity_charges, futures_charges, order_charges
+from .charges import commodity_charges, futures_charges, order_charges, same_day_delivery_charges
 from .settings import home
 
 
 def trade_key(mode: str, source: str, exchange: str, symbol: str, opened_at: str) -> str:
     """Names one trade: a position from the fill that opened it until it is flat again. Partial exits share it."""
     return f"{mode}|{source}|{exchange}|{symbol}|{opened_at}"
+
+
+def settle(fills: list[dict]) -> list[dict]:
+    """The fills with delivery (CNC) share charges corrected for the day's netting: a quantity bought and sold the
+    same day pays intraday rates, not delivery ones. Only charges this desk estimated at delivery rates are changed,
+    so a fill recorded with other charges keeps them."""
+    corrected = same_day_delivery_charges(fills)
+    out = []
+    for fill, charge in zip(fills, corrected, strict=True):
+        if charge is not None and charge != fill.get("charges"):
+            with contextlib.suppress(ValueError, KeyError, TypeError):
+                estimate = order_charges(fill["side"], fill["quantity"], fill["price"], "CNC", fill["exchange"]).total
+                if abs(float(fill.get("charges") or 0) - estimate) < 0.011:
+                    fill = {**fill, "charges": charge, "delivery_charges": fill.get("charges")}
+        out.append(fill)
+    return out
 
 
 class Ledger:
@@ -98,14 +114,14 @@ class Ledger:
                                                         "fills": 0, "turnover": 0.0})
         days: dict[str, float] = defaultdict(float)
         closed = []
-        for fill in sorted((f for f in self.fills() if f.get("mode") == mode), key=lambda f: f["time_ist"]):
+        for fill in settle(sorted((f for f in self.fills() if f.get("mode") == mode), key=lambda f: f["time_ist"])):
             # A chart order's exits (its GTT, stoploss or target order) close the position its manual entry opened.
             source = "manual" if str(fill["source"]).startswith("chart:") else fill["source"]
             day = fill["time_ist"][:10]
             key = (source, fill["exchange"], fill["tradingsymbol"])
             factor = fill.get("multiplier") or 1
             book = books.setdefault(key, {"quantity": 0, "cost": 0.0, "opened": day, "opened_at": fill["time_ist"],
-                                          "factor": factor, "realized": 0.0,
+                                          "factor": factor, "realized": 0.0, "raw": 0.0,
                                           "charges": 0.0, "bought": 0, "buy_value": 0.0, "sold": 0, "sell_value": 0.0,
                                           "fills": [], "entries": []})
             lots = fill["quantity"]
@@ -132,10 +148,12 @@ class Ledger:
             closing = min(quantity, -held if buying else held) if (held < 0 if buying else held > 0) else 0
             if closing:
                 average = book["cost"] / held
+                entry = book["raw"] / held                  # the average entry price, charges left out
                 part = charge * closing / quantity
                 profit = (average - price) * closing - part if buying else (price - average) * closing - part
                 book["quantity"] = held + closing if buying else held - closing
                 book["cost"] = average * book["quantity"]
+                book["raw"] = entry * book["quantity"]
                 stats["realized"] += profit
                 book["realized"] += profit
                 stats["trades"] += 1
@@ -146,8 +164,9 @@ class Ledger:
                                "key": trade_key(mode, source, fill["exchange"], fill["tradingsymbol"], book["opened_at"]),
                                **({"multiplier": factor} if factor != 1 else {}),
                                "quantity": round(closing / factor, 6) if factor != 1 else closing, "side": "SHORT" if buying else "LONG",
-                               "buy_price": round(price if buying else average, 2),
-                               "sell_price": round(average if buying else price, 2),
+                               "buy_price": round(price if buying else entry, 2),
+                               "sell_price": round(entry if buying else price, 2),
+                               "charges": round(abs(average - entry) * closing + part, 2),
                                "pnl": round(profit, 2),
                                "return_pct": round(profit / (closing * average) * 100, 2) if average else 0.0,
                                "entries": list(book["entries"])})
@@ -165,6 +184,7 @@ class Ledger:
                 part = charge * rest / quantity
                 book["quantity"] += rest if buying else -rest
                 book["cost"] += rest * price + part if buying else -(rest * price - part)
+                book["raw"] += rest * price if buying else -rest * price
         return books, sources, days, closed
 
     def report(self, mode: str, price_of=None) -> dict:

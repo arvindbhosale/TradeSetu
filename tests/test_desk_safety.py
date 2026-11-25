@@ -154,7 +154,8 @@ def test_charges_come_out_of_the_profit(tmp_path):
     trade(desk, side="SELL")
     report = desk.pnl("paper")
     from desk.charges import order_charges
-    fees = order_charges("BUY", 10, 1400.0).total + order_charges("SELL", 10, 1450.0).total
+    # Delivery shares bought and sold the same day are squared off at intraday rates.
+    fees = order_charges("BUY", 10, 1400.0, "MIS").total + order_charges("SELL", 10, 1450.0, "MIS").total
     assert report["realized"] == pytest.approx(500 - fees, abs=0.02) and report["charges"] == pytest.approx(fees, abs=0.02)
     assert report["sources"][0]["source"] == "manual" and report["open"] == []
 

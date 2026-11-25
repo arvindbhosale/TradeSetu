@@ -157,3 +157,38 @@ def commodity_charges(side: str, quantity: float, price: float, multiplier: floa
     sebi = turnover * schedule.sebi_pct
     gst = (brokerage + txn + sebi) * schedule.gst_pct
     return Charges(turnover, brokerage, ctt, txn, sebi, stamp, gst, 0.0)
+
+
+def same_day_delivery_charges(fills: list[dict], schedule: ChargeSchedule = DEFAULT_SCHEDULE) -> list[float | None]:
+    """Charges on delivery (CNC) share fills once the day is netted: shares bought and sold on the same day are
+    squared off at the exchange, never delivered, so that quantity pays intraday rates (no delivery STT or DP).
+
+    ``fills`` are dicts with time_ist, side, quantity, price, product, exchange and tradingsymbol (and mode, kept
+    apart). Returns, for each fill in the order given, its charges after netting, or None where nothing changes.
+    """
+    out: list[float | None] = [None] * len(fills)
+    days: dict[tuple, list[int]] = {}
+    for i, fill in enumerate(fills):
+        if str(fill.get("product", "")).upper() != "CNC" or fill.get("exchange") not in schedule.exchange_txn_pct:
+            continue
+        key = (fill.get("mode"), fill["exchange"], fill["tradingsymbol"], str(fill["time_ist"])[:10])
+        days.setdefault(key, []).append(i)
+    for members in days.values():
+        members.sort(key=lambda i: str(fills[i]["time_ist"]))
+        bought = sum(fills[i]["quantity"] for i in members if str(fills[i]["side"]).upper() == "BUY")
+        sold = sum(fills[i]["quantity"] for i in members if str(fills[i]["side"]).upper() == "SELL")
+        left = {"BUY": min(bought, sold), "SELL": min(bought, sold)}
+        if not left["BUY"]:
+            continue
+        for i in members:
+            fill = fills[i]
+            side, quantity, price = str(fill["side"]).upper(), fill["quantity"], fill["price"]
+            intraday = min(quantity, left[side])
+            if not intraday or quantity <= 0 or price <= 0:
+                continue
+            left[side] -= intraday
+            total = order_charges(side, intraday, price, "MIS", fill["exchange"], schedule).total
+            if quantity > intraday:
+                total += order_charges(side, quantity - intraday, price, "CNC", fill["exchange"], schedule).total
+            out[i] = round(total, 2)
+    return out

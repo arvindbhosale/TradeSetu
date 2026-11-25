@@ -578,7 +578,7 @@ def test_api_options_backtest_optimiser_and_exports(client):
     assert closed[0].startswith("time_ist,source,symbol,side,quantity,buy_price,sell_price,pnl") and len(closed) == 2
     assert ",manual,TCS,LONG,2," in closed[1]
     lots = client.get("/api/export/tax-lots.csv?mode=paper").text.splitlines()
-    assert len(lots) == 2 and lots[1].split(",")[1] == "STCG"
+    assert len(lots) == 2 and lots[1].split(",")[1] == "Speculative (intraday)"      # CNC sold the same day
     years = client.get("/api/tax?mode=paper").json()["years"]
     assert years[0]["trades"] == 1 and client.get("/api/export/other.csv").status_code == 404
     assert client.get("/api/export/other.xlsx").status_code == 404
@@ -690,3 +690,54 @@ def test_api_payoff_fills_premiums_and_greeks_from_kite(client, monkeypatch):
     monkeypatch.setattr(market, "now_ist", lambda: datetime(2026, 11, 16, 18, 0, tzinfo=market.IST))
     shut = client.post("/api/options/payoff", json=body).json()
     assert all(g["source"] == "Kite last price" for g in shut["legs"]) and any("Market closed" in n for n in shut["notes"])
+
+
+def test_tax_lots_count_short_sales_and_agree_with_the_pnl(tmp_path):
+    ledger = Ledger(tmp_path / "fills.jsonl")
+    add = lambda when, side, qty, price, source="algo:A", symbol="NIFTY26D0125800CE": ledger.add(      # noqa: E731
+        "paper", source, "NFO", symbol, side, qty, price, "NRML", time_ist=f"2026-11-{when}")
+    add("23 09:30:00", "SELL", 65, 230.0)                 # a short option leg: sold first ...
+    add("24 12:00:00", "BUY", 65, 150.0)                  # ... bought back the next day
+    add("23 09:30:00", "BUY", 65, 100.0, "algo:B", "NIFTY26D0125400PE")
+    add("23 11:00:00", "SELL", 65, 80.0, "algo:B", "NIFTY26D0125400PE")
+    lots = tax.tax_lots(ledger.fills(), "paper")
+    short = next(lot for lot in lots if lot["side"] == "Short")
+    assert (short["sell_date"], short["buy_date"], short["days_held"]) == ("2026-11-23", "2026-11-24", 1)
+    assert (short["sell_price"], short["buy_price"], short["source"]) == (230.0, 150.0, "algo:A")
+    closed = ledger.closed_trades("paper")
+    assert len(lots) == len(closed) == 2
+    assert sum(lot["gain"] for lot in lots) == pytest.approx(sum(t["pnl"] for t in closed), abs=0.02)
+    assert tax.summary(lots)[0]["fno_turnover"] == pytest.approx(65 * 80 + 65 * 20)
+    # Raw fill prices on the P&L row, the charges in their own column.
+    row = next(t for t in closed if t["side"] == "SHORT")
+    assert (row["sell_price"], row["buy_price"]) == (230.0, 150.0)
+    assert row["pnl"] == pytest.approx(65 * 80 - row["charges"], abs=0.01) and row["charges"] > 0
+
+
+def test_delivery_shares_sold_the_same_day_are_intraday(tmp_path):
+    from desk.charges import order_charges
+    ledger = Ledger(tmp_path / "fills.jsonl")
+    ledger.add("paper", "algo:E", "NSE", "MARUTI", "BUY", 7, 14049.0, "CNC", time_ist="2026-11-25 12:53:36")
+    ledger.add("paper", "algo:E", "NSE", "MARUTI", "SELL", 7, 14172.0, "CNC", time_ist="2026-11-25 15:06:05")
+    intraday = order_charges("BUY", 7, 14049.0, "MIS").total + order_charges("SELL", 7, 14172.0, "MIS").total
+    lot, = tax.tax_lots(ledger.fills(), "paper")
+    assert lot["category"] == "Speculative (intraday)" and lot["charges"] == pytest.approx(intraday, abs=0.02)
+    trade, = ledger.closed_trades("paper")
+    assert trade["charges"] == pytest.approx(intraday, abs=0.02) and trade["pnl"] == lot["gain"]
+    # Shares already held and sold on a later day stay delivery: short-term, delivery charges.
+    ledger.add("paper", "algo:E", "NSE", "TCS", "BUY", 2, 4000.0, "CNC", time_ist="2026-11-20 10:00:00")
+    ledger.add("paper", "algo:E", "NSE", "TCS", "BUY", 1, 4100.0, "CNC", time_ist="2026-11-25 10:00:00")
+    ledger.add("paper", "algo:E", "NSE", "TCS", "SELL", 1, 4200.0, "CNC", time_ist="2026-11-25 14:00:00")
+    tcs = [lot for lot in tax.tax_lots(ledger.fills(), "paper") if lot["symbol"] == "TCS"]
+    assert [(lot["category"], lot["buy_price"]) for lot in tcs] == [("Speculative (intraday)", 4100.0)]   # same day first
+
+
+def test_paper_cash_pays_intraday_charges_on_delivery_shares_sold_the_same_day(tmp_path):
+    from desk.broker import Order, PaperBook
+    from desk.charges import order_charges
+    book = PaperBook(1_000_000, tmp_path / "paper.json")
+    book.fill(Order("NSE", "MARUTI", "BUY", 7, "CNC"), 14049.0)
+    book.fill(Order("NSE", "MARUTI", "SELL", 7, "CNC"), 14172.0)
+    intraday = order_charges("BUY", 7, 14049.0, "MIS").total + order_charges("SELL", 7, 14172.0, "MIS").total
+    assert book.cash == pytest.approx(1_000_000 + 7 * 123 - intraday, abs=0.02)
+    assert PaperBook(1, tmp_path / "paper.json").cash == pytest.approx(book.cash)          # kept across a restart
