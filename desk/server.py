@@ -3056,8 +3056,9 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if kind == "journal":
             return [r for r in reversed(desk.journal_rows(100000)) if r.get("mode") == mode], tax.JOURNAL_FIELDS
         if kind == "fills":
-            from .pnl import settle
-            return settle([f for f in desk.ledger.fills() if f.get("mode") == mode]), tax.FILL_FIELDS
+            from .pnl import round_parts, settle
+            return [{**f, **round_parts(f["parts"], f.get("charges") or 0)}
+                    for f in settle([f for f in desk.ledger.fills() if f.get("mode") == mode])], tax.FILL_FIELDS
         if kind == "pnl":
             return desk.ledger.closed_trades(mode), tax.PNL_FIELDS
         if kind == "tax-lots":
@@ -3078,7 +3079,14 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     def export_xlsx(kind: str, mode: str = "live", fy: str = ""):
         rows, _ = _export_rows(kind, mode, fy)
         from . import xlsxexport
-        data = xlsxexport.workbook(kind, rows, mode, fy=fy)
+        extra = {}
+        if kind == "tax-lots":
+            # Losses carry from year to year, so the statement always covers every year, whatever ``fy`` shows.
+            from . import taxreport as tax
+            every = tax.tax_lots(desk.ledger.fills(), mode)
+            extra = {"years": [y for y in tax.summary(every) if not fy or y["fy"] == fy],
+                     "statement": _tax_statement(every)}
+        data = xlsxexport.workbook(kind, rows, mode, fy=fy, **extra)
         return Response(data, media_type=XLSX_TYPE,
                         headers={"Content-Disposition": f'attachment; filename="{_export_name(kind, mode, fy, "xlsx")}"'})
 
@@ -3129,6 +3137,14 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         _, name, ctype, body = item
         return Response(body, media_type=ctype, headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
+    def _tax_inputs_path():
+        return desk.ledger.path.parent / "tax_inputs.json"
+
+    def _tax_statement(lots: list[dict]) -> dict:
+        from . import taxreport as tax
+        inputs = tax.load_inputs(_tax_inputs_path())
+        return tax.statement(lots, inputs["losses"], inputs["slab_rate_pct"] / 100)
+
     @app.get("/api/tax")
     def tax_summary(mode: str = "live"):
         from . import taxreport as tax
@@ -3136,7 +3152,15 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             raise ValueError("mode must be paper or live")
         lots = tax.tax_lots(desk.ledger.fills(), mode)
         return {"mode": mode, "years": tax.summary(lots), "lots": lots[-300:][::-1],
+                "statement": _tax_statement(lots), "inputs": tax.load_inputs(_tax_inputs_path()),
+                "lines": tax.STATEMENT, "notes": tax.STATEMENT_NOTES, "heads": tax.HEAD_NAMES,
                 "rates": {"stcg": tax.STCG_RATE, "ltcg": tax.LTCG_RATE, "ltcg_exemption": tax.LTCG_EXEMPTION}}
+
+    @app.put("/api/tax/inputs")
+    def tax_inputs_set(payload: dict):
+        """Losses from earlier years (from your income tax returns) and your slab rate, for the tax statement."""
+        from . import taxreport as tax
+        return tax.save_inputs(_tax_inputs_path(), body_of(payload))
 
     @app.get("/api/order/journal")
     def order_journal():

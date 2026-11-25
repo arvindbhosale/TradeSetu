@@ -587,7 +587,7 @@ def test_api_options_backtest_optimiser_and_exports(client):
 
     from openpyxl import load_workbook
     for kind, sheets, rows in (("pnl", ["Closed trades", "By source"], 1), ("journal", ["Order journal"], 2),
-                               ("fills", ["Fills"], 2), ("tax-lots", ["Tax lots", "By financial year"], 1)):
+                               ("fills", ["Fills"], 2), ("tax-lots", ["Tax lots", "By financial year", "Tax statement", "Losses carried forward"], 1)):
         response = client.get(f"/api/export/{kind}.xlsx?mode=paper")
         assert response.status_code == 200 and response.headers["content-type"].startswith("application/vnd.openxmlformats"), kind
         assert f'filename="tradesetu-{kind}-paper.xlsx"' in response.headers["content-disposition"]
@@ -741,3 +741,29 @@ def test_paper_cash_pays_intraday_charges_on_delivery_shares_sold_the_same_day(t
     intraday = order_charges("BUY", 7, 14049.0, "MIS").total + order_charges("SELL", 7, 14172.0, "MIS").total
     assert book.cash == pytest.approx(1_000_000 + 7 * 123 - intraday, abs=0.02)
     assert PaperBook(1, tmp_path / "paper.json").cash == pytest.approx(book.cash)          # kept across a restart
+
+
+def test_api_tax_statement_and_earlier_losses(client):
+    import io
+
+    from openpyxl import load_workbook
+    for side in ("BUY", "SELL"):
+        review = client.post("/api/order/preview", json={"mode": "paper", "order": {"exchange": "NSE", "tradingsymbol": "TCS", "side": side,
+                                                                                    "quantity": 2, "order_type": "MARKET"}}).json()
+        client.post("/api/order/place", json={"token": review["token"], "phrase": review["phrase"]})
+    assert client.put("/api/tax/inputs", json={"losses": [{"fy": "2024-25", "head": "salary", "amount": 5}]}).status_code == 400
+    saved = client.put("/api/tax/inputs", json={"losses": [{"fy": "2024-25", "head": "spec", "amount": 1e7}], "slab_rate_pct": 20}).json()
+    assert saved == {"losses": [{"fy": "2024-25", "head": "spec", "amount": 1e7}], "slab_rate_pct": 20.0}
+    r = client.get("/api/tax?mode=paper").json()
+    assert r["inputs"] == saved and r["lines"][0][1] is None and r["heads"]["fno"] == "F&O (business)"
+    year = r["statement"]["years"][-1]
+    assert year["spec"] < 0 and year["cf_spec"] == pytest.approx(1e7 - year["spec"])      # a loss on charges, carried
+    entered = next(loss for loss in r["statement"]["losses"] if loss["from"] == "You entered")
+    assert (entered["last_year"], entered["status"]) == ("2028-29", "Carried forward")
+    closed = client.get("/api/pnl?mode=paper").json()["closed"][0]
+    assert round(sum(closed[k] for k in ("brokerage", "stt", "exchange_fees", "stamp_duty", "gst", "dp")), 2) == closed["charges"] > 0
+    fills = client.get("/api/export/fills.csv?mode=paper").text.splitlines()
+    assert ",brokerage,stt,exchange_fees,stamp_duty,gst,dp," in fills[0]
+    book = load_workbook(io.BytesIO(client.get("/api/export/tax-lots.xlsx?mode=paper&fy=2099-00").content))
+    assert book["Tax lots"]["A5"].value.startswith("Nothing") or book["Tax lots"].max_row <= 5
+    assert book["Tax statement"]["B4"].value == "FY " + year["fy"]     # every year, whatever year is picked

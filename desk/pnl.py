@@ -19,7 +19,14 @@ from collections import defaultdict
 from pathlib import Path
 
 from . import market, mcx
-from .charges import commodity_charges, futures_charges, order_charges, same_day_delivery_charges
+from .charges import (
+    PARTS,
+    breakdowns,
+    commodity_charges,
+    futures_charges,
+    order_charges,
+    same_day_delivery_charges,
+)
 from .settings import home
 
 
@@ -41,6 +48,16 @@ def settle(fills: list[dict]) -> list[dict]:
                 if abs(float(fill.get("charges") or 0) - estimate) < 0.011:
                     fill = {**fill, "charges": charge, "delivery_charges": fill.get("charges")}
         out.append(fill)
+    # Each fill's charges split into brokerage, STT, exchange fees, stamp duty, GST and DP (``parts``, unrounded).
+    return [{**fill, "parts": parts} for fill, parts in zip(out, breakdowns(out), strict=True)]
+
+
+def round_parts(parts: dict, total: float) -> dict:
+    """The parts of a charge rounded to paise, any rounding left over put on the largest, so they add up to it."""
+    out = {k: round(parts.get(k, 0.0), 2) for k in PARTS}
+    if any(out.values()):
+        biggest = max(out, key=lambda k: abs(out[k]))
+        out[biggest] = round(out[biggest] + round(total, 2) - round(sum(out.values()), 2), 2)
     return out
 
 
@@ -123,7 +140,7 @@ class Ledger:
             book = books.setdefault(key, {"quantity": 0, "cost": 0.0, "opened": day, "opened_at": fill["time_ist"],
                                           "factor": factor, "realized": 0.0, "raw": 0.0,
                                           "charges": 0.0, "bought": 0, "buy_value": 0.0, "sold": 0, "sell_value": 0.0,
-                                          "fills": [], "entries": []})
+                                          "fills": [], "entries": [], "parts": dict.fromkeys(PARTS, 0.0)})
             lots = fill["quantity"]
             if fill["side"] == "BUY":
                 book["bought"] += lots
@@ -151,6 +168,10 @@ class Ledger:
                 entry = book["raw"] / held                  # the average entry price, charges left out
                 part = charge * closing / quantity
                 profit = (average - price) * closing - part if buying else (price - average) * closing - part
+                # The entry charges of the quantity closed, and this fill's share of its own, part by part.
+                share = closing / abs(held)
+                parts = {k: book["parts"][k] * share + fill["parts"][k] * closing / quantity for k in PARTS}
+                book["parts"] = {k: v * (1 - share) for k, v in book["parts"].items()}
                 book["quantity"] = held + closing if buying else held - closing
                 book["cost"] = average * book["quantity"]
                 book["raw"] = entry * book["quantity"]
@@ -167,6 +188,7 @@ class Ledger:
                                "buy_price": round(price if buying else entry, 2),
                                "sell_price": round(entry if buying else price, 2),
                                "charges": round(abs(average - entry) * closing + part, 2),
+                               **round_parts(parts, abs(average - entry) * closing + part),
                                "pnl": round(profit, 2),
                                "return_pct": round(profit / (closing * average) * 100, 2) if average else 0.0,
                                "entries": list(book["entries"])})
@@ -182,6 +204,8 @@ class Ledger:
                 else:
                     book["entries"].append({"time": fill["time_ist"], "quantity": rest, "price": round(price, 2)})
                 part = charge * rest / quantity
+                for k in PARTS:
+                    book["parts"][k] += fill["parts"][k] * rest / quantity
                 book["quantity"] += rest if buying else -rest
                 book["cost"] += rest * price + part if buying else -(rest * price - part)
                 book["raw"] += rest * price if buying else -rest * price

@@ -1134,12 +1134,33 @@
     <div id="export-error" class="error" hidden></div>
   </div>
   <details class="panel advanced-panel" id="pnl-advanced">
-    <summary>Advanced: statistics, tax estimate and what is counted</summary>
+    <summary>Advanced: statistics and what is counted</summary>
     <div class="tiles" id="pnl-stats"></div>
-    <h3>Tax estimate by financial year</h3>
-    <p class="hint">Indicative, by Indian financial year (April to March), for trades this desk recorded on the account selected at the top. Delivery shares are matched first-in, first-out: held over 12 months is long-term. Same-day intraday is speculative income; F&amp;O is non-speculative business income. Rates from 23 July 2024: STCG 20%, LTCG 12.5% above ₹1.25 lakh a year. Not a tax computation: use your broker's tax P&amp;L and your CA.</p>
+    <p class="hint"><strong>What this counts.</strong> Fills the desk made: every paper fill, and live fills read from Kite's trade book for orders this desk placed. It does not see trades you place in Kite directly, or the order a triggered live GTT sends. For the live account, Kite's console is the final word. Open profit/loss is before the charges of closing.</p>
+  </details>
+  <details class="panel advanced-panel" id="tax-panel">
+    <summary>Tax statement (estimate)</summary>
+    <p class="hint">Your trades on the account selected at the top, by Indian financial year (April to March), with losses set off the way the income tax rules allow and carried forward. Intraday shares are speculative business income; F&amp;O is business income; delivery shares held over 12 months are long-term capital gains, else short-term. An estimate, not for filing: check with your broker's tax P&amp;L and a chartered accountant. The Tax lots download has the same statement in Excel.</p>
+    <div id="tax-notes"></div>
+    <h3>Tax statement</h3>
+    <div class="scroll tall" id="tax-statement"></div>
+    <h3>Losses carried forward</h3>
+    <div class="scroll" id="tax-losses"></div>
+    <h3>Gains and charges by financial year</h3>
+    <p class="hint">Before losses are set off. Short- and long-term gains have STT added back: STT is not a deductible cost on shares held for delivery. GST is 18% on brokerage and exchange fees only.</p>
     <div class="scroll" id="tax-years"></div>
-    <p class="hint"><strong>What this counts.</strong> Fills the desk made: every paper fill, and live fills read from your broker's trade book for orders this desk placed. It does not see trades you place with your broker directly, or the order a triggered live GTT sends. For the live account, your broker's console is the final word. Open profit/loss is before the charges of closing.</p>
+    <h3>Losses from earlier years</h3>
+    <p class="hint">Losses from your past income tax returns (the carried-forward losses schedule) that are still to be set off, for trades this desk did not record. Enter the year each loss was made and the amount left. Intraday losses can be used for 4 years after, F&amp;O and capital losses for 8, and only if that year's return was filed on time.</p>
+    <form id="form-tax-inputs">
+      <div id="tax-carried"></div>
+      <div class="row">
+        <button type="button" id="tax-carried-add">Add a loss</button>
+        <label>Your income tax slab rate, % <input name="slab_rate_pct" type="number" min="0" max="50" step="any" required title="Used for intraday and F&amp;O income, which is taxed at your slab rate"></label>
+        <button class="primary" type="submit">Save</button>
+        <span class="hint" id="tax-inputs-state"></span>
+      </div>
+    </form>
+    <div id="tax-error" class="error" hidden></div>
   </details>
   <div class="panel" id="price-alerts">
     <div class="jobhead"><h2>Price alerts</h2><span class="hint" id="palert-state"></span></div>

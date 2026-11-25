@@ -2414,7 +2414,9 @@
       { label: "Closed on (IST)", get: (x) => x.time_ist }, { label: "Stock / contract", get: (x) => x.symbol }, { label: "From", get: (x) => sourceLabel(x.source) },
       { label: "Qty", num: true, get: (x) => x.quantity }, { label: "Buy price ₹", num: true, get: (x) => inr2.format(x.buy_price) },
       { label: "Sell price ₹", num: true, get: (x) => inr2.format(x.sell_price) },
-      { label: "Charges ₹", num: true, get: (x) => (x.charges == null ? "–" : inr2.format(x.charges)) },
+      { label: "STT ₹", num: true, get: (x) => (x.stt == null ? "–" : inr2.format(x.stt)) },
+      { label: "GST ₹", num: true, get: (x) => (x.gst == null ? "–" : inr2.format(x.gst)) },
+      { label: "Total charges ₹", num: true, get: (x) => (x.charges == null ? "–" : h("span", { title: chargeParts(x), text: inr2.format(x.charges) })) },
       { label: "Profit/Loss", num: true, get: (x) => money(x.pnl), tone: (x) => tone(x.pnl) },
       { label: "Return", num: true, get: (x) => pct(x.return_pct), tone: (x) => tone(x.pnl) }], r.closed, "No closed trades yet."));
     $("#pnl-sources").replaceChildren(table([
@@ -4572,19 +4574,79 @@
 
   // -- tax P&L and exports -----------------------------------------------------------------
 
+  const TAX_HEADS = [["spec", "Intraday shares (speculative)"], ["fno", "F&O (business)"], ["stcg", "Short-term capital loss"], ["ltcg", "Long-term capital loss"]];
+  const CHARGE_PARTS = [["brokerage", "Brokerage"], ["stt", "STT"], ["exchange_fees", "Exchange + SEBI fees"], ["stamp_duty", "Stamp duty"], ["gst", "GST"], ["dp", "DP charge"]];
+  const chargeParts = (x) => CHARGE_PARTS.filter(([k]) => x[k]).map(([k, label]) => `${label} ₹${inr2.format(x[k])}`).join(", ");
+
+  function taxLossRow(loss) {
+    const fy = h("input", { name: "fy", placeholder: "2024-25", pattern: "\\d{4}-\\d{2}", required: true, value: loss ? loss.fy : "", "aria-label": "Year the loss was made", title: "Financial year the loss was made, e.g. 2024-25" });
+    const head = h("select", { name: "head", "aria-label": "Type of loss" }, TAX_HEADS.map(([v, t]) => h("option", { value: v, text: t })));
+    if (loss) head.value = loss.head;
+    const amount = h("input", { name: "amount", type: "number", min: "0.01", step: "any", required: true, value: loss ? loss.amount : "", "aria-label": "Loss left to set off, ₹", placeholder: "Loss left, ₹" });
+    const row = h("div", { class: "row tax-loss" }, h("label", {}, "Loss made in FY", fy), h("label", {}, "Type", head), h("label", {}, "Loss left to set off, ₹", amount),
+      h("button", { type: "button", text: "Remove", onclick: () => { row.remove(); $("#tax-inputs-state").textContent = "Not saved yet."; } }));
+    row.read = () => ({ fy: fy.value.trim(), head: head.value, amount: Number(amount.value) });
+    return row;
+  }
+
   async function refreshTax() {
     const mode = state.mode;
-    let r; try { r = await api("/tax?mode=" + mode); } catch (err) { $("#tax-years").replaceChildren(h("p", { class: "hint", text: err.message })); return; }
+    let r; try { r = await api("/tax?mode=" + mode); showError("#tax-error", null); } catch (err) { showError("#tax-error", err); return; }
     const money = (v) => (v == null ? "–" : (v < 0 ? "−" : "") + "₹" + inr.format(Math.abs(Math.round(v))));
+    const st = r.statement;
+    const notes = [...(mode === "paper" ? ["Paper account: practice figures, not for filing."] : []), ...st.notes];
+    $("#tax-notes").replaceChildren(...notes.map((n) => h("p", { class: "hint warn", text: n })));
+    if (!st.years.length) $("#tax-statement").replaceChildren(h("p", { class: "hint", text: "No closed trades and no earlier losses on this account yet." }));
+    else {
+      const body = r.lines.map(([label, key, kind]) => {
+        if (key == null) return h("tr", { class: "section" }, h("th", { colspan: st.years.length + 1, text: label }));
+        return h("tr", { class: key === "total_tax" ? "strong" : null }, h("td", { text: label }), ...st.years.map((y) => {
+          const v = y[key];
+          if (kind === "yes") return h("td", { class: v ? "num neg" : "num", text: v ? "Yes" : "No" });
+          if (kind === "pct") return h("td", { class: "num", text: v + "%" });
+          const signed = /^(spec|fno|stcg|ltcg)(_after)?$/.test(key);
+          return h("td", { class: "num" + (signed ? " " + tone(v) : ""), text: money(v) });
+        }));
+      });
+      $("#tax-statement").replaceChildren(h("table", { class: "tax-statement" },
+        h("thead", {}, h("tr", {}, h("th", { text: "Financial year" }), ...st.years.map((y) => h("th", { class: "num", text: "FY " + y.fy })))),
+        h("tbody", {}, body)), h("details", {}, h("summary", { text: "Read this" }), ...r.notes.map((n) => h("p", { class: "hint", text: n }))));
+    }
+    $("#tax-losses").replaceChildren(table([
+      { label: "Loss made in", get: (l) => "FY " + l.fy }, { label: "Type of loss", get: (l) => l.head_name }, { label: "Recorded by", get: (l) => l.from },
+      { label: "Loss", num: true, get: (l) => money(l.amount) }, { label: "Set off so far", num: true, get: (l) => money(l.used) },
+      { label: "Still to set off", num: true, get: (l) => money(l.left) }, { label: "Usable up to", get: (l) => "FY " + l.last_year },
+      { label: "Status", get: (l) => l.status }], st.losses, "No losses to carry forward."));
     $("#tax-years").replaceChildren(table([
       { label: "Financial year", get: (y) => "FY " + y.fy }, { label: "Short-term gains", num: true, get: (y) => money(y.STCG), tone: (y) => tone(y.STCG) },
       { label: "Long-term gains", num: true, get: (y) => money(y.LTCG), tone: (y) => tone(y.LTCG) },
       { label: "Intraday (speculative)", num: true, get: (y) => money(y["Speculative (intraday)"]), tone: (y) => tone(y["Speculative (intraday)"]) },
       { label: "F&O (business)", num: true, get: (y) => money(y["F&O (non-speculative)"]), tone: (y) => tone(y["F&O (non-speculative)"]) },
-      { label: "F&O turnover", num: true, get: (y) => money(y.fno_turnover) }, { label: "Charges", num: true, get: (y) => money(y.charges) },
-      { label: "STCG tax @20% (est.)", num: true, get: (y) => money(y.stcg_tax_estimate) }, { label: "LTCG tax @12.5% (est.)", num: true, get: (y) => money(y.ltcg_tax_estimate) },
+      { label: "F&O turnover", num: true, get: (y) => money(y.fno_turnover) },
+      ...CHARGE_PARTS.map(([k, label]) => ({ label, num: true, get: (y) => money(y[k]) })),
+      { label: "Total charges", num: true, get: (y) => money(y.charges) },
       { label: "Lots", num: true, get: (y) => y.trades }], r.years, "No closed trades on this account yet."));
+    const form = $("#form-tax-inputs");
+    if (!form.dataset.loaded || !form.dataset.dirty) {
+      $("#tax-carried").replaceChildren(...r.inputs.losses.map(taxLossRow));
+      form.slab_rate_pct.value = r.inputs.slab_rate_pct;
+      form.dataset.loaded = "1";
+    }
   }
+  $("#tax-carried-add").addEventListener("click", () => { $("#tax-carried").append(taxLossRow(null)); $("#form-tax-inputs").dataset.dirty = "1"; });
+  $("#form-tax-inputs").addEventListener("input", (event) => { event.currentTarget.dataset.dirty = "1"; $("#tax-inputs-state").textContent = "Not saved yet."; });
+  $("#form-tax-inputs").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget, button = $("button[type=submit]", form);
+    busy(button, true, "Saving…");
+    try {
+      await api("/tax/inputs", { method: "PUT", body: { losses: [...$("#tax-carried").children].map((row) => row.read()), slab_rate_pct: Number(form.slab_rate_pct.value) } });
+      delete form.dataset.dirty;
+      $("#tax-inputs-state").textContent = "Saved.";
+      showError("#tax-error", null);
+      await refreshTax();
+    } catch (err) { showError("#tax-error", err); } finally { busy(button, false); }
+  });
 
   // -- strategy builder ---------------------------------------------------------------
 
