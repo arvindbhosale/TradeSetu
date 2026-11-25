@@ -17,6 +17,8 @@ their level, or at the open's premium when the candle opens past it. When one ca
 Intraday (candles under a day): everything is sold at the square-off time in Settings and nothing is carried overnight;
 no entry is made at or after it, nor outside the trade window when Settings enforces it. Once a stoploss, target or the last profit step closes a trade, no new one opens that
 day, as an intraday F&O algo stops for the day; it buys again on a later day while the strategy still says so.
+Positional on intraday candles (``positional``): the same entries, but nothing is sold at the square-off time; the
+option is held overnight until the signal turns, a stoploss or target, or expiry.
 
 Book profit in steps (``steps``, in lots, levels in % or points of the premium paid): checked on each candle's close
 like the stoploss and target, closing that many lots of the option there and holding the rest.
@@ -207,14 +209,20 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
                 expiry_weekday: int = 1, stop_pct: float = 0, target_pct: float = 0, iv_scale: float = 1.0,
                 slippage_pct: float = 1.0, intraday: bool = False, square_off: str = "15:00", strategy_name: str = "",
                 steps: Steps = NO_STEPS, adds: Adds = NO_ADDS, stop_rs: float = 0.0, target_rs: float = 0.0,
-                entry_window: tuple[str, str] | None = None) -> dict:
+                entry_window: tuple[str, str] | None = None, positional: bool = False) -> dict:
     """Buy options on the underlying strategy's signals, priced with Black-Scholes. See the module note.
 
     ``stop_rs`` / ``target_rs``: close the position when its profit or loss in rupees (with the charges paid so far,
     and any profit step booked) reaches this, as an F&O algo's maximum loss and target do.
 
     ``entry_window`` (intraday): ("09:30", "15:00") buys only on candles that start inside it, as an algo enforcing the
-    trade window in Settings does."""
+    trade window in Settings does.
+
+    ``positional`` (intraday candles): held overnight, with no square-off, until the signal turns, a stoploss or
+    target, or expiry, as a positional F&O algo on intraday candles (NRML). Entries keep the intraday rules: inside the
+    window, not at or after the square-off time, none the rest of a day a stoploss or target closed a trade.
+
+    A held option is settled at its intrinsic value against the expiry day's last candle close (15:30), not later."""
     if side not in ("calls", "puts", "both"):
         raise ValueError("side must be calls, puts or both")
     if lots < 1 or lot_size < 1:
@@ -343,11 +351,12 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
     for i in range(len(stamps)):
         stamp, spot_open = stamps[i], opens[i]
         signal = want[i - 1] if i else 0
-        # Expiry passed while held: settled at intrinsic value against the open.
+        # Expiry passed while held (a gap in the candles: its last candle was missing): settled against the open.
         if held is not None and stamp >= held["expiry"]:
             intrinsic = max(spot_open - held["strike"], 0) if held["kind"] == "CE" else max(held["strike"] - spot_open, 0)
             close(i, intrinsic, "expiry")
-        if held is not None and intraday and (i == 0 or stamp.normalize() != stamps[i - 1].normalize() or stamp.time() >= cutoff):
+        if held is not None and intraday and not positional \
+                and (i == 0 or stamp.normalize() != stamps[i - 1].normalize() or stamp.time() >= cutoff):
             close(i, price(held, stamp, spot_open), "square-off")
         wanted_kind = None
         if signal == 1 and side in ("calls", "both"):
@@ -412,6 +421,12 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
                     add_more(i, now_premium)
                 if held is not None and goal is not None and now_premium >= goal:
                     close(i, now_premium, what)
+        if held is not None and stamp.normalize() == held["expiry"].normalize() \
+                and (stamps[i + 1] >= held["expiry"] if i + 1 < len(stamps) else not intraday):
+            # The expiry day's last candle: settled at the intrinsic value against its close (15:30).
+            spot_close = closes[i]
+            intrinsic = max(spot_close - held["strike"], 0) if held["kind"] == "CE" else max(held["strike"] - spot_close, 0)
+            close(i, intrinsic, "expiry")
         value = cash + (held["lots"] * lot_size * price(held, stamp + pd.Timedelta(minutes=1), closes[i]) if held is not None else 0)
         in_market += held is not None
         equity.append(value)
@@ -431,14 +446,15 @@ def run_options(underlying: str, bars: pd.DataFrame, positions: pd.Series, vix: 
         days = stamps.normalize()
         curve, hold = curve.groupby(days).last(), hold.groupby(days).last()
         in_market = int(round(in_market / len(stamps) * len(curve)))
-    params = BacktestParams(capital=capital)
+    params = BacktestParams(capital=capital, intraday=intraday, positional=intraday and positional)
     if moneyness == 0:
         where = "ATM"
     else:
         plural = "s" if abs(moneyness) > 1 else ""
         where = f"{abs(moneyness)} strike{plural} {'ITM' if moneyness > 0 else 'OTM'}"
     return {"strategy": {"name": f"{strategy_name} → {side} ({where})"},
-            "params": {**params.__dict__, "stop_rs": stop_rs, "target_rs": target_rs}, "simulated": True, "lot_size": lot_size,
+            "params": {**params.__dict__, "stop_rs": stop_rs, "target_rs": target_rs}, "simulated": True,
+            "trade_type": params.trade_type, "lot_size": lot_size,
             "period": {"start": curve.index[0].strftime("%Y-%m-%d"), "end": curve.index[-1].strftime("%Y-%m-%d"), "bars": len(bars), "days": len(curve)},
             "metrics": {**_metrics(curve, trades, params, total_charges, in_market), "steps_booked": steps_booked,
                         "adds_made": adds_made, "adds_skipped": adds_skipped},

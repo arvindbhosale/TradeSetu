@@ -403,7 +403,7 @@ A sentence at the top says it in words, for example *Booked profit of ₹2,400 o
 
 Below: **Still holding** (each open position with its entry and current price), **Closed trades** (buy price, sell price, profit/loss), **Profit/Loss by algo** (each algo, the scanner, and your manual orders, so you can see which one earns its keep) and the running total day by day.
 
-**Advanced** (closed until you open it): win rate, best and worst day, the largest fall from a peak (max drawdown), charges paid, the daily loss limit, the tax estimate and what is counted.
+**Advanced** (closed until you open it): win rate, best and worst day, the largest fall from a peak (max drawdown), charges paid, the daily loss limit and what is counted. **Tax statement (estimate)**, also closed until you open it, is described under Downloads below.
 
 It counts fills the desk made: every paper fill, and live fills read from Kite's trade book for orders this desk placed. Trades you place in Kite directly, and the order a triggered live GTT sends, are not seen. For the live account Kite's console is the final word.
 
@@ -459,29 +459,35 @@ The sentence above the tiles gives the likely range (95%) of the average result.
 
 ### Export and tax report
 
-The **Download** panel on the P&L tab. All on the account selected at the top; the tax summary is under **Advanced**.
+The **Download** panel on the P&L tab. All on the account selected at the top; the tax statement is in its own **Tax statement (estimate)** panel.
 
 ![Tax summary and downloads](img/32-tax-export.png)
 
 | Download | Contents |
 |---|---|
-| **Profit/Loss (closed trades)** | Every closed trade: when, source, symbol, quantity, the buy and sell prices you got, charges, profit/loss after charges and return. |
+| **Profit/Loss (closed trades)** | Every closed trade: when, source, symbol, quantity, the buy and sell prices you got, the charges part by part (brokerage, STT, exchange and SEBI fees, stamp duty, GST, DP charge) and in total, profit/loss after charges and return. |
 | **Order journal** | Every order the desk sent or refused: time, source, symbol, side, quantity, price, status (Filled, Placed, Set for a stoploss/target order, or Failed), reason. |
-| **Fills** | Every fill with price, product and charges. |
-| **Tax lots** | Each closed position matched first-in first-out, Long or Short (an option sold first and bought back later is a Short lot), with buy and sell dates, days held, cost, proceeds, charges, gain and category. Shares bought and sold on the same day count as intraday (speculative) and pay intraday charges, even under Delivery (CNC). The total matches the Profit/Loss download. |
+| **Fills** | Every fill with price, product and its charges part by part and in total. |
+| **Tax lots** | Each closed position matched first-in first-out, Long or Short (an option sold first and bought back later is a Short lot), with buy and sell dates, days held, cost, proceeds, charges part by part, gain, taxable gain and category. Shares bought and sold on the same day count as intraday (speculative) and pay intraday charges, even under Delivery (CNC). The total matches the Profit/Loss download. |
 
-Each button downloads an Excel file (.xlsx) that opens in Excel, Google Sheets or LibreOffice. Profit is shaded green and loss red, Buy and Long are green, Sell and Short red, failed orders are a red row, and each tax head has its own shade. The header row stays in view with a filter on every column, and the **Total (rows shown)** line at the bottom adds up only the rows the filter leaves, so filtering one algo or one month gives that algo's or month's total. Profit/Loss also has a **By source** sheet (trades, wins, losses and net for each algo and for manual trades); Tax lots has a **By financial year** sheet with the tax estimate. Tick **Plain CSV instead** for a plain CSV file.
+Each button downloads an Excel file (.xlsx) that opens in Excel, Google Sheets or LibreOffice. Profit is shaded green and loss red, Buy and Long are green, Sell and Short red, failed orders are a red row, and each tax head has its own shade. The header row stays in view with a filter on every column, and the **Total (rows shown)** line at the bottom adds up only the rows the filter leaves, so filtering one algo or one month gives that algo's or month's total. Profit/Loss also has a **By source** sheet (trades, wins, losses and net for each algo and for manual trades); Tax lots has a **By financial year** sheet (gains and charges before set-off), a **Tax statement** sheet and a **Losses carried forward** sheet, always for every year since losses carry over, even when you pick one year. Tick **Plain CSV instead** for a plain CSV file.
 
-**Tax summary by financial year (April–March):**
+**Charges, part by part.** STT (CTT on MCX) and stamp duty carry no GST; GST is 18% of brokerage plus exchange and SEBI fees. The DP charge on a delivery sale already has its GST in it. The parts follow the desk's charge schedule and add up to the charges recorded on each fill.
 
-| Category | Rule used |
-|---|---|
-| **STCG** | Delivery shares held 12 months or less; estimated at 20%. |
-| **LTCG** | Held more than 12 months; 12.5% on gains above ₹1.25 lakh a year. |
-| **Intraday (speculative)** | Bought and sold the same day (MIS); taxed at your slab, so no rate is applied. |
-| **F&O (business)** | Options and futures; non-speculative business income at your slab. Turnover (sum of absolute profit per trade) is shown for audit limits. |
+**Tax statement (estimate)**, by financial year (April–March):
 
-The estimates ignore surcharge, cess, grandfathering (shares bought before Feb 2018), set-off of losses across heads and the rebate. Use them for planning; your tax filing should use your broker's tax P&L and a CA.
+| Tax head | What counts | Losses: set off against | Carried forward |
+|---|---|---|---|
+| **Intraday shares (speculative)** | Bought and sold the same day (MIS, or CNC squared off the same day) | Intraday profit only | 4 years, against intraday profit |
+| **F&O (business)** | Options and futures, MCX gold and silver | This year: intraday profit, then short- and long-term gains (and other income except salary, which the desk does not see) | 8 years, against F&O or intraday profit |
+| **Short-term capital gains** | Delivery shares held 12 months or less; 20% | Short- or long-term gains | 8 years |
+| **Long-term capital gains** | Held more than 12 months; 12.5% above ₹1.25 lakh a year | Long-term gains only | 8 years |
+
+This year's losses are set off first, then losses from earlier years, oldest first. Capital losses never reduce business income. STT is added back on short- and long-term gains (it is not a deductible cost there) but stays a cost for intraday and F&O. The statement shows the gains, each set-off, the taxable income, the tax (business income at the slab rate you enter, plus 4% cess), the losses carried to next year, losses that lapsed, and intraday plus F&O turnover (the sum of absolute profit and loss per trade) against the ₹10 crore tax audit limit.
+
+**Losses from earlier years**: enter losses from your past income tax returns that are still to be set off, for trades the desk did not record: the year each loss was made, its type and the amount left. Losses are carried forward only if that year's return was filed on time. Also set your income tax slab rate there.
+
+The statement ignores surcharge, the basic exemption, rebates, grandfathering (shares bought before Feb 2018) and your other income. On the paper account it is practice figures. Use it for planning; your tax filing should use your broker's tax P&L and a CA.
 
 **Alerts** at the bottom lists what the desk did or could not do: orders filled or refused, an algo blocked or closed by a stop or target, the daily loss limit, Kite signing you out, security changes. Set up Telegram in Settings to get the same on your phone.
 
@@ -544,10 +550,10 @@ The loss counted is the fall from the entry to the stoploss times the quantity, 
 **Daily loss limit (₹)**, in Risk limits. When today's loss on an account reaches it:
 
 1. The kill switch turns on by itself: no new buys, by you or any algo.
-2. Intraday algos sell what they hold.
+2. Intraday algos on that account sell what they hold (stock MIS and F&O MIS).
 3. You get an alert.
 
-Delivery holdings are left alone, and you can still sell anything yourself. The limit is counted for paper and live separately, from the **Today** figure on the P&L screen. It trips once a day: you turn the kill switch off yourself when you are ready. 0 switches the limit off.
+Delivery holdings and positional F&O positions (NRML) are left alone, and so is the other account: a paper loss never closes a live position. You can still sell anything yourself. The limit is counted for paper and live separately, from the **Today** figure on the P&L screen. It trips once a day: you turn the kill switch off yourself when you are ready. 0 switches the limit off.
 
 ### Trade window
 
@@ -1343,7 +1349,7 @@ The model prices every leg with Black-Scholes at one volatility. For figures on 
 | Run | How it trades |
 |---|---|
 | **Intraday** | On the ticked weekdays, open at the **entry time** on 1, 2, 3, 4, 5, 15 or 30-minute candles and close at the **exit time** (or at expiry on expiry day). |
-| **Positional** | Day candles: open on the ticked weekdays at the open, close **N days before expiry** or settle at expiry (intrinsic value). |
+| **Positional** | Day candles: open on the ticked weekdays at the open, close **N trading days before expiry** (holidays in Settings left out, as the algo counts them) or settle at expiry (intrinsic value). |
 | **On a strategy's signal** | For directional strategies only (spreads, back spreads, diagonals, protective put, covered call, collar, synthetics). Bullish ones open while the chosen strategy is long and bearish ones while it is out. Rolled at expiry. |
 
 **Exit rules for each leg** uses the [exit rules box](#exit-rules-stoploss-target-trailing-re-entry) on each leg's premium. **Apply to** chooses *Sold legs*, *Bought legs* or *Every leg*.
@@ -1680,8 +1686,8 @@ The stock algo list also has **Exit**: sell what the algo holds now and stop it.
 | Trade | Runs | Opens | Closes |
 |---|---|---|---|
 | **Option strategy, intraday** | On the weekdays you tick | At the **Entry time** | At the **Exit time** the same day (MIS) |
-| **Option strategy, positional** | On the weekdays you tick | At the **Entry time** | **Exit days before expiry**, at the exit time (NRML) |
-| **Option strategy, on a signal** | Directional structures only | When a strategy on the index's day candles turns on (bearish structures: turns off) | When the signal changes, or at expiry (then it re-enters in the next expiry) |
+| **Option strategy, positional** | On the weekdays you tick | At the **Entry time** | On expiry day at the exit time, or **Exit days before expiry** trading days earlier (0 by default), at the exit time (NRML); earlier only on a stoploss or target |
+| **Option strategy, on a signal** | Directional structures only | When a strategy on the index's candles turns on (bearish structures: turns off) | When the signal changes, or at expiry (then it re-enters in the next expiry). On minute candles, **Trade type** decides: *Intraday* sells at the exit time (MIS); *Positional* holds overnight (NRML) |
 | **Index futures** | Long, short, or long and short | On the signal from the index's day candles, read at the entry time | When the signal changes; rolls to the next month at the exit time on expiry day |
 
 Strikes are counted from the at-the-money strike when the algo enters: **k** for the sold legs, **w** for the wings, exactly as in the backtest. The **Legs** table works as in the backtest ([Your own legs](#your-own-legs-and-strikes)): set each leg to **Buy** or **Sell**, Call, Put or Futures, its strike and lots, add one with **Add leg** or remove one. Pick **Your own strategy (build the legs)** to make the whole position yourself; set **Which way your legs lean** to *Bullish* or *Bearish* to let it run on a signal. Editing an algo shows its saved legs; while it holds them they cannot change. Press **Preview entry now** to see the contracts, premiums, the order they would be sent in, and the margin (Zerodha's, or the desk's estimate) against your funds.

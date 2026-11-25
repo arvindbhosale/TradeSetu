@@ -2694,6 +2694,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         contracts = derivatives.contracts(underlying)
         lot = int(_number(payload, "lot_size", contracts[0]["lot_size"] if contracts else opt.LOT_DEFAULT.get(underlying, 50)))
         lots = int(_number(payload, "lots", 1))
+        positional = trade_type_of(payload, interval) == "positional"
         result = scalein.run_all(lambda s, a: opt.run_options(
             underlying, bars, positions, vix, capital=_number(payload, "capital", cfg["paper_capital"]),
             lots=lots, lot_size=lot, side=str(payload.get("side", "calls")),
@@ -2703,7 +2704,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             stop_rs=_number(payload, "stop_rs", 0), target_rs=_number(payload, "target_rs", 0),
             iv_scale=_number(payload, "iv_scale", 1.0), slippage_pct=_number(payload, "slippage_pct", 1.0),
             intraday=interval != "1d", square_off=cfg["square_off"], strategy_name=strategy.name, steps=s, adds=a,
-            entry_window=(cfg["trade_start"], cfg["trade_end"]) if cfg["enforce_trade_window"] else None),
+            entry_window=(cfg["trade_start"], cfg["trade_end"]) if cfg["enforce_trade_window"] else None,
+            positional=positional),
             scaleout.from_payload(payload.get("steps"), "option", lots), scalein.from_payload(payload.get("adds"), "option", lots))
         skipped = result.get("skipped_entries") or 0
         result.update(interval=interval, data_note=f"Underlying candles from {source}. Option premiums are simulated with "
@@ -2712,7 +2714,9 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                       + ((f" Intraday: buys only between {cfg['trade_start']} and {cfg['trade_end']} (the trade window in "
                           f"Settings)" if cfg["enforce_trade_window"] else " Intraday")
                          + f", everything sold at {cfg['square_off']}, and no new trade on a day after a stoploss or "
-                           f"target, as the algo does." if interval != "1d" else ""),
+                           f"target, as the algo does." if interval != "1d" and not positional else "")
+                      + (f" Positional: buys before {cfg['square_off']} on intraday candles and holds overnight (NRML) "
+                         f"until the signal turns, a stoploss or target, or expiry." if interval != "1d" and positional else ""),
                       benchmark_name=None, benchmark_note=None)
         return result
 
@@ -2765,11 +2769,14 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             target_pct=_number(payload, "target_pct", 0), slippage_pct=_number(payload, "slippage_pct", 0.02),
             stop_rs=_number(payload, "stop_rs", 0), target_rs=_number(payload, "target_rs", 0),
             intraday=interval != "1d", trade_start=cfg["trade_start"], trade_end=cfg["trade_end"], square_off=cfg["square_off"],
-            continuous=continuous, carry_pct=_number(payload, "carry_pct", 7.0), holidays=frozenset(market.HOLIDAYS),
+            positional=trade_type_of(payload, interval) == "positional", continuous=continuous, carry_pct=_number(payload, "carry_pct", 7.0), holidays=frozenset(market.HOLIDAYS),
             exchange=exchange, strategy_name=strategy.name), scaleout.from_payload(payload.get("steps"), "futures", lots),
             scalein.from_payload(payload.get("adds"), "futures", lots))
         m = result["metrics"]
         notes = [f"Prices: {source}."]
+        if interval != "1d" and trade_type_of(payload, interval) == "positional":
+            notes.append("Positional: held overnight until the signal turns, a stoploss or a target; rolls are not "
+                         "modelled on intraday candles. F&O futures algos read day candles.")
         if continuous:
             notes.append(f"{m['rolls']} monthly rolls, each charged a round trip with the basis taken out at {_number(payload, 'carry_pct', 7.0):g}% a year.")
         if m["skipped_entries"]:
@@ -3096,8 +3103,9 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if kind == "journal":
             return [r for r in reversed(desk.journal_rows(100000)) if r.get("mode") == mode], tax.JOURNAL_FIELDS
         if kind == "fills":
-            from .pnl import settle
-            return settle([f for f in desk.ledger.fills() if f.get("mode") == mode]), tax.FILL_FIELDS
+            from .pnl import round_parts, settle
+            return [{**f, **round_parts(f["parts"], f.get("charges") or 0)}
+                    for f in settle([f for f in desk.ledger.fills() if f.get("mode") == mode])], tax.FILL_FIELDS
         if kind == "pnl":
             return desk.ledger.closed_trades(mode), tax.PNL_FIELDS
         if kind == "tax-lots":
@@ -3118,7 +3126,14 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
     def export_xlsx(kind: str, mode: str = "live", fy: str = ""):
         rows, _ = _export_rows(kind, mode, fy)
         from . import xlsxexport
-        data = xlsxexport.workbook(kind, rows, mode, fy=fy)
+        extra = {}
+        if kind == "tax-lots":
+            # Losses carry from year to year, so the statement always covers every year, whatever ``fy`` shows.
+            from . import taxreport as tax
+            every = tax.tax_lots(desk.ledger.fills(), mode)
+            extra = {"years": [y for y in tax.summary(every) if not fy or y["fy"] == fy],
+                     "statement": _tax_statement(every)}
+        data = xlsxexport.workbook(kind, rows, mode, fy=fy, **extra)
         return Response(data, media_type=XLSX_TYPE,
                         headers={"Content-Disposition": f'attachment; filename="{_export_name(kind, mode, fy, "xlsx")}"'})
 
@@ -3169,6 +3184,14 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         _, name, ctype, body = item
         return Response(body, media_type=ctype, headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
+    def _tax_inputs_path():
+        return desk.ledger.path.parent / "tax_inputs.json"
+
+    def _tax_statement(lots: list[dict]) -> dict:
+        from . import taxreport as tax
+        inputs = tax.load_inputs(_tax_inputs_path())
+        return tax.statement(lots, inputs["losses"], inputs["slab_rate_pct"] / 100)
+
     @app.get("/api/tax")
     def tax_summary(mode: str = "live"):
         from . import taxreport as tax
@@ -3176,7 +3199,15 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             raise ValueError("mode must be paper or live")
         lots = tax.tax_lots(desk.ledger.fills(), mode)
         return {"mode": mode, "years": tax.summary(lots), "lots": lots[-300:][::-1],
+                "statement": _tax_statement(lots), "inputs": tax.load_inputs(_tax_inputs_path()),
+                "lines": tax.STATEMENT, "notes": tax.STATEMENT_NOTES, "heads": tax.HEAD_NAMES,
                 "rates": {"stcg": tax.STCG_RATE, "ltcg": tax.LTCG_RATE, "ltcg_exemption": tax.LTCG_EXEMPTION}}
+
+    @app.put("/api/tax/inputs")
+    def tax_inputs_set(payload: dict):
+        """Losses from earlier years (from your income tax returns) and your slab rate, for the tax statement."""
+        from . import taxreport as tax
+        return tax.save_inputs(_tax_inputs_path(), body_of(payload))
 
     @app.get("/api/order/journal")
     def order_journal():

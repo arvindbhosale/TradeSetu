@@ -247,7 +247,7 @@ def test_a_positional_algo_is_not_sold_by_the_daily_loss_limit_and_its_gtt_can_c
     prices["p"] = 106.0
     engine.tick()
     assert engine.get(algo_id)["position"] > 0
-    engine.desk.flatten_day = "2026-11-16"
+    engine.desk.flatten_days["paper"] = "2026-11-16"
     clock.set("2026-11-16 10:00")
     engine._retry_at.clear()
     engine.tick()
