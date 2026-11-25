@@ -869,7 +869,9 @@
             legs: [{ side: "BUY", type: call ? "CE" : "PE", strikes: call ? -m : m, lots: 1, expiry: "near" }],
             underlying: body.underlying, expiry_kind: optionsExpiryKind(body.underlying), ...readExpiryPick($("#bt-deploy-expiry")),
             schedule: "signal", strategy: body.strategy, strategy_params: body.strategy_params, interval: body.interval || "1d",
-            // Intraday, as the backtest: entries from the open, everything sold at the square-off time in Settings.
+            ...(intraday ? { trade_type: body.trade_type || "intraday" } : {}),
+            // Intraday candles, as the backtest: entries from the open until the square-off time in Settings, where an
+            // intraday trade sells everything (a positional one holds overnight).
             entry_time: intraday ? "09:15" : "09:20", exit_time: intraday ? state.app.settings.square_off : "15:15",
             min_days: body.min_days, lots: body.lots, leg_scope: "bought",
             leg_exits: { unit: "pct", stop_loss: Number(body.stop_pct || 0), target: Number(body.target_pct || 0) }, max_loss: maxLoss,
@@ -1612,7 +1614,11 @@
     form.expiry_kind.value = a.expiry_kind;
     form.expiry_pick.dataset.want = a.expiry || (a.expiry_ahead ? `ahead:${a.expiry_ahead}` : "");
     form.expiry_pick.reload();
-    if (a.kind === "structure") { form.schedule.value = a.schedule; form.interval.value = a.interval || "1d"; fire(form.schedule); }
+    if (a.kind === "structure") {
+      form.schedule.value = a.schedule; form.interval.value = a.interval || "1d";
+      form.trade_type.dataset.chosen = a.trade_type || ((a.interval || "1d") === "1d" ? "positional" : "intraday");
+      fire(form.interval); fire(form.schedule);
+    }
     if (a.strategy) { form.strategy.value = a.strategy; fire(form.strategy); }
     Object.entries(a.params || {}).forEach(([k, v]) => { const input = form.elements["p_" + k]; if (input) input.value = v; });
     ["entry_time", "exit_time", "exit_days_before", "min_days", "k", "w", "lots", "max_loss", "target", "stop_pct", "target_pct", "mode", "limit_buffer_pct", "margin_pct", "leg_scope"]
@@ -1861,7 +1867,8 @@
     return { name: form.name.value, kind: form.kind.value, structure: form.structure.value, direction: form.direction.value,
       underlying: form.underlying.value, expiry_kind: form.kind.value === "futures" ? "monthly" : form.expiry_kind.value,
       schedule: form.kind.value === "futures" ? "signal" : form.schedule.value,
-      interval: form.kind.value === "structure" && form.schedule.value === "signal" ? form.interval.value : "1d", entry_time: form.entry_time.value, exit_time: form.exit_time.value,
+      interval: form.kind.value === "structure" && form.schedule.value === "signal" ? form.interval.value : "1d",
+      ...(form.kind.value === "structure" && form.schedule.value === "signal" ? { trade_type: form.trade_type.value } : {}), entry_time: form.entry_time.value, exit_time: form.exit_time.value,
       exit_days_before: num("exit_days_before"), min_days: num("min_days"), strategy: form.strategy.value, strategy_params: params,
       weekdays: $$("input[name=fwd]", form).filter((c) => c.checked).map((c) => Number(c.value)),
       k: num("k"), w: num("w"), lots: num("lots"), leg_exits: $("#fno-exits").read(), leg_scope: form.leg_scope.value, max_loss: num("max_loss"), target: num("target"),
@@ -1879,7 +1886,7 @@
     structureOptions(form.structure, list);
     form.structure.value = "iron_condor";
     strategyOptions(form.strategy, (x) => x.key !== "buy_hold"); form.strategy.value = "supertrend";
-    intervalOptions(form.interval);
+    intervalOptions(form.interval); watchTradeType(form);
     fnoLegs = legEditor({ form, list, body: $("#fno-legs tbody"), add: $("#fno-leg-add"), reset: $("#fno-leg-reset"), spot: $("#fno-legs-spot"), changed: () => sync() });
     const params = () => {
       const strategy = state.app.strategies.find((x) => x.key === form.strategy.value);
@@ -1900,11 +1907,14 @@
       form.stop_pct.max = futures ? 50 : 1000; form.stop_pct.step = futures ? 0.1 : 5; form.target_pct.step = futures ? 0.1 : 5;
       $$(".fno-signal", form).forEach((el) => { el.hidden = schedule !== "signal"; });
       $$(".fno-candles", form).forEach((el) => { el.hidden = futures || schedule !== "signal"; });
-      const intraday = !futures && schedule === "signal" && form.interval.value !== "1d";
+      const minutes = !futures && schedule === "signal" && form.interval.value !== "1d";
+      const intraday = minutes && form.trade_type.value === "intraday";
       $("#fno-candle-note").hidden = futures || schedule !== "signal";
       $("#fno-candle-note").textContent = intraday
         ? `Intraday: it checks the strategy each time a candle closes (${state.app.intervals[form.interval.value].toLowerCase()} candles), buys between the entry time and the exit time, and sells everything at the exit time the same day (MIS). After a stoploss or target it waits for the next day.`
-        : "Day candles: it checks the strategy once a day, at the entry time, and holds overnight (NRML) while the strategy says so.";
+        : minutes
+          ? `Positional: it checks the strategy each time a candle closes (${state.app.intervals[form.interval.value].toLowerCase()} candles), buys between the entry time and the exit time, and holds overnight (NRML) until the strategy says sell, the stoploss or the target. On expiry day it moves to the next expiry at the exit time. After a stoploss or target it waits for the next day.`
+          : "Day candles: it checks the strategy once a day, at the entry time, and holds overnight (NRML) while the strategy says so.";
       $$(".fno-positional", form).forEach((el) => { el.hidden = schedule !== "positional"; });
       $$(".fno-days", form).forEach((el) => { el.hidden = schedule === "signal"; });
       $("#fno-params").hidden = schedule !== "signal";
@@ -1919,7 +1929,7 @@
       params();
     };
     form.kind.addEventListener("change", sync); form.schedule.addEventListener("change", sync); form.strategy.addEventListener("change", params);
-    form.interval.addEventListener("change", sync);
+    form.interval.addEventListener("change", sync); form.trade_type.addEventListener("change", sync);
     form.bias.addEventListener("change", sync);
     form.structure.addEventListener("change", fnoLegs.structureChanged);
     const syncUnderlying = () => {
@@ -3585,7 +3595,7 @@
 
   function startFuturesBacktest() {
     const form = $("#form-fbt");
-    strategyOptions(form.strategy); intervalOptions(form.interval); form.strategy.value = "supertrend";
+    strategyOptions(form.strategy); intervalOptions(form.interval); form.strategy.value = "supertrend"; watchTradeType(form);
     mountSteps("fbt-steps", "futures", form);
     mountAdds("fbt-adds", "futures", form, "fbt-steps");
     const today = state.app.today, from = new Date(today); from.setFullYear(from.getFullYear() - 3);
@@ -3604,7 +3614,7 @@
         strategy_params: strategyParams, direction: form.direction.value, lots: Number(form.lots.value), margin_pct: Number(form.margin_pct.value),
         stop_pct: Number(form.stop_pct.value || 0), target_pct: Number(form.target_pct.value || 0), slippage_pct: Number(form.slippage_pct.value),
         stop_rs: Number(form.stop_rs.value || 0), target_rs: Number(form.target_rs.value || 0), carry_pct: Number(form.carry_pct.value), capital: Number(form.capital.value), steps: $("#fbt-steps").read(),
-        adds: $("#fbt-adds").read() };
+        adds: $("#fbt-adds").read(), trade_type: form.trade_type.value };
       try { const r = await api("/backtest/futures", { method: "POST", body }); $("#bt-futures").append($("#bt-result")); renderBacktest(r); offerDeploy("futures", body, r); }
       catch (err) { showError("#fbt-error", err); }
       busy(button, false);
@@ -4084,7 +4094,7 @@
 
   function startOptionsBacktest() {
     const form = $("#form-obt");
-    strategyOptions(form.strategy); intervalOptions(form.interval); form.strategy.value = "supertrend";
+    strategyOptions(form.strategy); intervalOptions(form.interval); form.strategy.value = "supertrend"; watchTradeType(form);
     mountSteps("obt-steps", "option", form);
     mountAdds("obt-adds", "option", form, "obt-steps");
     const today = state.app.today, from = new Date(today); from.setFullYear(from.getFullYear() - 2);
@@ -4104,7 +4114,8 @@
         strategy_params: strategyParams, side: form.side.value, moneyness: Number(form.moneyness.value), lots: Number(form.lots.value),
         min_days: Number(form.min_days.value), expiry_weekday: Number(form.expiry_weekday.value), stop_pct: Number(form.stop_pct.value || 0),
         target_pct: Number(form.target_pct.value || 0), iv_scale: Number(form.iv_scale.value), slippage_pct: Number(form.slippage_pct.value), capital: Number(form.capital.value),
-        stop_rs: Number(form.stop_rs.value || 0), target_rs: Number(form.target_rs.value || 0), steps: $("#obt-steps").read(), adds: $("#obt-adds").read() };
+        stop_rs: Number(form.stop_rs.value || 0), target_rs: Number(form.target_rs.value || 0), steps: $("#obt-steps").read(), adds: $("#obt-adds").read(),
+        trade_type: form.trade_type.value };
       try { const r = await api("/backtest/options", { method: "POST", body }); $("#bt-options").append($("#bt-result")); renderBacktest(r); offerDeploy("options", body, r); }
       catch (err) { showError("#obt-error", err); }
       busy(button, false);

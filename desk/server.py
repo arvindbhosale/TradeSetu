@@ -2647,6 +2647,7 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         contracts = derivatives.contracts(underlying)
         lot = int(_number(payload, "lot_size", contracts[0]["lot_size"] if contracts else opt.LOT_DEFAULT.get(underlying, 50)))
         lots = int(_number(payload, "lots", 1))
+        positional = trade_type_of(payload, interval) == "positional"
         result = scalein.run_all(lambda s, a: opt.run_options(
             underlying, bars, positions, vix, capital=_number(payload, "capital", cfg["paper_capital"]),
             lots=lots, lot_size=lot, side=str(payload.get("side", "calls")),
@@ -2656,7 +2657,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             stop_rs=_number(payload, "stop_rs", 0), target_rs=_number(payload, "target_rs", 0),
             iv_scale=_number(payload, "iv_scale", 1.0), slippage_pct=_number(payload, "slippage_pct", 1.0),
             intraday=interval != "1d", square_off=cfg["square_off"], strategy_name=strategy.name, steps=s, adds=a,
-            entry_window=(cfg["trade_start"], cfg["trade_end"]) if cfg["enforce_trade_window"] else None),
+            entry_window=(cfg["trade_start"], cfg["trade_end"]) if cfg["enforce_trade_window"] else None,
+            positional=positional),
             scaleout.from_payload(payload.get("steps"), "option", lots), scalein.from_payload(payload.get("adds"), "option", lots))
         skipped = result.get("skipped_entries") or 0
         result.update(interval=interval, data_note=f"Underlying candles from {source}. Option premiums are simulated with "
@@ -2665,7 +2667,9 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
                       + ((f" Intraday: buys only between {cfg['trade_start']} and {cfg['trade_end']} (the trade window in "
                           f"Settings)" if cfg["enforce_trade_window"] else " Intraday")
                          + f", everything sold at {cfg['square_off']}, and no new trade on a day after a stoploss or "
-                           f"target, as the algo does." if interval != "1d" else ""),
+                           f"target, as the algo does." if interval != "1d" and not positional else "")
+                      + (f" Positional: buys before {cfg['square_off']} on intraday candles and holds overnight (NRML) "
+                         f"until the signal turns, a stoploss or target, or expiry." if interval != "1d" and positional else ""),
                       benchmark_name=None, benchmark_note=None)
         return result
 
@@ -2718,11 +2722,14 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
             target_pct=_number(payload, "target_pct", 0), slippage_pct=_number(payload, "slippage_pct", 0.02),
             stop_rs=_number(payload, "stop_rs", 0), target_rs=_number(payload, "target_rs", 0),
             intraday=interval != "1d", trade_start=cfg["trade_start"], trade_end=cfg["trade_end"], square_off=cfg["square_off"],
-            continuous=continuous, carry_pct=_number(payload, "carry_pct", 7.0), holidays=frozenset(market.HOLIDAYS),
+            positional=trade_type_of(payload, interval) == "positional", continuous=continuous, carry_pct=_number(payload, "carry_pct", 7.0), holidays=frozenset(market.HOLIDAYS),
             exchange=exchange, strategy_name=strategy.name), scaleout.from_payload(payload.get("steps"), "futures", lots),
             scalein.from_payload(payload.get("adds"), "futures", lots))
         m = result["metrics"]
         notes = [f"Prices: {source}."]
+        if interval != "1d" and trade_type_of(payload, interval) == "positional":
+            notes.append("Positional: held overnight until the signal turns, a stoploss or a target; rolls are not "
+                         "modelled on intraday candles. F&O futures algos read day candles.")
         if continuous:
             notes.append(f"{m['rolls']} monthly rolls, each charged a round trip with the basis taken out at {_number(payload, 'carry_pct', 7.0):g}% a year.")
         if m["skipped_entries"]:

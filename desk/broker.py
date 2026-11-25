@@ -544,7 +544,8 @@ class Desk:
         self._loss_state: dict[str, str] = {}       # mode -> the day its loss limit last tripped
         self.contract_lookup = contract_lookup      # (exchange, tradingsymbol) -> option contract, for F&O orders
         self.algo_claims = None                     # (instrument, source, mode) -> signed quantity the OTHER F&O algos hold
-        self.flatten_day: str | None = None         # intraday algos close out on this day
+        self.flatten_day: str | None = None         # the day an account's loss limit last tripped (either account)
+        self.flatten_days: dict[str, str] = {}      # mode -> the day its intraday algos close out
         self.paper = paper or PaperBook(settings.get("paper_capital"))
         self.journal = journal or home() / "orders.jsonl"
         self._price_lookup = price_lookup     # (yahoo_symbol) -> last close, when Kite is not connected
@@ -1280,6 +1281,11 @@ class Desk:
                 "collateral": number(available.get("collateral")), "used": number(utilised.get("debits"))})
         return out
 
+    def flattening(self, mode: str, day: str) -> bool:
+        """Whether ``mode``'s account hit its daily loss limit on ``day``: its intraday algos close out and take no new
+        entry. Positional (delivery, NRML) positions are held; the other account is not touched."""
+        return self.flatten_days.get(mode) == day
+
     def check_loss_limit(self) -> list[str]:
         """Turn the kill switch on when an account's loss today reaches the limit. Returns the accounts tripped."""
         limit = self.settings.get("daily_loss_limit")
@@ -1300,12 +1306,14 @@ class Desk:
             if report["today_total"] <= -limit:
                 self._loss_state[mode] = today
                 self.flatten_day = today
+                self.flatten_days[mode] = today
                 self.settings.update({"kill_switch": True})
                 tripped.append(mode)
                 self.notifier.notify(
                     f"Daily loss limit hit on the {mode} account",
                     f"Today's P&L is ₹{report['today_total']:,.0f} against a limit of ₹{limit:,.0f}. The kill switch is "
-                    f"ON: no new buys. Intraday algos are closing their positions. Delivery holdings are untouched.",
+                    f"ON: no new buys. Intraday algos on this account are closing their positions. Positional positions "
+                    f"(delivery, NRML) and the other account are untouched.",
                     "bad")
         return tripped
 

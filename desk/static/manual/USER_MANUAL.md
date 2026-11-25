@@ -543,10 +543,10 @@ The loss counted is the fall from the entry to the stoploss times the quantity, 
 **Daily loss limit (₹)**, in Risk limits. When today's loss on an account reaches it:
 
 1. The kill switch turns on by itself: no new buys, by you or any algo.
-2. Intraday algos sell what they hold.
+2. Intraday algos on that account sell what they hold (stock MIS and F&O MIS).
 3. You get an alert.
 
-Delivery holdings are left alone, and you can still sell anything yourself. The limit is counted for paper and live separately, from the **Today** figure on the P&L screen. It trips once a day: you turn the kill switch off yourself when you are ready. 0 switches the limit off.
+Delivery holdings and positional F&O positions (NRML) are left alone, and so is the other account: a paper loss never closes a live position. You can still sell anything yourself. The limit is counted for paper and live separately, from the **Today** figure on the P&L screen. It trips once a day: you turn the kill switch off yourself when you are ready. 0 switches the limit off.
 
 ### Trade window
 
@@ -1342,7 +1342,7 @@ The model prices every leg with Black-Scholes at one volatility. For figures on 
 | Run | How it trades |
 |---|---|
 | **Intraday** | On the ticked weekdays, open at the **entry time** on 1, 2, 3, 4, 5, 15 or 30-minute candles and close at the **exit time** (or at expiry on expiry day). |
-| **Positional** | Day candles: open on the ticked weekdays at the open, close **N days before expiry** or settle at expiry (intrinsic value). |
+| **Positional** | Day candles: open on the ticked weekdays at the open, close **N trading days before expiry** (holidays in Settings left out, as the algo counts them) or settle at expiry (intrinsic value). |
 | **On a strategy's signal** | For directional strategies only (spreads, back spreads, diagonals, protective put, covered call, collar, synthetics). Bullish ones open while the chosen strategy is long and bearish ones while it is out. Rolled at expiry. |
 
 **Exit rules for each leg** uses the [exit rules box](#exit-rules-stoploss-target-trailing-re-entry) on each leg's premium. **Apply to** chooses *Sold legs*, *Bought legs* or *Every leg*.
@@ -1679,8 +1679,8 @@ The stock algo list also has **Exit**: sell what the algo holds now and stop it.
 | Trade | Runs | Opens | Closes |
 |---|---|---|---|
 | **Option strategy, intraday** | On the weekdays you tick | At the **Entry time** | At the **Exit time** the same day (MIS) |
-| **Option strategy, positional** | On the weekdays you tick | At the **Entry time** | **Exit days before expiry**, at the exit time (NRML) |
-| **Option strategy, on a signal** | Directional structures only | When a strategy on the index's day candles turns on (bearish structures: turns off) | When the signal changes, or at expiry (then it re-enters in the next expiry) |
+| **Option strategy, positional** | On the weekdays you tick | At the **Entry time** | On expiry day at the exit time, or **Exit days before expiry** trading days earlier (0 by default), at the exit time (NRML); earlier only on a stoploss or target |
+| **Option strategy, on a signal** | Directional structures only | When a strategy on the index's candles turns on (bearish structures: turns off) | When the signal changes, or at expiry (then it re-enters in the next expiry). On minute candles, **Trade type** decides: *Intraday* sells at the exit time (MIS); *Positional* holds overnight (NRML) |
 | **Index futures** | Long, short, or long and short | On the signal from the index's day candles, read at the entry time | When the signal changes; rolls to the next month at the exit time on expiry day |
 
 Strikes are counted from the at-the-money strike when the algo enters: **k** for the sold legs, **w** for the wings, exactly as in the backtest. The **Legs** table works as in the backtest ([Your own legs](#your-own-legs-and-strikes)): set each leg to **Buy** or **Sell**, Call, Put or Futures, its strike and lots, add one with **Add leg** or remove one. Pick **Your own strategy (build the legs)** to make the whole position yourself; set **Which way your legs lean** to *Bullish* or *Bearish* to let it run on a signal. Editing an algo shows its saved legs; while it holds them they cannot change. Press **Preview entry now** to see the contracts, premiums, the order they would be sent in, and the margin (Zerodha's, or the desk's estimate) against your funds.
