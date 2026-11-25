@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from desk import indicators
-from desk.chartstore import KINDS, ChartStore, clean_layout
+from desk.chartstore import KINDS, ChartStore, clean_grid, clean_layout
 from desk.settings import Settings
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,6 +95,30 @@ def test_layout_and_position_drawings_over_the_api(client):
                 "points": [{"time": 100, "price": 2500}, {"time": 1300, "price": 2450}, {"time": 100, "price": 2525}]}
     out = client.put("/api/md/drawings", json={"venue": "india", "symbol": "RELIANCE", "items": [position]}).json()["items"]
     assert out[0]["qty"] == 50 and out[0]["kind"] == "short"
+
+
+def test_the_chart_window_keeps_its_layout_and_each_chart(tmp_path, client):
+    store = ChartStore(tmp_path / "g.json")
+    assert store.grid() is None
+    grid = store.set_grid({"layout": "3", "link": True, "sizes": {"3": {"cols": [2, 1], "rows": [1, 1.5]}}})
+    assert grid == {"layout": "3", "link": True, "sizes": {"3": {"cols": [2.0, 1.0], "rows": [1.0, 1.5]}}}
+    store.set_layout("pane4", {"symbol": "TCS", "indicators": []})
+    again = ChartStore(tmp_path / "g.json")
+    assert again.grid() == grid and again.layout("pane4")["symbol"] == "TCS" and again.layout("pane1") is None
+    for bad in [{"layout": "5"}, {"layout": "4", "sizes": {"4": {"cols": [1], "rows": [1, 1]}}},
+                {"layout": "4", "sizes": {"4": {"cols": [0, 1], "rows": [1, 1]}}}, {"layout": "1", "sizes": {"9": {}}},
+                {"layout": "2v", "sizes": {"2v": {"cols": [True, 1], "rows": [1]}}}, []]:
+        with pytest.raises(ValueError):
+            clean_grid(bad)
+    with pytest.raises(ValueError, match="view"):
+        store.set_layout("pane7", {})
+    # over the API, and the chart window page carries the request token
+    assert client.get("/api/md/grid").json() == {"grid": None}
+    assert client.put("/api/md/grid", json={"grid": {"layout": "6"}}).json()["grid"]["layout"] == "6"
+    assert client.get("/api/md/grid").json()["grid"] == {"layout": "6", "link": False, "sizes": {}}
+    assert client.put("/api/md/grid", json={"grid": {"layout": "7"}}).status_code == 400
+    page = client.get("/charts")
+    assert page.status_code == 200 and 'content="t"' in page.text and "/static/chartdesk/window.js" in page.text
 
 
 def test_the_classic_chart_uses_the_shared_chart_code():

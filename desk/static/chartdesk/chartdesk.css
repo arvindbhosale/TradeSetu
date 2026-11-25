@@ -254,3 +254,74 @@ dialog.cd-confirm::backdrop { background: rgba(8, 11, 18, .55); }
 .cd-verdict.v-maybe_up, .cd-verdict.v-maybe_down { border-style: dashed; }
 .cd-verdict.v-few { color: var(--muted); }
 .cd-leg-pat { color: var(--accent); font-weight: 600; }
+
+/* Several charts in one window (grid.js): the chart window (/charts) and "Several charts" on the Charts tab. */
+.cdw-body { margin: 0; background: var(--bg); }
+.cdw { padding: 10px 12px; height: 100vh; height: 100dvh; box-sizing: border-box; display: flex; flex-direction: column; }
+.cdg { display: flex; flex-direction: column; gap: 8px; min-height: 0; height: calc(100vh - 150px); min-height: 560px; }
+.cdg.cdg-window { flex: 1; height: auto; min-height: 0; }
+.cdg-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.cdg-label { font-weight: 600; color: var(--text2); }
+.cdg-layouts button { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; }
+.cdg-icon { width: 22px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+.cdg-layouts button[aria-pressed="true"] .cdg-icon { fill: var(--accent-soft); stroke: var(--accent); }
+.cdg-n { font-variant-numeric: tabular-nums; font-size: 13px; }
+.cdg-link { margin: 0; }
+.cdg-home { text-decoration: none; margin-left: auto; }
+.cdg-bar .cd-btn { padding: 5px 12px; font-size: 13px; }
+.cdg-board { flex: 1; min-height: 0; display: grid; }
+.cdg-board.resizing { user-select: none; cursor: grabbing; }
+.cdg-board.resizing .cdg-cell { pointer-events: none; }
+.cdg-cell { min-width: 0; min-height: 0; display: flex; }
+.cdg-handle { position: relative; z-index: 2; touch-action: none; border-radius: 4px; }
+.cdg-handle.cdg-col { cursor: col-resize; }
+.cdg-handle.cdg-row { cursor: row-resize; }
+.cdg-handle::after { content: ""; position: absolute; border-radius: 2px; background: var(--line-strong); opacity: .6; }
+.cdg-handle.cdg-col::after { top: calc(50% - 18px); left: 3px; width: 2px; height: 36px; }
+.cdg-handle.cdg-row::after { left: calc(50% - 18px); top: 3px; height: 2px; width: 36px; }
+.cdg-handle:hover, .cdg-handle.dragging, .cdg-handle:focus-visible { background: var(--accent-soft); outline: none; }
+.cdg-handle:hover::after, .cdg-handle.dragging::after, .cdg-handle:focus-visible::after { background: var(--accent); opacity: 1; }
+.cdg-credit { margin: 0; font-size: 12px; }
+
+/* One chart of several: the bar, the chart and its indicator panes fill the pane. */
+.cd-compact { flex: 1; display: flex; min-width: 0; min-height: 0; }
+.cd-compact > .cd-col { flex: 1; display: flex; flex-direction: column; min-height: 0; gap: 0; }
+.cd-compact .cd-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; margin: 0; padding: 8px 10px; overflow: hidden; }
+.cd-compact .cd-bar { gap: 6px; }
+.cd-compact .cd-symbol { flex: 1 1 140px; min-width: 120px; }
+.cd-compact .cd-symbol input, .cd-compact .cd-select { padding: 5px 8px; font-size: 13px; }
+.cd-compact .cd-symbol button { padding: 5px 10px; }
+.cd-compact .cd-select { width: auto; min-width: 0; max-width: 6.8em; }
+.cd-compact .cd-select[aria-label="Market"] { max-width: none; }
+.cd-compact .cd-btn { padding: 5px 10px; font-size: 13px; }
+.cd-compact .cd-head { margin: 6px 0 2px; gap: 4px 10px; flex-wrap: nowrap; min-width: 0; }
+.cd-compact .cd-title { flex: 0 0 auto; flex-wrap: nowrap; white-space: nowrap; }
+.cd-compact .cd-title strong { font-size: 14px; }
+.cd-compact .cd-last { font-size: 15px; }
+.cd-compact .cd-title .hint { display: none; }
+.cd-compact .cd-status { font-size: 11px; padding: 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 55%; }
+.cd-compact .cd-legend { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; scrollbar-width: none; margin-bottom: 2px; }
+.cd-compact .cd-legend > * { flex: 0 0 auto; flex-wrap: nowrap; }
+.cd-compact .cd-area:not([hidden]) { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.cd-compact .cd-drawbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 2px 0 4px; }
+.cd-compact .cd-drawbar .cd-toolgroup { flex-wrap: nowrap; }
+.cd-compact .cd-drawbar button { white-space: nowrap; padding: 3px 8px; font-size: 12px; }
+.cd-compact .cd-mainwrap { flex: 1; min-height: 100px; }
+.cd-compact .cd-main { height: 100%; min-height: 0; }
+.cd-compact .cd-panes { flex: 0 0 auto; max-height: 50%; overflow-y: auto; }
+.cd-compact .cd-pane { height: 64px; }
+.cd-compact .cd-pane:last-child { height: 88px; }
+.cd-compact .cd-pane-title { margin: 4px 0 0; }
+.cd-compact .cd-credit { display: none; }
+.cd-compact .cd-edit { right: 80px; }
+
+@media (max-width: 720px) {
+  /* Phones: the charts go one under another at a fixed height, and the page scrolls. */
+  .cdw { height: auto; min-height: 100vh; }
+  .cdg, .cdg.cdg-window { height: auto; min-height: 0; }
+  .cdg-board { display: flex; flex-direction: column; gap: 12px; }
+  .cdg-board .cdg-cell { height: 72vh; min-height: 420px; }
+  .cdg-handle { display: none; }
+  .cdg-home { margin-left: 0; }
+  .cd-compact .cd-symbol { flex-basis: 100%; }
+}

@@ -182,8 +182,16 @@
 
   // The charts live in their own files, loaded the first time the Charts tab opens. The live and the
   // classic chart are two views of the same chart code; the classic one reads the desk's /api/chart.
+  // "Several charts" is the chart window's layout (chartdesk/grid.js) inside the tab; "Pop out" opens the chart
+  // window (/charts) on its own. The phone app has one window, so it has no pop out.
   const chartDesk = { view: "live", mods: {}, module: null };
-  const chartHost = (view) => $(view === "live" ? "#chartdesk" : "#chart-classic");
+  const chartHost = (view) => $(view === "live" ? "#chartdesk" : view === "grid" ? "#chart-grid" : "#chart-classic");
+  const oneWindow = window.__deskNativeApp === "mobile";
+  function openChartWindow(at) {
+    const q = at && at.symbol ? "?" + new URLSearchParams({ venue: at.venue, symbol: at.symbol, tf: at.tf || "" }) : "";
+    const w = window.open("/charts" + q, "_blank", "popup=yes,width=1280,height=820");
+    if (w) { try { w.focus(); } catch (err) { /* another window */ } }
+  }
   function chartModule() {
     if (!chartDesk.module) {
       const link = document.createElement("link");
@@ -196,7 +204,12 @@
   async function chartView(view) {
     if (!chartDesk.mods[view]) {
       const m = await chartModule();
-      if (!chartDesk.mods[view]) chartDesk.mods[view] = m.mount(chartHost(view), { api, preset: view, intervals: state.app.intervals, mode: () => state.mode });
+      if (!chartDesk.mods[view] && view === "grid") {
+        const g = await import("/static/chartdesk/grid.js");
+        if (!chartDesk.mods[view]) chartDesk.mods[view] = g.mountGrid(chartHost(view), { api, mode: () => state.mode, openWindow: oneWindow ? null : () => openChartWindow(null) });
+      }
+      if (!chartDesk.mods[view]) chartDesk.mods[view] = m.mount(chartHost(view), { api, preset: view, intervals: state.app.intervals, mode: () => state.mode,
+        popOut: view === "live" && !oneWindow ? openChartWindow : null });
     }
     return chartDesk.mods[view];
   }
@@ -212,6 +225,7 @@
     $$("#chart-view button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.view === view)));
     $("#chartdesk").hidden = view !== "live";
     $("#chart-classic").hidden = view !== "classic";
+    $("#chart-grid").hidden = view !== "grid";
   }
   $$("#chart-view button").forEach((b) => b.addEventListener("click", () => { setChartView(b.dataset.view); showChartDesk(true); }));
   $$(".tabs button").forEach((b) => b.addEventListener("click", () => selectTab(b.dataset.tab)));

@@ -15,7 +15,10 @@ VENUES = ("crypto", "india", "imported")
 # How many points each drawing keeps. A long or short position keeps entry, target and stoploss.
 KINDS = {"trend": 2, "ray": 2, "extended": 2, "hline": 1, "hray": 1, "vline": 1, "rect": 2, "channel": 3,
          "fib": 2, "measure": 2, "long": 3, "short": 3}
-VIEWS = ("live", "classic")
+# The Charts tab's two charts, and each chart of the chart window (several charts in one window).
+VIEWS = ("live", "classic", "pane1", "pane2", "pane3", "pane4", "pane5", "pane6")
+# The chart window's arrangements: columns and rows. Keep in step with chartdesk/grid.js LAYOUTS.
+GRID_LAYOUTS = {"1": (1, 1), "2v": (2, 1), "2h": (1, 2), "3": (2, 2), "4": (2, 2), "6": (3, 2)}
 MAX_INDICATORS = 30
 _COLOUR = re.compile(r"#[0-9a-fA-F]{6}")
 _KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}")
@@ -47,11 +50,11 @@ class ChartStore:
             state = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(state, dict):
                 return {"watchlist": state.get("watchlist") or [], "drawings": state.get("drawings") or {},
-                        "layouts": state.get("layouts") or {}}
+                        "layouts": state.get("layouts") or {}, "grid": state.get("grid")}
         except (OSError, ValueError):
             pass
         return {"watchlist": [{"venue": "crypto", "symbol": s} for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT")],
-                "drawings": {}, "layouts": {}}
+                "drawings": {}, "layouts": {}, "grid": None}
 
     def _save(self, state: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,6 +146,47 @@ class ChartStore:
             state["layouts"][view] = clean
             self._save(state)
         return clean
+
+
+    def grid(self) -> dict | None:
+        with self._lock:
+            return self._load()["grid"]
+
+    def set_grid(self, grid) -> dict:
+        clean = clean_grid(grid)
+        with self._lock:
+            state = self._load()
+            state["grid"] = clean
+            self._save(state)
+        return clean
+
+
+def clean_grid(grid) -> dict:
+    """The chart window's arrangement: which layout, whether the charts share one stock, and the size of each
+    column and row (relative numbers) for each layout the user resized."""
+    if not isinstance(grid, dict):
+        raise ValueError("grid must be an object")
+    layout = grid.get("layout")
+    if layout not in GRID_LAYOUTS:
+        raise ValueError(f"layout must be one of {', '.join(GRID_LAYOUTS)}")
+    sizes = grid.get("sizes") or {}
+    if not isinstance(sizes, dict):
+        raise ValueError("sizes must be an object")
+    clean_sizes = {}
+    for key, value in sizes.items():
+        if key not in GRID_LAYOUTS or not isinstance(value, dict):
+            raise ValueError(f"sizes are kept per layout: {', '.join(GRID_LAYOUTS)}")
+        cols, rows = GRID_LAYOUTS[key]
+        out = {}
+        for name, count in (("cols", cols), ("rows", rows)):
+            parts = value.get(name)
+            if not isinstance(parts, list) or len(parts) != count or not all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and 0 < v <= 100
+                    for v in parts):
+                raise ValueError(f"layout {key} needs {count} {name} sizes, each above 0 and at most 100")
+            out[name] = [float(v) for v in parts]
+        clean_sizes[key] = out
+    return {"layout": layout, "link": grid.get("link") is True, "sizes": clean_sizes}
 
 
 def _quantity(raw) -> float:
