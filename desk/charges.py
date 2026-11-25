@@ -8,7 +8,7 @@ contract note can differ from these figures by a rupee or two.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, astuple, dataclass, field
 
 
 @dataclass(frozen=True)
@@ -62,6 +62,9 @@ class Charges:
 
     def as_dict(self) -> dict:
         return {**{k: round(v, 2) for k, v in asdict(self).items()}, "total": round(self.total, 2)}
+
+    def __add__(self, other: Charges) -> Charges:
+        return Charges(*(a + b for a, b in zip(astuple(self), astuple(other), strict=True)))
 
 
 def order_charges(
@@ -159,14 +162,9 @@ def commodity_charges(side: str, quantity: float, price: float, multiplier: floa
     return Charges(turnover, brokerage, ctt, txn, sebi, stamp, gst, 0.0)
 
 
-def same_day_delivery_charges(fills: list[dict], schedule: ChargeSchedule = DEFAULT_SCHEDULE) -> list[float | None]:
-    """Charges on delivery (CNC) share fills once the day is netted: shares bought and sold on the same day are
-    squared off at the exchange, never delivered, so that quantity pays intraday rates (no delivery STT or DP).
-
-    ``fills`` are dicts with time_ist, side, quantity, price, product, exchange and tradingsymbol (and mode, kept
-    apart). Returns, for each fill in the order given, its charges after netting, or None where nothing changes.
-    """
-    out: list[float | None] = [None] * len(fills)
+def _same_day_split(fills: list[dict], schedule: ChargeSchedule = DEFAULT_SCHEDULE) -> dict[int, int]:
+    """For each delivery (CNC) share fill that is part of a same-day buy and sell, the quantity squared off that day."""
+    out: dict[int, int] = {}
     days: dict[tuple, list[int]] = {}
     for i, fill in enumerate(fills):
         if str(fill.get("product", "")).upper() != "CNC" or fill.get("exchange") not in schedule.exchange_txn_pct:
@@ -187,8 +185,65 @@ def same_day_delivery_charges(fills: list[dict], schedule: ChargeSchedule = DEFA
             if not intraday or quantity <= 0 or price <= 0:
                 continue
             left[side] -= intraday
-            total = order_charges(side, intraday, price, "MIS", fill["exchange"], schedule).total
-            if quantity > intraday:
-                total += order_charges(side, quantity - intraday, price, "CNC", fill["exchange"], schedule).total
-            out[i] = round(total, 2)
+            out[i] = intraday
+    return out
+
+
+def same_day_delivery_charges(fills: list[dict], schedule: ChargeSchedule = DEFAULT_SCHEDULE) -> list[float | None]:
+    """Charges on delivery (CNC) share fills once the day is netted: shares bought and sold on the same day are
+    squared off at the exchange, never delivered, so that quantity pays intraday rates (no delivery STT or DP).
+
+    ``fills`` are dicts with time_ist, side, quantity, price, product, exchange and tradingsymbol (and mode, kept
+    apart). Returns, for each fill in the order given, its charges after netting, or None where nothing changes.
+    """
+    out: list[float | None] = [None] * len(fills)
+    for i, intraday in _same_day_split(fills, schedule).items():
+        out[i] = round(_netted(fills[i], intraday, schedule).total, 2)
+    return out
+
+
+def _netted(fill: dict, intraday: int, schedule: ChargeSchedule) -> Charges:
+    side, quantity, price, exchange = str(fill["side"]).upper(), fill["quantity"], fill["price"], fill["exchange"]
+    parts = order_charges(side, intraday, price, "MIS", exchange, schedule)
+    if quantity > intraday:
+        parts = parts + order_charges(side, quantity - intraday, price, "CNC", exchange, schedule)
+    return parts
+
+
+# The parts of a fill's charges, as the exports show them. Exchange and SEBI fees are one column; the DP charge
+# (on a delivery sale) has its GST in it, as Zerodha bills it.
+PARTS = ("brokerage", "stt", "exchange_fees", "stamp_duty", "gst", "dp")
+
+
+def estimate(fill: dict, schedule: ChargeSchedule = DEFAULT_SCHEDULE) -> Charges | None:
+    """The desk's own estimate of one fill's charges, as the ledger works it out when a fill has none recorded."""
+    side, quantity, price = str(fill.get("side", "")).upper(), fill.get("quantity") or 0, fill.get("price") or 0
+    exchange, symbol = str(fill.get("exchange", "")).upper(), str(fill.get("tradingsymbol", ""))
+    try:
+        if exchange == "MCX":
+            return commodity_charges(side, quantity, price, fill.get("multiplier") or 1, not symbol.endswith("FUT"), schedule)
+        if exchange in ("NFO", "BFO") and symbol.endswith("FUT"):
+            return futures_charges(side, quantity, price, exchange, schedule)
+        product = str(fill.get("product", "CNC")).upper()
+        return order_charges(side, quantity, price, product if product in ("CNC", "MIS") else "CNC", exchange, schedule)
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def breakdowns(fills: list[dict], schedule: ChargeSchedule = DEFAULT_SCHEDULE) -> list[dict]:
+    """Each fill's recorded charges split into brokerage, STT (CTT on MCX), exchange and SEBI fees, stamp duty, GST
+    and the DP charge. The split follows the desk's charge schedule, same-day delivery netting included, scaled so
+    the parts add up to the charges recorded on the fill (a live fill's charges may differ by a rupee or two)."""
+    split = _same_day_split(fills, schedule)
+    out = []
+    for i, fill in enumerate(fills):
+        recorded = round(float(fill.get("charges") or 0), 2)
+        parts = _netted(fill, split[i], schedule) if i in split else estimate(fill, schedule)
+        if parts is None or parts.total <= 0 or recorded <= 0:
+            out.append(dict.fromkeys(PARTS, 0.0))
+            continue
+        values = {"brokerage": parts.brokerage, "stt": parts.stt, "exchange_fees": parts.exchange_txn + parts.sebi,
+                  "stamp_duty": parts.stamp_duty, "gst": parts.gst, "dp": parts.dp}
+        scale = 1.0 if abs(recorded - parts.total) < 0.011 else recorded / parts.total     # paise lost to rounding
+        out.append({k: v * scale for k, v in values.items()})
     return out
