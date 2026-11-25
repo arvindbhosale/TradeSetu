@@ -253,4 +253,3 @@ dialog.cd-confirm::backdrop { background: rgba(8, 11, 18, .55); }
 .cd-verdict.v-down { color: var(--bad); border-color: var(--bad); }
 .cd-verdict.v-maybe_up, .cd-verdict.v-maybe_down { border-style: dashed; }
 .cd-verdict.v-few { color: var(--muted); }
-.cd-leg-pat { color: var(--accent); font-weight: 600; }
