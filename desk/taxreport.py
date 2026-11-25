@@ -4,7 +4,7 @@ Classification, for listed equity and F&O:
 
 - Delivery (CNC) shares: matched first-in, first-out. Held more than 12 months:
   long-term capital gain; otherwise short-term.
-- Intraday (MIS) equity: bought and sold the same day; speculative business income.
+- Shares bought and sold the same day (MIS, or CNC squared off the same day): speculative business income.
 - Futures and options (NFO/BFO) and MCX gold and silver derivatives (CTT paid): non-speculative business
   income; turnover is reported separately.
 
@@ -27,7 +27,7 @@ from datetime import date, datetime
 STCG_RATE, LTCG_RATE, LTCG_EXEMPTION = 0.20, 0.125, 125_000.0
 JOURNAL_FIELDS = ["time_ist", "mode", "source", "exchange", "tradingsymbol", "side", "quantity", "product", "order_type",
                   "price", "fill_price", "variety", "order_id", "ok", "error", "gtt"]
-PNL_FIELDS = ["time_ist", "source", "symbol", "side", "quantity", "buy_price", "sell_price", "pnl", "return_pct"]
+PNL_FIELDS = ["time_ist", "source", "symbol", "side", "quantity", "buy_price", "sell_price", "pnl", "return_pct", "charges"]
 FILL_FIELDS = ["time_ist", "mode", "source", "exchange", "tradingsymbol", "side", "quantity", "price", "product", "charges", "trade_id"]
 
 
@@ -60,41 +60,60 @@ def _kind(fill: dict) -> str:
 
 
 def tax_lots(fills: list[dict], mode: str) -> list[dict]:
-    """Each sale matched to the purchases it closes, first in, first out."""
+    """Each closing fill matched to the open lots it closes, first in, first out.
+
+    A sale with nothing held opens a short lot (F&O, or a share short sale marked ``short``) that a later purchase
+    closes; any other sale of shares the desk never recorded buying is not counted, as on the P&L screen. A delivery
+    sale closes shares bought the same day first, since the exchange squares those off as intraday.
+    """
+    from .pnl import settle
+
     lots: dict[tuple, deque] = defaultdict(deque)
     out = []
-    for fill in sorted((f for f in fills if f.get("mode") == mode), key=lambda f: f["time_ist"]):
+    for fill in settle(sorted((f for f in fills if f.get("mode") == mode), key=lambda f: f["time_ist"])):
         kind = _kind(fill)
         key = (kind, fill["exchange"], fill["tradingsymbol"])
         per_unit_charge = (fill.get("charges") or 0) / fill["quantity"] if fill["quantity"] else 0
-        if fill["side"] == "BUY":
-            lots[key].append({"time": fill["time_ist"], "quantity": fill["quantity"], "price": fill["price"],
-                              "charge": per_unit_charge})
-            continue
+        buying = fill["side"] == "BUY"
+        book = lots[key]
+        day = fill["time_ist"][:10]
+        if not buying and kind == "delivery" and book and book[0]["long"]:
+            # Same-day purchases are squared off first: move them to the front of the queue.
+            today = [lot for lot in book if lot["time"][:10] == day]
+            if today and len(today) < len(book):
+                lots[key] = book = deque(today + [lot for lot in book if lot["time"][:10] != day])
         remaining = fill["quantity"]
-        while remaining > 0 and lots[key]:
-            lot = lots[key][0]
+        while remaining > 0 and book and book[0]["long"] != buying:
+            lot = book[0]
             used = min(remaining, lot["quantity"])
-            bought, sold = lot["time"][:10], fill["time_ist"][:10]
-            held = (datetime.strptime(sold, "%Y-%m-%d") - datetime.strptime(bought, "%Y-%m-%d")).days
-            if kind == "delivery":
-                category = "LTCG" if held > 365 else "STCG"
-            elif kind == "intraday":
-                category = "Speculative (intraday)" if bought == sold else "STCG"
-            else:
+            opened, closed = lot["time"][:10], day
+            held = (datetime.strptime(closed, "%Y-%m-%d") - datetime.strptime(opened, "%Y-%m-%d")).days
+            if kind == "fno":
                 category = "F&O (non-speculative)"
+            elif opened == closed:
+                category = "Speculative (intraday)"
+            else:
+                category = "LTCG" if held > 365 else "STCG"
             factor = fill.get("multiplier") or 1          # MCX: quantity in lots, rupees = price x lots x multiplier
-            cost, value = used * lot["price"] * factor, used * fill["price"] * factor
+            buy, sell = (fill, lot) if buying else (lot, fill)
+            buy_price, sell_price = buy["price"], sell["price"]
+            cost, value = used * buy_price * factor, used * sell_price * factor
             charges = used * (lot["charge"] + per_unit_charge)
-            out.append({"fy": financial_year(sold), "category": category, "symbol": fill["tradingsymbol"],
-                        "exchange": fill["exchange"], "quantity": used, "buy_date": bought, "sell_date": sold,
-                        "days_held": held, "buy_price": round(lot["price"], 2), "sell_price": round(fill["price"], 2),
+            out.append({"fy": financial_year(closed), "category": category, "symbol": fill["tradingsymbol"],
+                        "exchange": fill["exchange"], "side": "Long" if lot["long"] else "Short", "quantity": used,
+                        "buy_date": buy["time"][:10] if buy is lot else closed,
+                        "sell_date": sell["time"][:10] if sell is lot else closed,
+                        "days_held": held, "buy_price": round(buy_price, 2), "sell_price": round(sell_price, 2),
                         "buy_value": round(cost, 2), "sell_value": round(value, 2), "charges": round(charges, 2),
-                        "gain": round(value - cost - charges, 2), "source": fill.get("source", "manual")})
+                        "gain": round(value - cost - charges, 2), "source": lot["source"],
+                        **({"closed_by": fill.get("source", "manual")} if fill.get("source", "manual") != lot["source"] else {})})
             lot["quantity"] -= used
             remaining -= used
             if lot["quantity"] == 0:
-                lots[key].popleft()
+                book.popleft()
+        if remaining > 0 and (buying or kind == "fno" or fill.get("short")):
+            book.append({"time": fill["time_ist"], "quantity": remaining, "price": fill["price"],
+                         "charge": per_unit_charge, "long": buying, "source": fill.get("source", "manual")})
     return out
 
 
@@ -119,5 +138,5 @@ def summary(lots: list[dict]) -> list[dict]:
     return out
 
 
-LOT_FIELDS = ["fy", "category", "symbol", "exchange", "quantity", "buy_date", "sell_date", "days_held", "buy_price",
+LOT_FIELDS = ["fy", "category", "symbol", "exchange", "side", "quantity", "buy_date", "sell_date", "days_held", "buy_price",
               "sell_price", "buy_value", "sell_value", "charges", "gain", "source"]

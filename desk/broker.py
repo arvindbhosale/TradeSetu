@@ -20,7 +20,7 @@ from pathlib import Path
 from tradingagents.dataflows.symbols import from_kite, kite_instrument
 
 from . import market, mcx
-from .charges import commodity_charges, futures_charges, order_charges
+from .charges import commodity_charges, futures_charges, order_charges, same_day_delivery_charges
 from .kite import KiteError, KiteMCP
 from .settings import Settings, home
 
@@ -427,8 +427,29 @@ class PaperBook:
                       **asdict(order), "fill_price": round(price, 2), "charges": fees.as_dict(),
                       "status": "COMPLETE"}
             self._state["orders"].append(record)
+            if order.product == "CNC":
+                self._settle_same_day(record)
             self._save()
             return record
+
+    def _settle_same_day(self, record: dict) -> None:
+        """Delivery shares bought and sold the same day are squared off at intraday rates: give back to cash the
+        delivery charges already taken on that quantity (the ledger corrects the reports the same way)."""
+        day, instrument = record["time_ist"][:10], (record["exchange"], record["tradingsymbol"])
+        today = [{**o, "price": o["fill_price"]} for o in self._state["orders"]
+                 if o.get("status") == "COMPLETE" and o.get("product") == "CNC" and str(o.get("time_ist", ""))[:10] == day
+                 and (o.get("exchange"), o.get("tradingsymbol")) == instrument]
+        delivery = sum(order_charges(o["side"], o["quantity"], o["price"], "CNC", o["exchange"]).total for o in today)
+        netted = same_day_delivery_charges(today)
+        settled = sum(n if n is not None else order_charges(o["side"], o["quantity"], o["price"], "CNC", o["exchange"]).total
+                      for o, n in zip(today, netted, strict=True))
+        refunds = self._state.setdefault("same_day_refunds", {})
+        key = f"{day}|{instrument[0]}:{instrument[1]}"
+        due = round(delivery - settled, 2)
+        self._state["cash"] += due - refunds.get(key, 0.0)
+        if due:
+            refunds[key] = due
+            record["same_day_refund"] = round(due, 2)
 
     def _fill_short(self, order: Order, price: float, fees, held: dict) -> dict:
         """An intraday short sale of shares, or the buy that covers it. The position is held below zero; the sale

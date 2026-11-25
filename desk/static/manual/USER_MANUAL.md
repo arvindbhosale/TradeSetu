@@ -458,10 +458,10 @@ The **Download** panel on the P&L tab. All on the account selected at the top; t
 
 | Download | Contents |
 |---|---|
-| **Profit/Loss (closed trades)** | Every closed trade: when, source, symbol, quantity, buy and sell price, profit/loss and return. |
-| **Order journal** | Every order the desk sent or refused: time, source, symbol, side, quantity, price, result, reason. |
+| **Profit/Loss (closed trades)** | Every closed trade: when, source, symbol, quantity, the buy and sell prices you got, charges, profit/loss after charges and return. |
+| **Order journal** | Every order the desk sent or refused: time, source, symbol, side, quantity, price, status (Filled, Placed, Set for a stoploss/target order, or Failed), reason. |
 | **Fills** | Every fill with price, product and charges. |
-| **Tax lots** | Each sale matched to its buys first-in first-out, with buy and sell dates, days held, cost, proceeds, charges, gain and category. |
+| **Tax lots** | Each closed position matched first-in first-out, Long or Short (an option sold first and bought back later is a Short lot), with buy and sell dates, days held, cost, proceeds, charges, gain and category. Shares bought and sold on the same day count as intraday (speculative) and pay intraday charges, even under Delivery (CNC). The total matches the Profit/Loss download. |
 
 Each button downloads an Excel file (.xlsx) that opens in Excel, Google Sheets or LibreOffice. Profit is shaded green and loss red, Buy and Long are green, Sell and Short red, failed orders are a red row, and each tax head has its own shade. The header row stays in view with a filter on every column, and the **Total (rows shown)** line at the bottom adds up only the rows the filter leaves, so filtering one algo or one month gives that algo's or month's total. Profit/Loss also has a **By source** sheet (trades, wins, losses and net for each algo and for manual trades); Tax lots has a **By financial year** sheet with the tax estimate. Tick **Plain CSV instead** for a plain CSV file.
 

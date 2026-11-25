@@ -3035,7 +3035,8 @@ def create_app(settings: Settings | None = None, kite: KiteMCP | None = None,
         if kind == "journal":
             return [r for r in reversed(desk.journal_rows(100000)) if r.get("mode") == mode], tax.JOURNAL_FIELDS
         if kind == "fills":
-            return [f for f in desk.ledger.fills() if f.get("mode") == mode], tax.FILL_FIELDS
+            from .pnl import settle
+            return settle([f for f in desk.ledger.fills() if f.get("mode") == mode]), tax.FILL_FIELDS
         if kind == "pnl":
             return desk.ledger.closed_trades(mode), tax.PNL_FIELDS
         if kind == "tax-lots":
