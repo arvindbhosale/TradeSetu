@@ -776,7 +776,7 @@ class AlgoEngine:
 
         # 2. Intraday: the daily loss limit was hit, close out and stay out. Positional positions are held, like
         # delivery holdings; the kill switch stops new buys.
-        if not carry and algo["position"] and self.desk.flatten_day == now.strftime("%Y-%m-%d"):
+        if not carry and algo["position"] and self.desk.flattening(algo["mode"], now.strftime("%Y-%m-%d")):
             algo["blocked"] = True
             return self._send(algo, "SELL", "daily loss limit", fallback_price=price)
 

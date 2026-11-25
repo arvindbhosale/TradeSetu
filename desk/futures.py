@@ -14,7 +14,9 @@ Execution. Signals are read at a candle's close and filled at the next
 candle's open, with slippage. A stoploss or target (in % of the futures
 price) is checked against each candle's high and low; when both are inside
 one candle the stop is assumed to have come first. Intraday runs enter only
-inside the trade window and close everything at the square-off time.
+inside the trade window and close everything at the square-off time. A positional run on intraday candles
+(``positional``) reads each candle the same way but holds overnight (NRML) until the signal turns, a stoploss or a
+target: no trade window, no square-off. Its candles are one contract's or the index's, so rolls are not modelled.
 
 A maximum loss and target in rupees (``stop_rs`` / ``target_rs``), as an F&O algo has them, are price levels for the
 lots held (with the charges paid so far), checked the same way; the stoploss the price reaches first is taken.
@@ -74,7 +76,7 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
                 intraday: bool = False, trade_start: str = "09:30", trade_end: str = "15:00", square_off: str = "15:15",
                 continuous: bool = True, carry_pct: float = 7.0, holidays=frozenset(), exchange: str = "NFO",
                 strategy_name: str = "", risk_free_rate_pct: float = 6.5, steps: Steps = NO_STEPS,
-                adds: Adds = NO_ADDS, stop_rs: float = 0.0, target_rs: float = 0.0) -> dict:
+                adds: Adds = NO_ADDS, stop_rs: float = 0.0, target_rs: float = 0.0, positional: bool = False) -> dict:
     """``stop_rs`` / ``target_rs``: close the position when its profit or loss in rupees (with the charges paid so
     far, roll costs included, and any profit step booked) reaches this, as an F&O algo's maximum loss and target do.
     It is a price level for the lots held, checked inside the candle like the % stoploss and target."""
@@ -98,7 +100,7 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
     if adds.active and lots + adds.total() > 50:
         raise ValueError(f"{lots} lots plus {adds.total():g} added is more than 50 lots")
     params = BacktestParams(capital=capital, risk_free_rate_pct=risk_free_rate_pct, intraday=intraday,
-                            trade_start=trade_start, trade_end=trade_end, square_off=square_off)
+                            positional=intraday and positional, trade_start=trade_start, trade_end=trade_end, square_off=square_off)
     params.validate()
     stamps = bars.index
     opens, highs, lows, closes = (bars[c].to_numpy(float) for c in ("Open", "High", "Low", "Close"))
@@ -114,6 +116,7 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
     qty_per = lots * lot_size
     slip = slippage_pct / 100
     t_start, t_end, t_close = (pd.Timestamp(f"2000-01-01 {t}").time() for t in (trade_start, trade_end, square_off))
+    session = intraday and not positional            # an intraday trade: trade window and square-off
 
     roll_days: set = set()
     if continuous and not intraday:
@@ -201,7 +204,7 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
     def take_steps(i, high, low, goal) -> None:
         """The profit steps and adds this candle reached, in price order, short of the target."""
         nonlocal done
-        window = not intraday or t_start <= stamps[i].time() < t_end
+        window = not session or t_start <= stamps[i].time() < t_end
         while pos:
             step_at = first + pos * steps.distance(first, steps.levels[done]) if done < len(plan) else None
             add_at = (first + pos * adds.distance(first, adds.levels[adds_done])
@@ -274,7 +277,7 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
         # 2. yesterday's decision, filled at today's open
         target = int(want[i - 1]) if i > 0 else 0
         moment = stamp.time()
-        if intraday:
+        if session:
             if moment >= t_close:
                 target = 0
             elif target and target != pos and not (t_start <= moment < t_end):
@@ -282,7 +285,7 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
         if target != pos:
             if pos:
                 price = opens[i] * (1 - slip if pos > 0 else 1 + slip)
-                close_trade(i, price, "square-off" if intraday and moment >= t_close else "signal")
+                close_trade(i, price, "square-off" if session and moment >= t_close else "signal")
             if target:
                 price = opens[i] * (1 + slip if target > 0 else 1 - slip)
                 equity_now = cash
@@ -319,7 +322,7 @@ def run_futures(bars: pd.DataFrame, signal: pd.Series, *, underlying: str, lot_s
                     if pos and goal is not None and lows[i] <= goal:
                         close_trade(i, min(opens[i], goal) * (1 + slip), reached)
         # 4. intraday: nothing is held past the square-off candle
-        if intraday and pos and (moment >= t_close or i + 1 == len(bars) or stamps[i + 1].normalize() != stamp.normalize()):
+        if session and pos and (moment >= t_close or i + 1 == len(bars) or stamps[i + 1].normalize() != stamp.normalize()):
             close_trade(i, closes[i] * (1 - slip if pos > 0 else 1 + slip), "square-off")
         if pos:
             in_market += 1

@@ -14,7 +14,7 @@ Three ways to run a structure:
   (``leg_sl_pct`` of its premium) buys that leg back on its own, the way the
   common "straddle with stoploss" is traded; the other leg stays.
 - ``positional``: day candles; open on a chosen weekday, close a given number
-  of days before expiry or settle at expiry.
+  of trading days before expiry (holidays left out) or settle at expiry.
 - ``signal``: day candles; open while a strategy is long, close when it turns
   flat (directional spreads, protective put, covered call). A position still
   on at expiry is rolled to the next expiry.
@@ -1013,6 +1013,8 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
         return any(g["open"] or g.get("rearm") for g in b["legs"])
 
     days_index = stamps.normalize()
+    # "Exit days before expiry" counts trading sessions to the expiry day, holidays left out, as the F&O algo does.
+    busday_holidays = sorted(str(pd.Timestamp(d).date()) for d in holidays)
     tried_day, stopped_i = None, None
     for i in range(len(bars)):
         stamp, spot = stamps[i], closes[i]
@@ -1038,7 +1040,7 @@ def run_structure(underlying: str, bars: pd.DataFrame, vix: pd.Series, *, struct
                 else:
                     check_reentries(i, stamp + pd.Timedelta(hours=15, minutes=30))
                     reason = check_stops(i, stamp + pd.Timedelta(hours=15, minutes=30))
-                    days_left = np.busday_count(stamp.date(), expiry_day.date())
+                    days_left = np.busday_count(stamp.date(), expiry_day.date(), holidays=busday_holidays)
                     if reason:
                         close_book(i, spot, stamp + pd.Timedelta(hours=15, minutes=30), reason)
                         stopped_i = i

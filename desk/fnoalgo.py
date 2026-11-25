@@ -9,9 +9,12 @@ An F&O algo trades one index (NIFTY, BANKNIFTY, SENSEX...). It is one of two kin
   ``positional`` opens at the entry time on the chosen weekdays and holds until a set number of days before the
   near expiry; ``signal`` (directional structures only) holds the structure while a strategy on the index's candles
   says so, the way the backtest's signal mode does. On day candles (``interval`` "1d") it holds overnight (NRML); on
-  intraday candles (5 minutes, 15 minutes...) it is an intraday trade (MIS) like the options backtest on them: read
-  once each candle finishes, sold at the exit time, nothing carried overnight, and after a stoploss or target no new
-  entry that day.
+  intraday candles (5 minutes, 15 minutes...) it is read once each candle finishes and is, by ``trade_type``, an
+  intraday trade (MIS, the default) like the options backtest on them: sold at the exit time, nothing carried
+  overnight; or positional (NRML): held overnight until the signal turns, a stoploss or target, or the roll at expiry.
+  Either way, after a stoploss or target no new entry that day.
+- ``positional`` and positional signal algos are left alone by the daily loss limit (it closes intraday algos of the
+  account that hit it). "Exit days before expiry" counts trading days, as the backtest does.
 - **Index futures.** A strategy on the index's day candles decides long, short, or long-and-short; the algo holds
   the near-month future accordingly.
 
@@ -68,6 +71,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta
 
+import numpy as np
 import pandas as pd
 
 from . import data, market, mcx, optstrat, risk, scalein, scaleout
@@ -109,11 +113,16 @@ def expiry_text(algo: dict) -> str:
     return f"{_ORDINAL[ahead]} {algo['expiry_kind']}" if ahead else algo["expiry_kind"]
 
 
+def intraday_candles(algo: dict) -> bool:
+    """A signal algo read on intraday candles (5 minutes, 15 minutes...)."""
+    return algo.get("schedule") == "signal" and (algo.get("interval") or "1d") != "1d"
+
+
 def same_day(algo: dict) -> bool:
     """Whether an algo closes everything by its exit time and carries nothing overnight (MIS): an intraday schedule,
-    or a signal algo on intraday candles (5 minutes, 15 minutes...), as the options backtest on those candles has it."""
-    return algo.get("schedule") == "intraday" or (algo.get("schedule") == "signal"
-                                                   and (algo.get("interval") or "1d") != "1d")
+    or a signal algo on intraday candles (5 minutes, 15 minutes...) whose trade type is intraday, as the options
+    backtest on those candles has it. A positional one on intraday candles holds overnight (NRML)."""
+    return algo.get("schedule") == "intraday" or (intraday_candles(algo) and algo.get("trade_type") != "positional")
 
 
 def arm_phrase(name: str) -> str:
@@ -354,10 +363,16 @@ class FnoAlgoEngine:
                                 "option algos.")
             if strategy.intraday_only and interval == "1d":
                 raise AlgoError(f"{strategy.name} needs intraday candles. Choose a candle size under 1 day.")
-            out.update(strategy=strategy.key, strategy_name=strategy.name, interval=interval,
+            trade_type = str(raw.get("trade_type") or ("positional" if interval == "1d" else "intraday")).lower()
+            if trade_type not in ("intraday", "positional"):
+                raise AlgoError("Trade type must be intraday or positional.")
+            if trade_type == "intraday" and interval == "1d":
+                raise AlgoError("An intraday trade needs minute or hourly candles. Day candles are positional.")
+            out.update(strategy=strategy.key, strategy_name=strategy.name, interval=interval, trade_type=trade_type,
                        params=strategy.resolve(raw.get("strategy_params")))
         else:
-            out.update(strategy=None, strategy_name=None, params={}, interval="1d")
+            out.update(strategy=None, strategy_name=None, params={}, interval="1d",
+                       trade_type="intraday" if out["schedule"] == "intraday" else "positional")
         return out
 
     def create(self, raw: dict) -> dict:
@@ -431,7 +446,9 @@ class FnoAlgoEngine:
                "positional": f"positional, out {algo['exit_days_before']} day(s) before expiry",
                "signal": f"on {algo.get('strategy_name')} signals"
                          + (f" ({data.INTERVALS[algo['interval']]['label']} candles, intraday: out by "
-                            f"{algo['exit_time']})" if same_day(algo) else "")}[algo["schedule"]]
+                            f"{algo['exit_time']})" if same_day(algo) else
+                            f" ({data.INTERVALS[algo['interval']]['label']} candles, positional: held overnight)"
+                            if intraday_candles(algo) else "")}[algo["schedule"]]
         kind = "structure" if algo["kind"] == "structure" else "futures"
         steps = scaleout.of(algo.get("steps")).text(kind)
         adds = scalein.of(algo.get("adds")).text(kind)
@@ -587,11 +604,18 @@ class FnoAlgoEngine:
         when the algo is positional, from the exit time. An MCX metal contract is closed, whatever the schedule, as
         soon as it is within the delivery cut-off (``mcx_exit_days``): it is physically delivered."""
         now = self._now()
-        days = (datetime.strptime(expiry, "%Y-%m-%d").date() - now.date()).days
         if self._metal(algo) and mcx.in_delivery_window(expiry, now, self.desk.settings.get("mcx_exit_days")):
             return True
+        days = self.sessions_to(expiry, now)
         before = algo["exit_days_before"] if algo["schedule"] == "positional" else 0
         return days < before or (days <= before and now.strftime("%H:%M") >= algo["exit_time"])
+
+    @staticmethod
+    def sessions_to(expiry: str, now) -> int:
+        """Trading sessions from today up to the expiry day, today counted and the expiry day not: 0 on expiry day,
+        2 on a Friday before a Tuesday expiry. Holidays in Settings are left out, as the backtest does."""
+        return int(np.busday_count(now.date(), datetime.strptime(expiry, "%Y-%m-%d").date(),
+                                   holidays=sorted(market.HOLIDAYS)))
 
     def _expiry_over(self, algo: dict) -> bool:
         """Whether an algo made for one exact expiry can open nothing more: the date has passed, or its exit rule
@@ -900,7 +924,7 @@ class FnoAlgoEngine:
         if self._expiry_over(algo):
             self._expire(algo)
             return algo["status"], True
-        if self.desk.flatten_day == today or algo["blocked_day"] == today:
+        if self.desk.flattening(algo["mode"], today) or algo["blocked_day"] == today:
             return "Running: done for today", True
         if self.desk.settings.get("kill_switch"):
             return "Blocked: kill switch is on", False
@@ -1195,12 +1219,19 @@ class FnoAlgoEngine:
         today = now.strftime("%Y-%m-%d")
         if algo["exit_requested"]:
             return self._begin_close(algo, "Exit pressed", block=True)
-        if self.desk.flatten_day == today:
+        if same_day(algo) and self.desk.flattening(algo["mode"], today):
+            # Positional algos hold through the daily loss limit, like delivery holdings; the kill switch stops entries.
             return self._begin_close(algo, "daily loss limit", block=True)
         if same_day(algo) and book["day"] != today:
             return self._begin_close(algo, "carried overnight (the desk was not running at the exit time)", block=False)
+        if same_day(algo) and now.strftime("%H:%M") >= algo["exit_time"]:
+            # Before the prices: an intraday position is closed at its exit time even when Kite gives no price now.
+            return self._begin_close(algo, f"exit time {algo['exit_time']}", block=False, ready=True)
         open_legs = [g for g in book["legs"] if g["open_qty"]]
         prices = self._prices([g["instrument"] for g in open_legs])
+        for g in open_legs:
+            if prices.get(g["instrument"]):
+                g["seen"] = prices[g["instrument"]]          # the last price seen, for a paper square-off without one
         pnl = self.mtm(algo, prices)
         if pnl is None:
             missing = [g["tradingsymbol"] for g in open_legs if not prices.get(g["instrument"])]
@@ -1217,13 +1248,14 @@ class FnoAlgoEngine:
         pct = self._pct_exit(algo, prices)
         if pct:
             return self._begin_close(algo, pct, block=True)
-        if same_day(algo) and now.strftime("%H:%M") >= algo["exit_time"]:
-            return self._begin_close(algo, f"exit time {algo['exit_time']}", block=False, ready=True)
         due = sorted({g["expiry"] for g in open_legs if self._exit_due(algo, g["expiry"])})
         if due:
             roll = algo["schedule"] == "signal"
             why = f"expiry {due[0]}" + (": rolls to the next expiry" if roll else "")
-            return self._begin_close(algo, why, block=False, ready=roll)
+            # A positional index structure opens again on a later day (the next chosen weekday), as the backtest does;
+            # a signal algo rolls at once, and an MCX one closed at the delivery cut-off may open the next contract.
+            block = algo["schedule"] == "positional" and not self._metal(algo)
+            return self._begin_close(algo, why, block=block, ready=roll)
         if algo["schedule"] == "signal":
             want = self._signal(algo)
             if want != book["direction"]:
@@ -1355,7 +1387,7 @@ class FnoAlgoEngine:
             return "the kill switch is on"
         if algo.get("hold_until") and now.strftime("%Y-%m-%d") <= algo["hold_until"]:
             return "new entries are held"
-        if self.desk.flatten_day == now.strftime("%Y-%m-%d"):
+        if self.desk.flattening(algo["mode"], now.strftime("%Y-%m-%d")):
             return "the daily loss limit was hit"
         if not algo["entry_time"] <= now.strftime("%H:%M") < algo["exit_time"]:
             return "outside the entry and exit times"
@@ -1560,9 +1592,10 @@ class FnoAlgoEngine:
         if block:
             algo["blocked_day"] = self._now().strftime("%Y-%m-%d")
         if algo["schedule"] == "signal":
-            # A signal algo on intraday candles stays ready after any close: it opens again on a later day while the
-            # strategy still says so (a stop or target blocks only the rest of that day), as the backtest does.
-            algo["ready"] = ready or same_day(algo)
+            # A signal algo on intraday candles (intraday or positional) stays ready after any close: it opens again on
+            # a later day while the strategy still says so (a stop or target blocks only the rest of that day), as the
+            # options backtest does.
+            algo["ready"] = ready or intraday_candles(algo)
         self._log(algo, f"Closing every leg: {reason}.")
         return self._work_close(algo)
 
@@ -1622,9 +1655,16 @@ class FnoAlgoEngine:
         """Send ``quantity`` of a leg as LIMIT orders near the last price, split at the freeze quantity.
         Paper fills at once; a live order is recorded as pending. Raises OrderRejected."""
         last = self._prices([leg["instrument"]]).get(leg["instrument"])
+        buffer, tick = algo["limit_buffer_pct"] / 100, leg.get("tick") or 0.05
+        if not last and algo["mode"] == "paper" and intent == "close" and same_day(algo) and leg.get("seen") \
+                and self._now().strftime("%H:%M") >= algo["exit_time"]:
+            # A paper intraday (MIS) leg past its exit time with no price: square it off at the last price seen, as
+            # Zerodha squares MIS off whatever happens, rather than carry it overnight.
+            last, buffer = leg["seen"], 0.0
+            self._log(algo, f"No live price for {leg['tradingsymbol']}: squared off at the last price seen, "
+                            f"{last:,.2f}.")
         if not last:
             raise OrderRejected([f"no live price for {leg['tradingsymbol']}"])
-        buffer, tick = algo["limit_buffer_pct"] / 100, leg.get("tick") or 0.05
         price = market.round_to_tick(last * (1 + buffer) if side == "BUY" else last * (1 - buffer), side, tick)
         price = max(price, tick)
         lot, freeze = leg["lot_size"], leg.get("freeze") or 0

@@ -343,6 +343,7 @@
           <label class="fno-structure">Enter only if expiry is at least (days) <input name="min_days" type="number" min="0" max="30" step="0.5" value="0"></label>
           <label class="fno-signal">Strategy that decides <select name="strategy"></select></label>
           <label class="fno-signal fno-candles">Candle size <select name="interval"></select></label>
+          <label class="fno-signal fno-candles">Trade type <select name="trade_type"><option value="intraday">Intraday: buy and sell the same day</option><option value="positional">Positional: hold for days</option></select></label>
         </div>
         <p class="hint fno-signal" id="fno-candle-note"></p>
         <div class="row" id="fno-params"></div>
@@ -828,6 +829,7 @@
           <label class="bt-own" hidden>To <input name="end" type="date" required></label>
           <label>Candle <select name="interval"></select></label>
           <label>Strategy that decides <select name="strategy"></select></label>
+          <label>Trade type <select name="trade_type"><option value="intraday">Intraday: buy and sell the same day</option><option value="positional">Positional: hold for days</option></select></label>
         </div>
         <p class="hint" id="fbt-desc"></p>
         <div class="row" id="fbt-params"></div>
@@ -863,6 +865,7 @@
           <label class="bt-own" hidden>To <input name="end" type="date" required></label>
           <label>Candle <select name="interval"></select></label>
           <label>Strategy that decides <select name="strategy"></select></label>
+          <label>Trade type <select name="trade_type"><option value="intraday">Intraday: buy and sell the same day</option><option value="positional">Positional: hold for days</option></select></label>
         </div>
         <p class="hint" id="obt-desc"></p>
         <div class="row" id="obt-params"></div>
