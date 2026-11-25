@@ -87,10 +87,14 @@ def _src(row: dict) -> str:
     return source_label(row.get("source"))
 
 
+# A fill's charges part by part; GST is 18% on brokerage and exchange fees, none on STT or stamp duty.
+PARTS_COLS = [Col("brokerage", "Brokerage", "money", 11, True), Col("stt", "STT", "money", 11, True),
+              Col("exchange_fees", "Exchange + SEBI fees", "money", 12, True), Col("stamp_duty", "Stamp duty", "money", 11, True),
+              Col("gst", "GST", "money", 11, True), Col("dp", "DP charge", "money", 11, True)]
 PNL = [Col("time_ist", "Closed on (IST)", "time", 22), Col("source", "From", width=22, get=_src),
        Col("symbol", "Stock / contract", width=24), Col("side", "Side", width=8, get=_side, tone="side"),
        Col("quantity", "Quantity", "qty", 10), Col("buy_price", "Buy price", "price", 12),
-       Col("sell_price", "Sell price", "price", 12), Col("charges", "Charges", "money", 12, True),
+       Col("sell_price", "Sell price", "price", 12), *PARTS_COLS, Col("charges", "Total charges", "money", 12, True),
        Col("pnl", "Profit/Loss", "money", 15, True, tone="pnl"),
        Col("return_pct", "Return", "pct", 10, tone="pnl")]
 JOURNAL = [Col("time_ist", "Time (IST)", "time", 22), Col("mode", "Account", width=9, get=lambda r: str(r.get("mode", "")).title()),
@@ -106,23 +110,31 @@ FILLS = [Col("time_ist", "Time (IST)", "time", 22), Col("mode", "Account", width
          Col("tradingsymbol", "Stock / contract", width=24), Col("side", "Side", width=8, get=_side, tone="side"),
          Col("quantity", "Quantity", "qty", 10), Col("price", "Price", "price", 12),
          Col("value", "Value", "money", 15, get=lambda r: _num(r.get("quantity")) * _num(r.get("price")) * _num(r.get("multiplier") or 1)),
-         Col("product", "Product", width=9), Col("charges", "Charges", "money", 12, True), Col("trade_id", "Trade ID", width=20)]
+         Col("product", "Product", width=9), *PARTS_COLS, Col("charges", "Total charges", "money", 12, True),
+         Col("trade_id", "Trade ID", width=20)]
 LOTS = [Col("fy", "Financial year", width=10, get=lambda r: "FY " + str(r.get("fy", ""))),
         Col("category", "Tax head", width=22, tone="band"), Col("symbol", "Stock / contract", width=24),
         Col("exchange", "Exchange", width=9), Col("side", "Side", width=8), Col("quantity", "Quantity", "qty", 10),
         Col("buy_date", "Bought on", "date", 12), Col("sell_date", "Sold on", "date", 12), Col("days_held", "Days held", "int", 9),
         Col("buy_price", "Buy price", "price", 12), Col("sell_price", "Sell price", "price", 12),
         Col("buy_value", "Buy value", "money", 15, True), Col("sell_value", "Sell value", "money", 15, True),
-        Col("charges", "Charges", "money", 12, True), Col("gain", "Gain/Loss", "money", 15, True, tone="pnl"),
+        *PARTS_COLS, Col("charges", "Total charges", "money", 12, True),
+        Col("gain", "Gain/Loss", "money", 15, True, tone="pnl"),
+        Col("taxable_gain", "Taxable gain (STT added back on shares)", "money", 17, True, tone="pnl"),
         Col("source", "From", width=22, get=_src)]
 YEARS = [Col("fy", "Financial year", width=12, get=lambda r: "FY " + str(r.get("fy", ""))),
          Col("STCG", "Short-term gains", "money", 16, tone="pnl"), Col("LTCG", "Long-term gains", "money", 16, tone="pnl"),
          Col("Speculative (intraday)", "Intraday (speculative)", "money", 18, tone="pnl"),
          Col("F&O (non-speculative)", "F&O (business)", "money", 16, tone="pnl"),
-         Col("fno_turnover", "F&O turnover", "money", 16), Col("charges", "Charges", "money", 14),
-         Col("stcg_tax_estimate", "Short-term tax @20% (estimate)", "money", 18),
-         Col("ltcg_taxable", "Long-term gains above ₹1.25 lakh", "money", 18),
-         Col("ltcg_tax_estimate", "Long-term tax @12.5% (estimate)", "money", 18), Col("trades", "Lots", "int", 8)]
+         Col("fno_turnover", "F&O turnover", "money", 16), Col("intraday_turnover", "Intraday turnover", "money", 16),
+         *[Col(c.key, c.label, "money", 12) for c in PARTS_COLS], Col("charges", "Total charges", "money", 14),
+         Col("trades", "Lots", "int", 8)]
+LOSSES = [Col("fy", "Loss made in", width=12, get=lambda r: "FY " + str(r.get("fy", ""))),
+          Col("head_name", "Type of loss", width=28), Col("from", "Recorded by", width=13),
+          Col("amount", "Loss", "money", 15), Col("used", "Set off so far", "money", 15),
+          Col("left", "Still to set off", "money", 15), Col("last_year", "Usable up to", width=13, get=lambda r: "FY " + str(r.get("last_year", ""))),
+          Col("status", "Status", width=24)]
+
 
 TITLES = {"pnl": "Profit/Loss (closed trades)", "journal": "Order journal", "fills": "Fills", "tax-lots": "Tax lots"}
 KINDS = tuple(TITLES)
@@ -286,11 +298,83 @@ def _pnl_summary(ws: Worksheet, rows: list[dict]) -> None:
     _sheet(ws, "Profit/Loss by source", "Closed trades only, after charges. Algos and manual trades.", cols, out)
 
 
+def _statement_sheet(ws: Worksheet, statement: dict, subtitle: str) -> None:
+    """The tax statement: one column per financial year, the set-off steps down the side."""
+    years = statement.get("years") or []
+    ws["A1"] = "Tax statement (estimate)"
+    ws["A1"].font = Font(bold=True, size=14, color=NAVY)
+    ws["A2"] = subtitle
+    ws["A2"].font = Font(italic=True, size=10, color="5B6675")
+    ws.sheet_view.showGridLines = False
+    ws.column_dimensions["A"].width = 62
+    head_font, head_fill = Font(bold=True, color=WHITE), PatternFill("solid", fgColor=NAVY)
+    ws.cell(HEADER_ROW, 1, "Financial year").font = head_font
+    ws.cell(HEADER_ROW, 1).fill = head_fill
+    for j, year in enumerate(years, 2):
+        cell = ws.cell(HEADER_ROW, j, "FY " + year["fy"])
+        cell.font, cell.fill = head_font, head_fill
+        cell.alignment = Alignment(horizontal="center")
+        ws.column_dimensions[get_column_letter(j)].width = 16
+    r = HEADER_ROW + 1
+    if not years:
+        ws.cell(r, 1, "No closed trades and no earlier losses on this account.").font = Font(italic=True, color="5B6675")
+        r += 2
+    else:
+        section = PatternFill("solid", fgColor="E8EDF4")
+        for label, key, kind in tax.STATEMENT:
+            cell = ws.cell(r, 1, label)
+            if key is None:
+                cell.font = Font(bold=True, color=NAVY)
+                for j in range(1, len(years) + 2):
+                    ws.cell(r, j).fill = section
+                r += 1
+                continue
+            cell.alignment = Alignment(indent=1)
+            strong = key in ("total_tax", "business_income", "ltcg_taxable", "stcg_taxable")
+            if strong:
+                cell.font = Font(bold=True)
+            for j, year in enumerate(years, 2):
+                value = year.get(key)
+                c = ws.cell(r, j)
+                if kind == "yes":
+                    c.value = "Yes" if value else "No"
+                    c.alignment = Alignment(horizontal="right")
+                    if value:
+                        c.font = Font(bold=True, color=RED_TEXT)
+                    continue
+                c.value = value
+                c.number_format = FORMATS[kind]
+                c.alignment = Alignment(horizontal="right")
+                c.border = Border(bottom=THIN)
+                if strong:
+                    c.font = Font(bold=True)
+            if key in ("spec", "fno", "stcg", "ltcg", "spec_after", "fno_after", "stcg_after", "ltcg_after"):
+                cells = f"B{r}:{get_column_letter(len(years) + 1)}{r}"
+                ws.conditional_formatting.add(cells, CellIsRule(operator="greaterThan", formula=["0"],
+                                                                font=Font(color=GREEN_TEXT)))
+                ws.conditional_formatting.add(cells, CellIsRule(operator="lessThan", formula=["0"],
+                                                                font=Font(color=RED_TEXT)))
+            r += 1
+        r += 1
+    ws.freeze_panes = ws.cell(HEADER_ROW + 1, 2)
+    ws.cell(r, 1, "Read this").font = Font(bold=True, color=NAVY)
+    for note in [*statement.get("notes", []), *tax.STATEMENT_NOTES]:
+        r += 1
+        cell = ws.cell(r, 1, note)
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=max(len(years) + 1, 4))
+        ws.row_dimensions[r].height = 30
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+
 def _stamp() -> str:
     return datetime.now().strftime("%d %b %Y, %H:%M")
 
 
 def workbook(kind: str, rows: list[dict], mode: str, *, fy: str = "", years: list[dict] | None = None,
+             statement: dict | None = None,
              app_name: str = "TradeSetu") -> bytes:
     """One export as an .xlsx file. ``rows`` are the same dicts the CSV export writes."""
     if kind not in TITLES:
@@ -315,9 +399,18 @@ def workbook(kind: str, rows: list[dict], mode: str, *, fy: str = "", years: lis
         _sheet(ws, TITLES[kind], subtitle + " · sales matched first in, first out", LOTS, rows,
                empty="No closed tax lots yet on this account.")
         summary = wb.create_sheet("By financial year")
-        _sheet(summary, "Tax estimate by financial year",
-               "Indicative only: rates from 23 July 2024; check with your broker's tax P&L and a chartered accountant.",
+        _sheet(summary, "Gains by financial year, before losses are set off",
+               "Each tax head's total after charges; short- and long-term gains with STT added back. "
+               "The tax is worked out on the Tax statement sheet.",
                YEARS, years if years is not None else tax.summary(rows), totals=False)
+        if statement is None:
+            statement = tax.statement(rows)
+        note = "paper trades: practice figures, not for filing" if mode == "paper" else "an estimate, not for filing as it is"
+        _statement_sheet(wb.create_sheet("Tax statement"), statement, f"{app_name} · {account} · {note} · made {_stamp()} IST")
+        _sheet(wb.create_sheet("Losses carried forward"), "Losses carried forward",
+               "Each loss, how much has been set off and the last year it can be used. Intraday losses: 4 years; "
+               "F&O and capital losses: 8 years.", LOSSES, statement.get("losses") or [], totals=False,
+               empty="No losses to carry forward.")
     wb.properties.creator = app_name
     wb.properties.title = TITLES[kind]
     out = io.BytesIO()

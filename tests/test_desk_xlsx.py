@@ -25,12 +25,14 @@ def test_closed_trades_sheet_has_types_totals_and_colours():
     assert ws["A1"].value == "Profit/Loss (closed trades)" and "Paper account" in ws["A2"].value
     assert ws["A5"].is_date and ws["A5"].number_format == x.TIME
     assert ws["B5"].value == "Algo: Breakout" and ws["D6"].value == "Short"
-    assert ws["H4"].value == "Charges" and ws["I5"].value == 180.5 and "₹" in ws["I5"].number_format
-    assert ws["I8"].value == "=SUBTOTAL(109,I5:I6)" and ws["A8"].value == "Total (rows shown)"
-    assert ws.freeze_panes == "A5" and ws.auto_filter.ref == "A4:J6"
+    assert [ws.cell(4, c).value for c in range(8, 15)] == ["Brokerage", "STT", "Exchange + SEBI fees", "Stamp duty", "GST",
+                                                           "DP charge", "Total charges"]
+    assert ws["O5"].value == 180.5 and "₹" in ws["O5"].number_format
+    assert ws["O8"].value == "=SUBTOTAL(109,O5:O6)" and ws["A8"].value == "Total (rows shown)"
+    assert ws.freeze_panes == "A5" and ws.auto_filter.ref == "A4:P6"
     ranges = {str(r.sqref) for r in ws.conditional_formatting}
-    assert "I5:I6" in ranges and "D5:D6" in ranges
-    rules = [rule for cf in ws.conditional_formatting if str(cf.sqref) == "I5:I6" for rule in cf.rules]
+    assert "O5:O6" in ranges and "D5:D6" in ranges
+    rules = [rule for cf in ws.conditional_formatting if str(cf.sqref) == "O5:O6" for rule in cf.rules]
     assert {r.operator for r in rules} == {"greaterThan", "lessThan"}
     by = book["By source"]
     assert [by.cell(r, 1).value for r in (5, 6)] == ["Algo: Breakout", "Manual"] and by["H5"].value == 180.5

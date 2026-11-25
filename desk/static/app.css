@@ -392,3 +392,9 @@ table.legs-edit td:last-child { width: 1%; }
 .steps-box .step-row button { margin-bottom: 2px; }
 .closes { font-size: 0.85em; white-space: nowrap; line-height: 1.5; }
 .rule .patterns { display: flex; flex-direction: column; gap: 4px; flex-basis: 100%; } .rule .pattern-group { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+/* Tax statement: one column per financial year, the set-off steps down the side. */
+.hint.warn { color: var(--warn-ink); background: var(--warn-bg); padding: 6px 10px; border-radius: 6px; }
+table.tax-statement tr.section th { text-align: left; background: var(--surface-2); padding-top: 10px; }
+table.tax-statement tr.strong td { font-weight: 700; }
+table.tax-statement td:first-child { white-space: normal; min-width: 220px; }
+.tax-loss { align-items: flex-end; }
