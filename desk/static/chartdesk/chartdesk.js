@@ -1075,8 +1075,6 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
     if (!b) return;
     const pr = (/** @type {number} */ v) => num(v), items = [];
     items.push(h("span", { class: "cd-ohlc", text: `O ${pr(b.open)}  H ${pr(b.high)}  L ${pr(b.low)}  C ${pr(b.close)}${st.volume ? `  Vol ${num(Math.round(b.volume), 0)}` : ""}` }));
-    const names = patterns.namesAt(b.time);
-    if (names.length) items.push(h("span", { class: "cd-leg cd-leg-pat", text: names.join(", ") }));
     st.active.forEach((a) => {
       const c = CATALOG[a.kind], colours = { ...defaultColours(a), ...a.colors };
       const controls = [
