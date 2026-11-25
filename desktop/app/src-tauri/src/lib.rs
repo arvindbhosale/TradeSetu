@@ -382,10 +382,21 @@ fn open_desk_window(app: &AppHandle, url: Url) {
     static NEXT: AtomicU32 = AtomicU32::new(1);
     let label = format!("page-{}", NEXT.fetch_add(1, Ordering::Relaxed));
     let handle = app.clone();
+    let popup = app.clone();
+    // The chart window (/charts, "Pop out" on the Charts tab) and any other desk page opened in a new window.
     let _ = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title(app.package_info().name.clone())
-        .inner_size(1100.0, 800.0)
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(480.0, 360.0)
         .on_navigation(move |u| navigation_allowed(&handle, u))
+        .on_new_window(move |u, _features| {
+            if is_desk_url(&popup, &u) {
+                open_desk_window(&popup, u);
+            } else {
+                open_external(&popup, &u);
+            }
+            NewWindowResponse::Deny
+        })
         .build();
 }
 

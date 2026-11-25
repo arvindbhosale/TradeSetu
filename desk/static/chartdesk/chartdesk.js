@@ -130,12 +130,20 @@ function loadLocal(key, defaults) {
 /**
  * @param {HTMLElement} root
  * @param {{ api: (path: string, opts?: any) => Promise<any>, preset?: "live"|"classic", intervals?: Record<string, string>,
- *   mode?: () => string }} deps  ``mode`` is the desk's Paper or Live switch, for NSE/BSE orders from the chart.
+ *   mode?: () => string, compact?: boolean, view?: string, seed?: Record<string, any>|null, start?: Record<string, any>|null,
+ *   onSymbol?: (venue: string, symbol: string) => void, popOut?: ((at: { venue: string, symbol: string, tf: string }) => void)|null }} deps
+ *   ``mode`` is the desk's Paper or Live switch, for NSE/BSE orders from the chart. ``compact`` is one chart of several
+ *   in a chart window (grid.js): just the chart, its indicators and drawings, saved under its own ``view``; ``start``
+ *   is its settings before it has any of its own, ``seed`` overrides the saved symbol (a popped-out chart), and
+ *   ``onSymbol`` hears the stock changing. ``popOut`` adds a "Pop out" button that opens the chart in its own window.
  */
-export function mount(root, { api, preset = "live", intervals = {}, mode = () => "paper" }) {
+export function mount(root, { api, preset = "live", intervals = {}, mode = () => "paper", compact = false, view = "", seed = null, start = null,
+  onSymbol = () => {}, popOut = null }) {
   const classic = preset === "classic";
-  const storeKey = classic ? STORE + "-classic" : STORE;
-  const defaults = classic ? CLASSIC_DEFAULTS : DEFAULTS;
+  const lite = classic || compact;                  // no watchlist, trading, paper book or replay
+  const viewName = compact && view ? view : preset;
+  const storeKey = compact ? STORE + "-" + viewName : classic ? STORE + "-classic" : STORE;
+  const defaults = classic ? CLASSIC_DEFAULTS : { ...DEFAULTS, ...(start || {}) };
   let uid = 0;
   const st = {
     venue: "crypto", symbol: "", tf: "1h", type: "candles", volume: true,
@@ -163,13 +171,15 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
     st.active = (Array.isArray(s.indicators) ? s.indicators : defaults.indicators).slice(0, MAX_INDICATORS)
       .map(cleanActive).filter(Boolean).map((a) => ({ uid: ++uid, .../** @type {any} */ (a) }));
     st.patterns = cleanPatternSettings(s.patterns);
+    if (compact) st.patterns = { ...st.patterns, on: false };
   }
   function layout() {
     return { venue: st.venue, symbol: st.symbol, tf: st.tf, type: st.type, volume: st.volume,
       indicators: st.active.map((a) => ({ kind: a.kind, params: a.params, colors: a.colors, width: a.width, hidden: a.hidden })),
       patterns: st.patterns };
   }
-  applyLayout(loadLocal(storeKey, defaults));
+  applyLayout({ ...loadLocal(storeKey, defaults), ...(seed || {}) });
+  let lastSymbol = st.venue + ":" + st.symbol;
 
   /** Saves the chart's settings on this device at once and on the desk shortly after, so the desktop app, a
    * phone and a browser open the same chart. */
@@ -179,29 +189,34 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
     try { localStorage.setItem(storeKey, JSON.stringify(data)); } catch (err) { /* storage blocked */ }
     clearTimeout(st.saveTimer);
     st.saveTimer = setTimeout(async () => {
-      try { await api("/md/layout", { method: "PUT", body: { view: preset, layout: data } }); }
+      try { await api("/md/layout", { method: "PUT", body: { view: viewName, layout: data } }); }
       catch (err) { showNote(`Chart settings not saved on the desk: ${err.message}`); }
     }, 600);
   }
 
   function fetchLayout() {
-    st.layoutReady = api("/md/layout?" + new URLSearchParams({ view: preset })).then((r) => {
-      if (r && r.layout && !st.touched) applyLayout(r.layout);
+    st.layoutReady = api("/md/layout?" + new URLSearchParams({ view: viewName })).then((r) => {
+      if (r && r.layout && !st.touched) applyLayout({ ...r.layout, ...(seed || {}) });
     }).catch((err) => { showNote(`Chart settings could not be loaded from the desk (using this device's): ${err.message}`); });
     return st.layoutReady;
   }
 
   // -- layout ------------------------------------------------------------------------------------------
-  const venueSeg = h("div", { class: "seg", role: "group", "aria-label": "Market", hidden: classic });
-  const symbolInput = /** @type {HTMLInputElement} */ (h("input", { name: "cd-symbol", list: `cd-symbols-${preset}`, autocomplete: "off", spellcheck: "false", "aria-label": "Symbol" }));
-  const symbolList = h("datalist", { id: `cd-symbols-${preset}` });
-  const tfSeg = h("div", { class: "seg cd-scroll", role: "group", "aria-label": "Timeframe" });
-  const typeSeg = h("div", { class: "seg", role: "group", "aria-label": "Chart type" });
+  // A chart of several has drop-down lists in place of rows of buttons, so its bar fits a small pane.
+  const venueSeg = compact ? h("select", { class: "cd-select", "aria-label": "Market" }) : h("div", { class: "seg", role: "group", "aria-label": "Market", hidden: classic });
+  const symbolInput = /** @type {HTMLInputElement} */ (h("input", { name: "cd-symbol", list: `cd-symbols-${viewName}`, autocomplete: "off", spellcheck: "false", "aria-label": "Symbol" }));
+  const symbolList = h("datalist", { id: `cd-symbols-${viewName}` });
+  const tfSeg = compact ? h("select", { class: "cd-select", "aria-label": "Timeframe" }) : h("div", { class: "seg cd-scroll", role: "group", "aria-label": "Timeframe" });
+  const typeSeg = compact ? h("select", { class: "cd-select", "aria-label": "Chart type" }) : h("div", { class: "seg", role: "group", "aria-label": "Chart type" });
   const indicatorBtn = h("button", { type: "button", class: "cd-btn", onclick: () => openPicker() });
-  const patternBtn = h("button", { type: "button", class: "cd-btn", text: "Patterns", title: "Candle patterns, what followed them on this chart, and a range of likely prices",
+  const drawToggle = compact ? h("button", { type: "button", class: "cd-btn", text: "Draw", "aria-pressed": "false", title: "Drawing tools",
+    onclick: (/** @type {Event} */ e) => { drawBar.hidden = !drawBar.hidden; /** @type {HTMLElement} */ (e.currentTarget).setAttribute("aria-pressed", String(!drawBar.hidden)); } }) : null;
+  const popBtn = popOut ? h("button", { type: "button", class: "cd-btn", text: "Pop out", title: "Open this chart in its own window, where you can also show several charts",
+    onclick: () => popOut({ venue: st.venue, symbol: st.blind ? "" : st.symbol, tf: st.tf }) }) : null;
+  const patternBtn = h("button", { type: "button", class: "cd-btn", hidden: compact, text: "Patterns", title: "Candle patterns, what followed them on this chart, and a range of likely prices",
     onclick: () => { st.patterns = { ...st.patterns, on: !st.patterns.on }; save(); patterns.changed(); renderControls(); if (st.patterns.on) patternRoot.scrollIntoView({ behavior: "smooth", block: "nearest" }); } });
   const patternRoot = h("section", { class: "panel cd-patterns", hidden: true, "aria-label": "Candle patterns" });
-  const replayBtn = classic ? null : h("button", { type: "button", class: "cd-btn", text: "Replay", title: "Practise on past candles, shown one at a time", onclick: () => replay.toggleSetup() });
+  const replayBtn = lite ? null : h("button", { type: "button", class: "cd-btn", text: "Replay", title: "Practise on past candles, shown one at a time", onclick: () => replay.toggleSetup() });
   const replayBar = h("div", { class: "cd-replaybar", role: "toolbar", "aria-label": "Replay controls", hidden: true });
   const replayRoot = h("section", { class: "panel cd-replay", hidden: true, "aria-label": "Replay practice" });
   const head = h("div", { class: "cd-head" });
@@ -211,12 +226,13 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
   const legend = h("div", { class: "cd-legend", "aria-live": "off" });
   const mainBox = h("div", { class: "cd-main" });
   const panes = h("div", { class: "cd-panes" });
-  const drawBar = h("div", { class: "cd-drawbar", role: "group", "aria-label": "Drawing tools" });
+  const drawBar = h("div", { class: "cd-drawbar", role: "group", "aria-label": "Drawing tools", hidden: compact });
   const editBar = h("div", { class: "cd-edit", hidden: true });
   // The editor of a picked drawing floats over the chart, so the chart does not jump when it opens.
   const chartArea = h("div", { class: "cd-area", hidden: true }, drawBar, legend, h("div", { class: "cd-mainwrap" }, mainBox, editBar), panes,
     h("p", { class: "hint cd-credit" }, "Charts drawn with ",
       h("a", { href: "https://www.tradingview.com/", target: "_blank", rel: "noopener noreferrer", text: "TradingView Lightweight Charts" }),
+      compact ? "." :
       classic ? ". Candles from your broker, or delayed Yahoo data if you switched that on in Settings. Indicators are worked out by the desk."
         : ". Crypto prices from Binance or Coinbase public data; NSE/BSE from your broker. Indicators are worked out by the desk."));
   const loading = h("p", { class: "hint", text: "Loading…", hidden: true });
@@ -231,22 +247,23 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
       h("form", { class: "cd-bar", onsubmit: (/** @type {Event} */ e) => { e.preventDefault(); st.symbol = symbolInput.value.trim().toUpperCase(); open(); } },
         venueSeg,
         h("div", { class: "cd-symbol" }, symbolInput, symbolList, h("button", { class: "primary", type: "submit", text: "Show" })),
-        tfSeg, typeSeg, indicatorBtn, patternBtn, replayBtn),
+        tfSeg, typeSeg, indicatorBtn, drawToggle, patternBtn, replayBtn, popBtn),
       importPanel, replayBar, head, error, note, extra, loading, chartArea),
-    patternRoot, classic ? null : replayRoot, classic ? null : tradeRoot, classic ? null : paperRoot);
-  root.replaceChildren(classic ? h("div", { class: "cd-grid cd-solo" }, column, dialog) : h("div", { class: "cd-grid" }, watchRoot, column, dialog));
+    compact ? null : patternRoot, lite ? null : replayRoot, lite ? null : tradeRoot, lite ? null : paperRoot);
+  root.replaceChildren(compact ? h("div", { class: "cd-compact" }, column, dialog)
+    : classic ? h("div", { class: "cd-grid cd-solo" }, column, dialog) : h("div", { class: "cd-grid" }, watchRoot, column, dialog));
 
-  const watch = classic ? { show() {}, hide() {}, render() {} } : mountWatchlist(watchRoot, { api, open: (venue, symbol) => { st.venue = venue; st.symbol = symbol; renderControls(); open(); },
+  const watch = lite ? { show() {}, hide() {}, render() {} } : mountWatchlist(watchRoot, { api, open: (venue, symbol) => { st.venue = venue; st.symbol = symbol; renderControls(); open(); },
     current: () => ({ venue: st.venue, symbol: st.blind ? "" : st.symbol }) });
   const lastPrice = () => (st.bars.length ? st.bars[st.bars.length - 1].close : null);
-  const paper = classic ? { show() {}, hide() {}, symbolChanged() {}, setBook() {} }
+  const paper = lite ? { show() {}, hide() {}, symbolChanged() {}, setBook() {} }
     : mountPaper(paperRoot, { api, onBook: (book) => { st.book = book; orderLines(); trade.bookChanged(book); } });
   // Trading from the chart is on the live chart; the classic chart only shows.
-  const trade = classic ? { show() {}, hide() {}, symbolChanged() {}, chartDrawn() {}, priceChanged() {}, modeChanged() {}, bookChanged() {}, fill() {}, claims() { return false; } }
+  const trade = lite ? { show() {}, hide() {}, symbolChanged() {}, chartDrawn() {}, priceChanged() {}, modeChanged() {}, bookChanged() {}, fill() {}, claims() { return false; } }
     : mountTrade(tradeRoot, { api, venue: () => st.venue, symbol: () => st.symbol, lastPrice, mode,
       decimals: () => st.decimals, money: (v) => money(v), onBook: (book) => paper.setBook(book),
       chart: () => (st.main && st.price ? { main: st.main, price: st.price, box: mainBox } : null) });
-  const replay = classic ? { active: () => false, toggleSetup() {}, picked() {}, changeTf: async () => false, chartDrawn() {}, claims() { return false; },
+  const replay = lite ? { active: () => false, toggleSetup() {}, picked() {}, changeTf: async () => false, chartDrawn() {}, claims() { return false; },
     fill() {}, planLines() {}, abandon() {}, pause() {}, refresh() {} }
     : mountReplay(replayRoot, replayBar, { api, venue: () => st.venue, symbol: () => st.symbol, tf: () => st.tf,
       tfLabel: (tf) => (timeframes()[tf] || tf), decimals: () => st.decimals, money: (v) => money(v),
@@ -303,6 +320,11 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
 
   /** @param {HTMLElement} host @param {Record<string,string>} options @param {string} current @param {(k: string) => void} pick */
   function segment(host, options, current, pick) {
+    if (host instanceof HTMLSelectElement) {
+      host.replaceChildren(...Object.entries(options).map(([key, label]) => h("option", { value: key, "data-key": key, text: label, selected: key === current })));
+      host.value = current; host.onchange = () => pick(host.value);
+      return;
+    }
     host.replaceChildren(...Object.entries(options).map(([key, label]) => h("button", { type: "button", "data-key": key,
       "aria-pressed": String(key === current), text: label, onclick: () => pick(key) })));
   }
@@ -315,7 +337,7 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
       renderControls(); open();
     });
     const tfs = timeframes();
-    segment(tfSeg, Object.fromEntries(Object.keys(tfs).map((k) => [k, k === "1d" ? "1D" : k === "1w" ? "1W" : k])), st.tf,
+    segment(tfSeg, Object.fromEntries(Object.keys(tfs).map((k) => [k, compact ? tfs[k] : k === "1d" ? "1D" : k === "1w" ? "1W" : k])), st.tf,
       (key) => { if (replay.active()) { replay.changeTf(key); return; } st.tf = key; renderControls(); open(); });
     [...tfSeg.children].forEach((b) => b.setAttribute("title", tfs[/** @type {HTMLElement} */ (b).dataset.key || ""] || ""));
     const meta = st.venue === "imported" && st.catalog ? st.catalog.imports.find((/** @type {any} */ i) => i.symbol === st.symbol) : null;
@@ -337,7 +359,7 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
     indicatorBtn.textContent = `Indicators${st.active.length ? ` (${st.active.length})` : ""}`;
     patternBtn.setAttribute("aria-pressed", String(st.patterns.on));
     renderDrawBar(); renderEditBar(); renderImport(); watch.render();
-    if (!classic) { if (st.visible && st.venue === "crypto" && !st.replaying) paper.show(); else paper.hide(); }
+    if (!lite) { if (st.visible && st.venue === "crypto" && !st.replaying) paper.show(); else paper.hide(); }
     if (st.visible && st.info && !st.replaying) trade.show(); else trade.hide();
     if (replayBtn) { replayBtn.hidden = st.replaying; replayBtn.setAttribute("aria-pressed", String(!replayRoot.hidden)); }
     replay.refresh();
@@ -517,7 +539,7 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
       if (st.replaying) {
         parts.push(h("button", { type: "button", class: "primary", text: d.kind === "long" ? "Practise buy with this plan" : "Practise short sale with this plan",
           title: "Fill the practice ticket with this entry, stoploss, target and quantity", onclick: () => replay.fill(plan) }));
-      } else if (!classic && (st.venue === "india" || st.venue === "crypto")) {
+      } else if (!lite && (st.venue === "india" || st.venue === "crypto")) {
         const shortOk = d.kind === "long" || st.venue === "india";
         parts.push(h("button", { type: "button", class: "primary", text: d.kind === "long" ? "Buy with this plan" : "Short sell with this plan",
           title: shortOk ? "Fill the trade ticket below with this entry, stoploss, target and quantity" : "Crypto paper trading has no short selling",
@@ -591,6 +613,7 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
   });
   document.addEventListener("keydown", (e) => {
     if (!st.selected || !st.visible || root.offsetParent === null) return;
+    if (compact && !root.contains(document.activeElement) && !root.matches(":hover")) return;   // another chart's key
     const t = /** @type {HTMLElement} */ (e.target);
     if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
     if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); st.drawings = st.drawings.filter((x) => x.id !== st.selected); select(null); saveDrawings(); }
@@ -787,6 +810,8 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
       startLive();
       renderControls(); paper.symbolChanged(); trade.symbolChanged();
       loadDrawings(request);
+      const now = st.venue + ":" + st.symbol;
+      if (now !== lastSymbol) { lastSymbol = now; onSymbol(st.venue, st.symbol); }
     } catch (err) {
       if (request !== st.request) return;
       loading.hidden = true; chartArea.hidden = true; destroy(); st.bars = []; st.info = null;
@@ -1050,8 +1075,6 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
     if (!b) return;
     const pr = (/** @type {number} */ v) => num(v), items = [];
     items.push(h("span", { class: "cd-ohlc", text: `O ${pr(b.open)}  H ${pr(b.high)}  L ${pr(b.low)}  C ${pr(b.close)}${st.volume ? `  Vol ${num(Math.round(b.volume), 0)}` : ""}` }));
-    const names = patterns.namesAt(b.time);
-    if (names.length) items.push(h("span", { class: "cd-leg cd-leg-pat", text: names.join(", ") }));
     st.active.forEach((a) => {
       const c = CATALOG[a.kind], colours = { ...defaultColours(a), ...a.colors };
       const controls = [
@@ -1093,7 +1116,7 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
   return {
     show() {
       st.visible = true; watch.show();
-      if (!classic && st.venue === "crypto") paper.show();
+      if (!lite && st.venue === "crypto") paper.show();
       if (st.replaying) return;          // a replay stays where it was
       if (!st.info) { if (error.hidden && !st.busy) open(); return; }
       if (!st.stopFeed) open();          // back on the tab: fresh candles, then live again
@@ -1103,6 +1126,14 @@ export function mount(root, { api, preset = "live", intervals = {}, mode = () =>
     modeChanged() { trade.modeChanged(); },
     /** Opens a symbol (the stock window's Chart button). @param {string} symbol */
     openSymbol(symbol) { st.symbol = String(symbol || "").toUpperCase(); if (!classic) st.venue = "india"; renderControls(); open(); },
+    /** Another chart in the same window changed stock and this one follows (charts linked). Shown at once
+     * only when on screen. @param {string} venue @param {string} symbol */
+    setSymbol(venue, symbol) {
+      if (classic || !(venue in VENUES) || (venue === st.venue && symbol === st.symbol)) return;
+      st.venue = venue; st.symbol = String(symbol || "").toUpperCase(); lastSymbol = st.venue + ":" + st.symbol;
+      renderControls();
+      if (st.visible) open(); else { save(); st.info = null; }
+    },
   };
 }
 
