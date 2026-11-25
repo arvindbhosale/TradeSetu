@@ -52,6 +52,9 @@ desk = [
     "segno>=1.5",
     "webauthn>=2.5,<4",
     "openpyxl>=3.1",
+    # Order wins: BSE turns away clients without a browser's TLS fingerprint; filings' PDFs are read for the value.
+    "curl_cffi>=0.7",
+    "pypdf>=4.0",
 ]
 # A native window for the desk. Without it the desk opens in the web browser.
 window = [

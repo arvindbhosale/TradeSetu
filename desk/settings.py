@@ -98,6 +98,15 @@ DEFAULTS: dict = {
     # chat id above; sent even when "Send alerts" is off). Time is IST.
     "kite_reminder": True,
     "kite_reminder_time": "08:30",
+    # Order wins: NSE and BSE filings of orders received, sent on Telegram in the evening (every day, holidays
+    # too) and the next trading morning before the open. order_scan_min_pct leaves out orders smaller than this
+    # share of the company's market value (0: send all). order_scan_ai lets the AI service in Settings read
+    # filings whose value or customer the text does not make clear.
+    "order_scan": True,
+    "order_scan_evening": "19:00",
+    "order_scan_morning": "08:30",
+    "order_scan_min_pct": 0.5,
+    "order_scan_ai": True,
     # Exchange holidays, one YYYY-MM-DD each. The exchange publishes the list every year.
     "holidays": [],
     # Trading window, IST. New orders are taken only between trade_start and
@@ -337,6 +346,18 @@ def _validated(key: str, value, current):
         if not "06:00" <= value.strip() <= "15:00":
             raise ValueError("The reminder time must be between 06:00 (when Kite logins end) and 15:00")
         return value.strip()
+    if key in ("order_scan_evening", "order_scan_morning"):
+        if not isinstance(value, str) or not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value.strip()):
+            raise ValueError("The order wins report time must be a time as HH:MM")
+        low, high = ("15:30", "23:00") if key == "order_scan_evening" else ("06:00", "09:05")
+        if not low <= value.strip() <= high:
+            raise ValueError("The evening order wins report must be between 15:30 and 23:00" if low == "15:30"
+                             else "The morning order wins report must be between 06:00 and 09:05, before the open")
+        return value.strip()
+    if key == "order_scan_min_pct":
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 100:
+            raise ValueError("The smallest order to send must be between 0% and 100% of market value")
+        return float(value)
     if key in ("trade_start", "trade_end", "square_off"):
         if not isinstance(value, str) or not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value.strip()):
             raise ValueError(f"{key} must be a time as HH:MM")

@@ -136,6 +136,7 @@
       <button data-tool="drift" aria-pressed="false">Results Drift</button>
       <button data-tool="compass" aria-pressed="false">Sector Compass</button>
       <button data-tool="radar" aria-pressed="false">Stock Radar</button>
+      <button data-tool="orders" aria-pressed="false">Order Wins</button>
     </div>
     <p class="hint" id="tool-updated"></p>
   </div>
@@ -185,6 +186,41 @@
           <label class="inline">Show <select name="only"><option value="all">All</option><option value="flags">With a signal</option><option value="above">Above 50 and 200-day</option><option value="near">Within 5% of 52-week high</option></select></label></form></div>
       <p class="hint">Every stock the desk tracks, in one table. Score (0 to 100): strength against the Nifty over 3 months (30%), nearness to the 52-week high (20%), above the 50 and 200-day averages (20%), 1-month return (15%) and today's volume against its 20-day average (15%). Strength, return and volume are ranked within the list. Signals: deals in the last 5 days, Results Drift and volume spikes. Click a column to sort.</p>
       <div class="scroll tall" id="radar-table"></div>
+    </div>
+  </div>
+  <div class="tool" id="tool-orders" hidden>
+    <div class="panel">
+      <div class="jobhead"><h2>Order wins</h2>
+        <form class="row inline" id="form-orders"><label class="inline">Last <select name="days"><option value="1">1 day</option><option value="3">3 days</option><option value="7" selected>7 days</option><option value="30">30 days</option></select></label>
+          <label class="inline">Show <select name="only" style="max-width:100%"><option value="early">Filed while market was shut</option><option value="all">All order wins</option><option value="everything">Everything filed</option></select></label>
+          <label class="inline"><input type="search" name="q" placeholder="Stock, company or customer"></label>
+          <button type="button" id="orders-scan">Check now</button>
+          <button type="button" id="orders-send">Send to Telegram now</button></form></div>
+      <p class="hint">Orders and contracts companies tell NSE ("Bagging/Receiving of orders/contracts") and BSE ("Award of Order / Receipt of Order") they have won. An order filed while the market is shut (after 15:30, before 09:15, on a weekend or holiday) is news at the next open; one filed during market hours is usually in the price within minutes. <b>Size</b> is the order against the company: by yearly sales when known (Very big 25%+, Big 10%+, Medium 3%+), else by market value (Very big 5%+, Big 2%+, Medium 0.5%+). The value and customer are read from the filing's text, then its PDF, then (when the text is unclear and an AI service is set in Settings) by the AI. "Everything filed" also lists the tax, court and penalty orders companies file under the same heading. Always open the filing before trading on it.</p>
+      <p class="hint" id="orders-status"></p>
+      <div class="scroll tall" id="orders-table"></div>
+    </div>
+    <div class="panel">
+      <h2>Telegram reports</h2>
+      <form class="row inline" id="form-orders-settings">
+        <label class="check"><input type="checkbox" name="order_scan"> Send order wins on Telegram</label>
+        <label class="inline">Evening at (IST) <input name="order_scan_evening" type="time" min="15:30" max="23:00"></label>
+        <label class="inline">Morning at (IST) <input name="order_scan_morning" type="time" min="06:00" max="09:05"></label>
+        <label class="inline">Leave out orders under <input name="order_scan_min_pct" type="number" min="0" max="100" step="0.1" style="width:70px">% of market value</label>
+        <label class="check"><input type="checkbox" name="order_scan_ai"> Let the AI read unclear filings</label>
+        <button type="submit">Save</button><span class="hint" id="orders-saved"></span></form>
+      <p class="hint">The evening report goes every day, holidays too; the morning one on trading days, with what was filed overnight. Each order is sent once. Uses the bot and chat in Settings → Alerts, even with "Send alerts" off. NSE and BSE refuse many cloud servers: on a server the desk reads them through your exchange proxy (DESK_EXCHANGE_PROXY), so that computer must be on. When it is off, Telegram says so once and the desk tries again every 15 minutes.</p>
+      <details><summary>How stocks reacted to past order wins</summary><div id="orders-study">
+        <p class="hint">3,117 order-win filings on NSE and BSE, Sep 2024 to Nov 2026, priced from NSE's daily files. Moves are against the Nifty Smallcap 250 the same day. Most filers are small companies.</p>
+        <table><thead><tr><th>Filed</th><th class="num">Filings</th><th class="num">Open vs previous close</th><th class="num">Open to close</th><th class="num">Open to close 4 days later</th></tr></thead><tbody>
+          <tr><td>After the close</td><td class="num">1,371</td><td class="num">+1.7% (84% up)</td><td class="num">−0.4% (39% up)</td><td class="num">−1.2% (37% up)</td></tr>
+          <tr><td>On a holiday</td><td class="num">313</td><td class="num">+1.6% (85% up)</td><td class="num">−0.5% (36% up)</td><td class="num">−0.4% (43% up)</td></tr>
+          <tr><td>Before the open</td><td class="num">146</td><td class="num">+1.6% (90% up)</td><td class="num">+0.1% (48% up)</td><td class="num">+0.9% (44% up)</td></tr>
+          <tr><td>During market hours</td><td class="num">1,287</td><td class="num">–</td><td class="num">+0.9% that day</td><td class="num">−0.5% the next day</td></tr>
+        </tbody></table>
+        <p class="hint">By size (filings with a stated value, after the close): orders under 0.5% of market value opened +0.8% higher; 5% or more, +3.4% (96% up), and then fell −0.9% by the close (34% up). The bigger the opening jump, the more it gave back: a jump of 2-5% lost −0.8% more by the close (30% up).</p>
+        <p class="hint"><b>What it means:</b> the news is in the opening price. Buying at the open after an order win has lost money on average; the move after the open has been a fade, not a follow-through. The report is for knowing what will move and why, not a buy signal. A short at the open on a big jump has been right about 70% of the time, but small stocks are often not available to short and the opening price is hard to get.</p>
+      </div></details>
     </div>
   </div>
 </section>

@@ -2748,7 +2748,7 @@
   }
   const stockLink = (symbol) => h("button", { type: "button", class: "linkish", text: symbol.replace(/\.(NS|BO)$/, ""), onclick: () => openStock(symbol) });
   const toolState = { tool: "deals", deals: null, drift: null, compass: null, radar: null, compassPeriod: "weekly",
-    sorts: { deals: { key: "value_cr", dir: -1 }, spikes: { key: "times", dir: -1 }, drift: { key: "", dir: -1 }, radar: { key: "score", dir: -1 }, compass: { key: "", dir: -1 } } };
+    sorts: { deals: { key: "value_cr", dir: -1 }, spikes: { key: "times", dir: -1 }, drift: { key: "", dir: -1 }, radar: { key: "score", dir: -1 }, compass: { key: "", dir: -1 }, orders: { key: "", dir: -1 } } };
 
   function renderDeals() {
     const d = toolState.deals; if (!d) return;
@@ -2894,12 +2894,41 @@
     $("#tool-updated").textContent = `${rows.length} of ${d.universe} stocks · as of ${d.updated_ist} IST`;
   }
 
+  const ORDER_SIZE = { "Very big": 0, Big: 1, Medium: 2, Small: 3, Unknown: 4 };
+  function renderOrders() {
+    const d = toolState.orders; if (!d) return;
+    const form = $("#form-orders"), q = form.q.value.trim().toUpperCase(), only = form.only.value;
+    const rows = d.rows.filter((r) => (only !== "early" || r.early) && (!q || (r.symbol || "").includes(q) || (r.company || "").toUpperCase().includes(q) || (r.customer || "").toUpperCase().includes(q)));
+    const link = (r) => r.pdf ? h("a", { href: r.pdf, target: "_blank", rel: "noopener", text: "Filing" }) : "–";
+    sortableTable($("#orders-table"), [
+      { key: "filed_at", label: "Filed (IST)", cell: (r) => `${r.filed_at.slice(8, 10)}/${r.filed_at.slice(5, 7)} ${r.filed_at.slice(11, 16)}` },
+      { key: "timing", label: "When", cell: (r) => r.timing + (r.early ? ` → ${r.reacts_on.slice(8, 10)}/${r.reacts_on.slice(5, 7)}` : ""), tone: (r) => (r.early ? 1 : 0) },
+      { key: "symbol", label: "Stock", cell: (r) => (r.symbol ? stockLink(r.symbol) : (r.bse_code ? "BSE " + r.bse_code : "–")) },
+      { key: "company", label: "Company" },
+      { key: "value_cr", label: "Order ₹ Cr", num: true, cell: (r) => (r.value_cr == null ? "not stated" : num(r.value_cr, r.value_cr >= 10 ? 0 : 2)) },
+      { key: "customer", label: "Customer", cell: (r) => r.customer || "–" },
+      { key: "pct_cap", label: "% of market value", num: true, cell: (r) => (r.pct_cap == null ? "–" : num(r.pct_cap, 2) + "%") },
+      { key: "pct_revenue", label: "% of yearly sales", num: true, cell: (r) => (r.pct_revenue == null ? "–" : num(r.pct_revenue, 1) + "%") },
+      { key: "size", label: "Size", sort: (r) => -(ORDER_SIZE[r.size] ?? 5), cell: (r) => (r.win ? r.size : "Not an order win"), tone: (r) => (r.size === "Very big" || r.size === "Big" ? 1 : 0) },
+      { key: "headline", label: "What", cell: (r) => r.summary || r.headline || (r.text || "").slice(0, 160) },
+      { key: "read_by", label: "Read from" }, { key: "exchange", label: "Exchange" },
+      { key: "pdf", label: "", cell: link }], rows, toolState.sorts.orders, "No order wins in this period yet.");
+    const when = (t) => (t ? new Date(t * 1000).toLocaleString("en-IN") : "never");
+    const rep = d.last_report ? ` Last Telegram report: ${d.last_report.at} (${d.last_report.sent ? `${d.last_report.orders} sent` : d.last_report.error}).` : "";
+    $("#orders-status").textContent = (d.note ? d.note + " " : "") + `Checked ${when(d.scanned_at)}${d.busy ? " (checking now…)" : ""}.` + rep
+      + (d.enabled ? ` Reports at ${d.evening} and ${d.morning} IST.` : " Telegram reports are off.") + (d.ai ? "" : " AI reading is not set up.");
+    $("#tool-updated").textContent = `${rows.length} shown${d.hidden ? `, ${d.hidden} other filings hidden` : ""}`;
+    const f = $("#form-orders-settings"), s = state.app.settings;
+    if (!f.dataset.filled) { f.order_scan.checked = s.order_scan; f.order_scan_evening.value = s.order_scan_evening; f.order_scan_morning.value = s.order_scan_morning; f.order_scan_min_pct.value = s.order_scan_min_pct; f.order_scan_ai.checked = s.order_scan_ai; f.dataset.filled = "1"; }
+  }
+
   async function loadTool(name) {
     const paths = { deals: () => { const f = $("#form-deals"); return `/tools/deals?days=${f.days.value}&min_value=${Number(f.min_value.value) || 0}`; },
-      drift: () => `/tools/drift?min_move=${Number($("#form-drift").min_move.value) || 4}`, compass: () => `/tools/rotation?period=${toolState.compassPeriod}`, radar: () => "/tools/radar" };
+      drift: () => `/tools/drift?min_move=${Number($("#form-drift").min_move.value) || 4}`, compass: () => `/tools/rotation?period=${toolState.compassPeriod}`, radar: () => "/tools/radar",
+      orders: () => { const f = $("#form-orders"); return `/order-wins?days=${f.days.value}&all=${f.only.value === "everything"}`; } };
     try { toolState[name] = await api(paths[name]()); } catch (err) { showError("#tool-error", err); return; }
     showError("#tool-error", null);
-    ({ deals: renderDeals, drift: renderDrift, compass: drawCompass, radar: renderRadar })[name]();
+    ({ deals: renderDeals, drift: renderDrift, compass: drawCompass, radar: renderRadar, orders: renderOrders })[name]();
   }
 
   function showTool(name) {
@@ -2919,6 +2948,24 @@
     const deals = $("#form-deals"); deals.days.addEventListener("change", () => loadTool("deals")); deals.min_value.addEventListener("change", () => loadTool("deals")); deals.q.addEventListener("input", renderDeals);
     deals.addEventListener("submit", (e) => e.preventDefault());
     const drift = $("#form-drift"); drift.min_move.addEventListener("change", () => loadTool("drift")); drift.only.addEventListener("change", renderDrift); drift.addEventListener("submit", (e) => e.preventDefault());
+    const orders = $("#form-orders"); orders.days.addEventListener("change", () => loadTool("orders")); orders.only.addEventListener("change", () => loadTool("orders")); orders.q.addEventListener("input", renderOrders); orders.addEventListener("submit", (e) => e.preventDefault());
+    $("#orders-scan").addEventListener("click", async (e) => {
+      busy(e.target, true, "Checking…");
+      try { await api("/order-wins/scan", { method: "POST" }); for (let i = 0; i < 40; i++) { await new Promise((r) => setTimeout(r, 3000)); await loadTool("orders"); if (!toolState.orders.busy) break; } } catch (err) { showError("#tool-error", err); }
+      busy(e.target, false);
+    });
+    $("#orders-send").addEventListener("click", async (e) => {
+      busy(e.target, true, "Sending…");
+      try { const out = await api("/order-wins/send", { method: "POST" }); $("#orders-saved").textContent = out.sent ? `${out.orders} order wins sent.` : `Not sent: ${out.error}.`; await loadTool("orders"); } catch (err) { showError("#tool-error", err); }
+      busy(e.target, false);
+    });
+    $("#form-orders-settings").addEventListener("submit", async (e) => {
+      e.preventDefault(); const f = e.target;
+      try {
+        await api("/settings", { method: "PUT", body: { order_scan: f.order_scan.checked, order_scan_evening: f.order_scan_evening.value, order_scan_morning: f.order_scan_morning.value, order_scan_min_pct: Number(f.order_scan_min_pct.value) || 0, order_scan_ai: f.order_scan_ai.checked } });
+        await loadState(); $("#orders-saved").textContent = "Saved."; loadTool("orders");
+      } catch (err) { showError("#tool-error", err); }
+    });
     const radarForm = $("#form-radar"); radarForm.q.addEventListener("input", renderRadar); radarForm.only.addEventListener("change", renderRadar); radarForm.addEventListener("submit", (e) => e.preventDefault());
     if (!$("#tab-markets").hidden) refreshPulse();
     setInterval(() => {
