@@ -1004,7 +1004,7 @@ class FnoAlgoEngine:
             need = 0
             with contextlib.suppress(ValueError, AttributeError):
                 need = int(getattr(self.library.strategy(algo["strategy"]), "history_days", 0) or 0)
-            days = min(max(5, need), data.KITE_CHUNK[interval])
+            days = data.live_kite_days(interval, data.live_bars_needed(algo.get("params")), need)
             with contextlib.suppress(KiteError, KeyError, ValueError, TypeError):
                 frame = data.kite_frame(kite.candles(SPOT[underlying], interval, naive - timedelta(days=days), naive))
                 if len(frame) >= 30:
