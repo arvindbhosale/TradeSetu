@@ -230,6 +230,32 @@ def kite_bars(kite, symbol: str, interval: str, now, raw: bool = False) -> pd.Da
 # Kite's limit on the span of one historical request, in days (its "interval exceeds max limit" error). 2 and
 # 4-minute candles are built from minute candles, so they take the minute limit.
 KITE_CHUNK = {"1m": 60, "2m": 60, "3m": 100, "4m": 60, "5m": 100, "15m": 200, "30m": 200, "1h": 400, "1d": 2000}
+# Candles a live intraday algo loads at least, and at most: enough for a slow average or channel to settle
+# (three times its longest period), never so many that a minute algo asks for months.
+LIVE_MIN_BARS, LIVE_MAX_BARS = 60, 600
+
+
+def live_bars_needed(params: dict | None) -> int:
+    """Finished candles a live algo needs: three times the longest whole-number setting (EMA 26 → 78),
+    at least ``LIVE_MIN_BARS``."""
+    periods = [int(v) for v in (params or {}).values()
+               if isinstance(v, (int, float)) and not isinstance(v, bool) and float(v).is_integer() and v > 0]
+    return max(LIVE_MIN_BARS, min(LIVE_MAX_BARS, 3 * max(periods, default=0)))
+
+
+def live_kite_days(interval: str, bars: int, history_days: int = 0) -> int:
+    """Calendar days to ask Kite for so that ``bars`` finished candles of ``interval`` come back.
+
+    An NSE session is 375 minutes; five sessions a week, plus a week's slack for holidays and today's
+    unfinished session. Five fixed days gave 21 to 27 hourly candles, under the 30 an algo needs, so every
+    1-hour algo fell back to Yahoo even with Kite logged in.
+    """
+    per_day = max(1, 375 // INTERVALS[interval]["minutes"])
+    sessions = -(-bars // per_day) + 1
+    days = -(-sessions * 7 // 5) + 7
+    return min(max(days, history_days, 5), KITE_CHUNK[interval])
+
+
 # Kite keeps minute-level candles (every intraday size) from early 2015; day candles go back further. This is
 # Kite's limit, not the desk's: an intraday range that starts earlier is tested from here.
 KITE_INTRADAY_FROM = pd.Timestamp("2015-02-02")

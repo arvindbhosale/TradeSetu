@@ -88,4 +88,7 @@ def yf_retry(func, max_retries=3, base_delay=2.0):
         except Exception as exc:
             if _answered_empty(exc):
                 return None
-            raise VendorUnavailableError(f"Yahoo Finance request failed: {type(exc).__name__}") from exc
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            # The status says which failure it was: 401/403 is Yahoo refusing this address, 5xx an outage.
+            detail = f" (HTTP {status})" if status else ""
+            raise VendorUnavailableError(f"Yahoo Finance request failed: {type(exc).__name__}{detail}") from exc

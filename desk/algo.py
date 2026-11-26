@@ -878,18 +878,30 @@ class AlgoEngine:
 
     def _candles(self, algo: dict, instrument: str, naive_now) -> pd.DataFrame:
         kite = self.desk.kite
+        broker = getattr(kite, "label", "") or "Kite"
+        kite_problem = ""
         if self.fetch is None and kite.connected and "get_historical_data" in kite.tools:
-            # Five days covers indicators and daily pivots; weekly or monthly pivots need the whole period before.
+            # Enough days for the strategy's averages to settle; weekly or monthly pivots need the whole period before.
             need = 0
             with contextlib.suppress(AlgoError):
                 need = self._strategy(algo).history_days
-            days = min(max(5, need), data.KITE_CHUNK[algo["interval"]])
-            with contextlib.suppress(KiteError, KeyError, ValueError, TypeError):
-                rows = kite.candles(instrument, algo["interval"], naive_now - timedelta(days=days), naive_now)
-                frame = data.kite_frame(rows)
+            bars = data.live_bars_needed(algo.get("params"))
+            days = data.live_kite_days(algo["interval"], bars, need)
+            try:
+                frame = data.kite_frame(kite.candles(instrument, algo["interval"], naive_now - timedelta(days=days),
+                                                     naive_now))
                 if len(frame) >= 30:
                     return frame
-        return data.candles(algo["symbol"], algo["interval"], fetch=self.fetch, max_age=20)
+                kite_problem = f"{broker} gave only {len(frame)} candles for {days} days"
+            except (KiteError, KeyError, ValueError, TypeError) as exc:
+                kite_problem = f"{broker}: {exc}"
+        elif self.fetch is None:
+            kite_problem = (f"{broker} is not logged in" if not kite.connected
+                            else f"{broker}'s historical data is not available")
+        try:
+            return data.candles(algo["symbol"], algo["interval"], fetch=self.fetch, max_age=20)
+        except data.NoData as exc:
+            raise data.NoData(f"{exc} ({kite_problem})" if kite_problem else str(exc)) from exc
 
     # -- orders --------------------------------------------------------------
 
